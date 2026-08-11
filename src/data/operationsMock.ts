@@ -6,15 +6,9 @@ export const ADVERTISERS = [
   { id: 'welcome-bbq', name: '웰컴투바베큐', preset: 'mixed' },
 ];
 
-export const MOCK_CAMPAIGNS: Campaign[] = [
-  { id:'c1', advertiserId:'dabang-isa', platform:'meta', name:'7월 이사상담 리드 캠페인', accountName:'다방이사 Meta', budget:120000, budgetType:'daily', startAt:'2026-07-01T09:00', endAt:'2026-07-31T23:00', status:'on', lastSyncedAt:'2026-07-05 06:42', capability:{upload:true,toggle:true,schedule:true} },
-  { id:'c2', advertiserId:'dabang-isa', platform:'naver', name:'사무실이사 검색광고', accountName:'다방이사 검색광고', budget:85000, budgetType:'daily', startAt:'2026-07-01T00:00', status:'scheduled', schedule:{onAt:'2026-07-06T08:00',offAt:'2026-07-31T22:00',repeat:'평일 08:00~22:00'}, lastSyncedAt:'2026-07-05 06:44', capability:{upload:true,toggle:true,schedule:true} },
-  { id:'c3', advertiserId:'wando-seafood', platform:'google', name:'전복미역국 구매 전환', accountName:'완도전복 Google', budget:150000, budgetType:'daily', startAt:'2026-07-01T00:00', status:'on', lastSyncedAt:'2026-07-05 06:47', capability:{upload:true,toggle:true,schedule:true} },
-  { id:'c4', advertiserId:'wando-seafood', platform:'youtube', name:'초복 전복 영상 캠페인', accountName:'완도전복 Google', budget:3000000, budgetType:'total', startAt:'2026-07-05T09:00', endAt:'2026-07-15T23:59', status:'review', lastSyncedAt:'2026-07-05 06:47', capability:{upload:false,toggle:true,schedule:true} },
-  { id:'c5', advertiserId:'welcome-bbq', platform:'karrot', name:'수완지구 바베큐 지역광고', accountName:'웰컴투바베큐 당근', budget:50000, budgetType:'daily', startAt:'2026-07-01T09:00', status:'unsupported', capability:{upload:false,toggle:false,schedule:false} },
-  { id:'c6', advertiserId:'wando-seafood', platform:'instagram', name:'전복미역국 릴스 캠페인', accountName:'완도전복 Meta', budget:70000, budgetType:'daily', startAt:'2026-07-03T09:00', status:'off', lastSyncedAt:'2026-07-05 06:42', capability:{upload:true,toggle:true,schedule:true} },
-  { id:'c7', advertiserId:'welcome-bbq', platform:'blog', name:'광주 바베큐 체험단 콘텐츠', accountName:'네이버 블로그', budget:0, budgetType:'total', startAt:'2026-07-07T10:00', status:'scheduled', schedule:{onAt:'2026-07-07T10:00'}, capability:{upload:true,toggle:true,schedule:true} },
-];
+// 매체 연동 전에는 실제로 진행 중인 캠페인이 없으므로 빈 배열로 시작합니다.
+// 실제 광고 API(Meta/네이버/구글 등)가 연결되면 여기 대신 실제 캠페인 목록이 채워집니다.
+export const MOCK_CAMPAIGNS: Campaign[] = [];
 
 export const FUNNEL_METRICS: FunnelMetricDefinition[] = [
   {key:'spend',label:'광고비',group:'cost',format:'currency'}, {key:'impressions',label:'노출',group:'traffic',format:'number'},
@@ -39,13 +33,9 @@ function computed(base: {spend:number; impressions:number; reach:number; clicks:
     costPerPurchase:base.spend/base.purchases, averageOrderValue:base.purchaseValue/base.purchases, roas:p(base.purchaseValue,base.spend) };
 }
 
-export const MOCK_FUNNEL_ROWS: FunnelRow[] = [
-  {platform:'meta',status:'connected',values:computed({spend:2900000,impressions:210000,reach:142000,clicks:4200,leads:320,validLeads:190,contracts:62,signUps:170,itemViews:3800,addToCarts:280,checkoutStarts:140,purchases:92,purchaseValue:8740000})},
-  {platform:'naver',status:'connected',values:computed({spend:2100000,impressions:72000,reach:65000,clicks:2100,leads:280,validLeads:230,contracts:95,signUps:105,itemViews:1800,addToCarts:190,checkoutStarts:112,purchases:81,purchaseValue:9120000})},
-  {platform:'google',status:'connected',values:computed({spend:1900000,impressions:95000,reach:70000,clicks:1850,leads:210,validLeads:170,contracts:68,signUps:83,itemViews:1540,addToCarts:154,checkoutStarts:91,purchases:65,purchaseValue:6680000})},
-  {platform:'karrot',status:'pending',values:{spend:940000,impressions:58000,clicks:1400,leads:120,validLeads:84,contracts:21,clickToLeadRate:8.57,validLeadRate:70,leadToContractRate:17.5,costPerLead:7833}},
-  {platform:'kakao',status:'connected',values:computed({spend:760000,impressions:63000,reach:42000,clicks:980,leads:88,validLeads:52,contracts:18,signUps:44,itemViews:760,addToCarts:71,checkoutStarts:39,purchases:22,purchaseValue:2240000})},
-];
+// 매체 연동 전에는 실제 성과 데이터가 없으므로 빈 배열로 시작합니다.
+// 실제 광고 API가 연결되어 일일 데이터가 DB에 쌓이면 여기 대신 실제 값이 채워집니다.
+export const MOCK_FUNNEL_ROWS: FunnelRow[] = [];
 
 export const METRIC_VIEWS: MetricView[] = [
   {id:'lead',advertiserId:'dabang-isa',name:'상담 성과',isDefault:true,selectedMetrics:['spend','clicks','leads','validLeads','contracts','clickToLeadRate','validLeadRate','leadToContractRate','costPerLead','costPerValidLead','costPerContract']},
@@ -54,13 +44,8 @@ export const METRIC_VIEWS: MetricView[] = [
   {id:'all',advertiserId:'all',name:'전체 지표',selectedMetrics:FUNNEL_METRICS.map(m=>m.key)},
 ];
 
-export const MOCK_SLOTS: ScheduleSlot[] = [
-  {id:'s1',advertiserId:'wando-seafood',title:'초복 전복 소재 최종 검수',type:'creative',platform:'meta',startAt:'2026-07-07T10:00',endAt:'2026-07-07T12:00',owner:'이과장',status:'approval'},
-  {id:'s2',advertiserId:'wando-seafood',title:'초복 캠페인 ON',type:'campaign',platform:'meta',startAt:'2026-07-08T09:00',endAt:'2026-07-15T23:00',owner:'큐PD',status:'confirmed'},
-  {id:'s3',advertiserId:'dabang-isa',title:'주간 성과 보고',type:'report',startAt:'2026-07-10T08:00',endAt:'2026-07-10T09:00',owner:'큐PD',status:'planned'},
-  {id:'s4',advertiserId:'welcome-bbq',title:'비오는 날 소재 교체',type:'promotion',platform:'instagram',startAt:'2026-07-11T15:00',endAt:'2026-07-11T17:00',owner:'디자인팀',status:'conflict',note:'광고주 승인 일정과 충돌'},
-  {id:'s5',advertiserId:'dabang-isa',title:'네이버 캠페인 평일 ON',type:'campaign',platform:'naver',startAt:'2026-07-06T08:00',endAt:'2026-07-31T22:00',owner:'자동화',status:'in_progress'},
-];
+// 매체 연동 전에는 실제 캠페인/광고주가 없으므로 빈 배열로 시작합니다.
+export const MOCK_SLOTS: ScheduleSlot[] = [];
 
 export const MOCK_SEASON_EVENTS: SeasonEvent[] = [
   {id:'e1',date:'2026-07-07',title:'장마권 강수 확률 80%',type:'weather',region:'광주',severity:'warning',recommendation:'실내 바베큐·보관이사 소재 노출을 강화하세요.'},

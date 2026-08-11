@@ -182,23 +182,12 @@ function notionHeading(content, level = 2) {
 }
 
 
-const SAMPLE_ADVERTISERS = [
-  { id: 'dabang-move', name: '다방이사', monthly_budget: 9000000, brand_color: '#2563eb', accounts: [] },
-  { id: 'dashima-abalone', name: '다시마전복수산', monthly_budget: 6000000, brand_color: '#10b981', accounts: [] },
-  { id: 'seoul-woori-kids-dental', name: '서울우리아이치과', monthly_budget: 10000000, brand_color: '#f59e0b', accounts: [] },
-  { id: 'wando-fisheries', name: '완도군수산', monthly_budget: 4000000, brand_color: '#059669', accounts: [] },
-  { id: 'ondong-animal', name: '온동물병원', monthly_budget: 2500000, brand_color: '#8b5cf6', accounts: [] },
-  { id: 'rs-company', name: 'RS컴퍼니', monthly_budget: 8000000, brand_color: '#0ea5e9', accounts: [] },
-  { id: 'unmyeong', name: '운명백과', monthly_budget: 2000000, brand_color: '#a855f7', accounts: [] },
-];
+// 매체 연동 전에는 실제 광고주 데이터가 없으므로 빈 배열로 시작합니다.
+const SAMPLE_ADVERTISERS = [];
 
+// 매체 연동 전에는 실제 로그가 없으므로 빈 배열을 반환합니다.
 function sampleLogs() {
-  const now = Date.now();
-  return [
-    { id: 1, type: 'batch', channel: 'meta', advertiser_name: '다방이사', message: 'Meta 일일 데이터 수집 완료', detail: 'DB, 클릭수, 노출수, 광고비 자동 입력', status: 'success', created_at: new Date(now).toISOString() },
-    { id: 2, type: 'connect', channel: 'naver', advertiser_name: '다시마전복수산', message: '네이버 광고 API 연결 대기', detail: '실제 API 키 등록 후 자동 수집 활성화 예정', status: 'warning', created_at: new Date(now - 3600_000).toISOString() },
-    { id: 3, type: 'batch', channel: 'google', advertiser_name: '서울우리아이치과', message: '클릭 성과형 리포트 데모 데이터 갱신', detail: '클릭수, 광고비, CPC 계산 완료', status: 'info', created_at: new Date(now - 7200_000).toISOString() },
-  ];
+  return [];
 }
 
 async function createNotionPage(payload) {
