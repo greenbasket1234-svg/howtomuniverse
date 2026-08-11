@@ -54,36 +54,8 @@ function hash(input: string): number {
   return out;
 }
 
-export function getKeywordAnalysisRows(brandId: string, brandName: string, platform: KeywordPlatform = '네이버'): KeywordAnalysisRow[] {
-  const keywords = BRAND_KEYWORDS[brandId] ?? [
-    `${brandName} 추천`, `${brandName} 가격`, `${brandName} 후기`, `${brandName} 상담`, `${brandName} 비교`, `${brandName} 이벤트`,
-  ];
-
-  return keywords.map((keyword, index) => {
-    const seed = hash(`${brandId}-${platform}-${keyword}`);
-    const impressions = 900 + (seed % 9200);
-    const clicks = Math.max(8, Math.round(impressions * (0.018 + ((seed >> 3) % 45) / 1000)));
-    const cpc = 380 + ((seed >> 5) % 1450);
-    const spend = clicks * cpc;
-    const grade = GRADES[index % GRADES.length];
-    const conversionRate = grade === 'high_performance' ? 0.065 : grade === 'waste' ? 0.006 : grade === 'exclude_candidate' ? 0 : 0.025 + ((seed >> 7) % 20) / 1000;
-    const conversions = Math.round(clicks * conversionRate);
-    return {
-      id: `${brandId}-${platform}-kw-${index + 1}`,
-      platform,
-      keyword,
-      campaign: `${brandName} ${platform} 키워드 캠페인`,
-      adGroup: index < 3 ? '핵심 키워드' : '확장 키워드',
-      impressions,
-      clicks,
-      spend,
-      conversions,
-      grade,
-      status: index === 3 ? 'paused' : 'active',
-      memo:
-        grade === 'waste' ? '광고비 대비 전환 효율이 낮아 입찰가·랜딩 점검 필요' :
-        grade === 'exclude_candidate' ? '최근 기간 전환 0건으로 제외 후보 검토' :
-        grade === 'expansion_candidate' ? '유사 검색어 확장 테스트 권장' : undefined,
-    };
-  });
+// 매체 연동 전에는 실제 키워드 성과 데이터가 없으므로 빈 배열을 반환합니다.
+// 실제 네이버/구글/카카오/당근 검색광고 API가 연결되면 이 함수가 실제 키워드 성과를 반환하도록 교체됩니다.
+export function getKeywordAnalysisRows(_brandId: string, _brandName: string, _platform: KeywordPlatform = '네이버'): KeywordAnalysisRow[] {
+  return [];
 }

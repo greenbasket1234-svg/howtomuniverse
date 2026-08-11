@@ -45,11 +45,8 @@ const TYPE_ICON: Record<LogType, string> = {
   batch:'⚙', connect:'🔗', error:'❌', info:'ℹ', warning:'⚠',
 };
 
-const SAMPLE_LOGS: ApiLog[] = [
-  { id: 1, type: 'batch', channel: 'meta', advertiser_name: '다방이사', message: 'Meta 일일 데이터 수집 완료', detail: 'DB, 클릭수, 노출수, 광고비 자동 입력', status: 'success', created_at: new Date().toISOString() },
-  { id: 2, type: 'connect', channel: 'naver', advertiser_name: '다시마전복수산', message: '네이버 광고 API 연결 대기', detail: '실제 API 키 등록 후 자동 수집 활성화 예정', status: 'warning', created_at: new Date(Date.now() - 3600_000).toISOString() },
-  { id: 3, type: 'batch', channel: 'google', advertiser_name: '서울우리아이치과', message: '클릭 성과형 보고서 데모 데이터 갱신', detail: '클릭수, 광고비, CPC 계산 완료', status: 'info', created_at: new Date(Date.now() - 7200_000).toISOString() },
-];
+// 매체 연동 전에는 실제 로그가 없으므로 빈 배열로 시작합니다.
+const SAMPLE_LOGS: ApiLog[] = [];
 
 export function AlertsLogsPage() {
   const [logs,       setLogs]       = useState<ApiLog[]>([]);

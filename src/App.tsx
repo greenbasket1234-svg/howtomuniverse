@@ -66,16 +66,11 @@ function LegacyCreativeDetail(){const {creativeId}=useParams();return <Navigate 
 function LegacySettingsRedirect(){const {sectionKey}=useParams();return <Navigate to={`/settings/advanced/${sectionKey??''}`} replace/>}
 
 export default function App(){
-  // 처음 실행하는 브라우저에서는 저장된 실제 데이터도, 샘플 데이터도 없어서 리포트·월간
-  // 리포트 화면이 전부 빈 채로 보입니다. 실제 데이터도 샘플 데이터도 전혀 없을 때만, 화면을
-  // 미리 확인해 볼 수 있도록 5·6·7월 테스트 샘플 데이터를 한 번 자동으로 만들어 둡니다.
-  useEffect(() => {
-    try {
-      if (!hasSampleData() && loadGeneratedReports().length === 0) {
-        generateSampleData();
-      }
-    } catch { /* 저장 공간 문제 등은 조용히 넘어갑니다 - 화면 진입 자체를 막지 않습니다. */ }
-  }, []);
+  // 매체 연동 전까지는 화면이 빈 채로 보이는 것이 정상 상태입니다.
+  // (이전에는 처음 실행 시 5·6·7월 테스트 샘플 데이터를 자동으로 채워 넣었지만,
+  //  실제 데이터와 구분이 안 될 수 있어 자동 생성을 껐습니다.
+  //  설정 화면의 '샘플 데이터 생성' 버튼으로 필요할 때만 수동으로 만들 수 있습니다.)
+  void hasSampleData; void loadGeneratedReports; void generateSampleData;
   useEffect(() => {
     let cancelled = false;
     const run = async () => { if (!cancelled) await runAutoDbSyncIfDue(); };

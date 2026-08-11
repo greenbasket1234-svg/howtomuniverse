@@ -13,7 +13,7 @@ const z = () => d({});
 const dabangIsaConfig: BrandReportConfig = {
   brandId: 'dabang-isa',
   brandName: '다방이사',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'meta', label: '메타' }, { key: 'danggeun', label: '당근' }, { key: 'naver', label: '네이버' },
     { key: 'google_sa', label: '구글 SA' }, { key: 'youtube', label: 'YouTube' }, { key: 'tiktok', label: '틱톡' },
@@ -31,12 +31,12 @@ const dabangIsaConfig: BrandReportConfig = {
   monthlyBudget: 3_000_000,
 };
 const dabangIsaData: BrandDailyData = {
-  meta: { '2026-07-01': d({ impressions: 2706, clicks: 75, spend: 68237, dbCount: 17 }), '2026-07-02': d({ impressions: 2496, clicks: 84, spend: 66837, dbCount: 18 }) },
-  danggeun: { '2026-07-01': d({ impressions: 14788, clicks: 158, spend: 49910, dbCount: 4 }), '2026-07-02': d({ impressions: 11500, clicks: 149, spend: 51286, dbCount: 7 }) },
-  naver: { '2026-07-01': d({ impressions: 16639, clicks: 478, spend: 188603, dbCount: 5 }), '2026-07-02': d({ impressions: 15255, clicks: 154, spend: 131408, dbCount: 7 }) },
-  google_sa: { '2026-07-01': d({ impressions: 552, clicks: 30, spend: 80924, dbCount: 7 }), '2026-07-02': d({ impressions: 947, clicks: 40, spend: 59920, dbCount: 1 }) },
-  youtube: { '2026-07-01': d({ impressions: 4652, clicks: 36, spend: 19725, dbCount: 0 }), '2026-07-02': d({ impressions: 5045, clicks: 46, spend: 20472, dbCount: 3 }) },
-  tiktok: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 1741, clicks: 18, spend: 23313, dbCount: 3 }) },
+  meta: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
+  danggeun: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
+  naver: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
+  google_sa: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
+  youtube: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
+  tiktok: { '2026-07-01': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }), '2026-07-02': d({ impressions: 0, clicks: 0, spend: 0, dbCount: 0 }) },
 };
 
 // ============================================================
@@ -45,7 +45,7 @@ const dabangIsaData: BrandDailyData = {
 const nomelConfig: BrandReportConfig = {
   brandId: 'nomel',
   brandName: '노멜',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'facebook', label: '메타' }, { key: 'naver', label: '네이버' }, { key: 'gfa', label: 'GFA' },
     { key: 'google', label: '구글' }, { key: 'indirect', label: '간접전환' },
@@ -64,12 +64,12 @@ const nomelConfig: BrandReportConfig = {
 };
 const nomelData: BrandDailyData = {
   facebook: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
-  naver: { '2026-07-01': d({ spend: 35000, revenue: 69800 }), '2026-07-02': d({ spend: 36167, revenue: 69800 }) },
-  gfa: { '2026-07-01': d({ spend: 2261, revenue: 34900 }), '2026-07-02': d({ spend: 55, revenue: 0 }) },
+  naver: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  gfa: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   google: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
-  indirect: { '2026-07-01': d({ revenue: 69800 }), '2026-07-02': d({ revenue: 69800 }) },
+  indirect: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
   cafe24: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
-  smartstore: { '2026-07-01': d({ revenue: 174500 }), '2026-07-02': d({ revenue: 139600 }) },
+  smartstore: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
 };
 
 // ============================================================
@@ -78,7 +78,7 @@ const nomelData: BrandDailyData = {
 const wandoConfig: BrandReportConfig = {
   brandId: 'wando-fisheries',
   brandName: '완도군수산',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'facebook', label: '메타' }, { key: 'naver', label: '네이버' }, { key: 'gfa', label: 'GFA(네이버 성과형)' },
     { key: 'kakao_keyword', label: '카카오키워드' }, { key: 'kakao_plus_friend', label: '카카오모먼트 플러스친구' },
@@ -100,15 +100,15 @@ const wandoConfig: BrandReportConfig = {
 };
 const wandoData: BrandDailyData = {
   facebook: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
-  naver: { '2026-07-01': d({ spend: 260523, revenue: 583600 }), '2026-07-02': d({ spend: 276075, revenue: 848900 }) },
-  gfa: { '2026-07-01': d({ spend: 47130, revenue: 73900 }), '2026-07-02': d({ spend: 49571, revenue: 160900 }) },
+  naver: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  gfa: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   kakao_keyword: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   kakao_plus_friend: { '2026-07-01': d({ spend: 0, dbCount: 0 }), '2026-07-02': d({ spend: 0, dbCount: 0 }) },
   mobion: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   adn: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
-  indirect: { '2026-07-01': d({ revenue: 335200 }), '2026-07-02': d({ revenue: 251000 }) },
+  indirect: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
   cafe24: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
-  smartstore: { '2026-07-01': d({ revenue: 992700 }), '2026-07-02': d({ revenue: 1260800 }) },
+  smartstore: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
 };
 
 // ============================================================
@@ -117,7 +117,7 @@ const wandoData: BrandDailyData = {
 const dasimaConfig: BrandReportConfig = {
   brandId: 'dasima-abalone',
   brandName: '다시마전복수산',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'facebook', label: '메타' }, { key: 'naver', label: '네이버' }, { key: 'gfa', label: 'GFA' },
     { key: 'kakao_keyword', label: '카카오키워드' }, { key: 'kakao_channel_add', label: '카카오모먼트 채널추가' },
@@ -137,17 +137,17 @@ const dasimaConfig: BrandReportConfig = {
   monthlyBudget: 4_000_000,
 };
 const dasimaData: BrandDailyData = {
-  facebook: { '2026-07-01': d({ spend: 104759, revenue: 541040 }), '2026-07-02': d({ spend: 96933, revenue: 970987 }) },
-  naver: { '2026-07-01': d({ spend: 41372, revenue: 474500 }), '2026-07-02': d({ spend: 34201, revenue: 643900 }) },
-  gfa: { '2026-07-01': d({ spend: 53883, revenue: 34900 }), '2026-07-02': d({ spend: 57786, revenue: 32000 }) },
-  kakao_keyword: { '2026-07-01': d({ spend: 140, revenue: 0 }), '2026-07-02': d({ spend: 1400, revenue: 109000 }) },
+  facebook: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  naver: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  gfa: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  kakao_keyword: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   kakao_channel_add: { '2026-07-01': d({ spend: 0, dbCount: 0 }), '2026-07-02': d({ spend: 0, dbCount: 0 }) },
-  mobion: { '2026-07-01': d({ spend: 18375, revenue: 0 }), '2026-07-02': d({ spend: 32279, revenue: 64000 }) },
-  adn: { '2026-07-01': d({ spend: 30000, revenue: 276940 }), '2026-07-02': d({ spend: 30000, revenue: 270000 }) },
+  mobion: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
+  adn: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
   google: { '2026-07-01': d({ spend: 0, revenue: 0 }), '2026-07-02': d({ spend: 0, revenue: 0 }) },
-  indirect: { '2026-07-01': d({ revenue: 2307320 }), '2026-07-02': d({ revenue: 88713 }) },
-  cafe24: { '2026-07-01': d({ revenue: 3535800 }), '2026-07-02': d({ revenue: 2146600 }) },
-  smartstore: { '2026-07-01': d({ revenue: 98900 }), '2026-07-02': d({ revenue: 32000 }) },
+  indirect: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
+  cafe24: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
+  smartstore: { '2026-07-01': d({ revenue: 0 }), '2026-07-02': d({ revenue: 0 }) },
 };
 
 // ============================================================
@@ -156,7 +156,7 @@ const dasimaData: BrandDailyData = {
 const dentalConfig: BrandReportConfig = {
   brandId: 'seoul-uriai-dental',
   brandName: '서울우리아이치과',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'facebook', label: '메타' }, { key: 'naver', label: '네이버' }, { key: 'google', label: '구글' },
     { key: 'kakao_moment', label: '카카오모먼트' }, { key: 'gfa', label: 'GFA' }, { key: 'danggeun', label: '당근' },
@@ -169,12 +169,12 @@ const dentalConfig: BrandReportConfig = {
   monthlyBudget: 1_500_000,
 };
 const dentalData: BrandDailyData = {
-  facebook: { '2026-07-01': d({ clicks: 691, spend: 158997 }), '2026-07-02': d({ clicks: 962, spend: 177617 }) },
-  naver: { '2026-07-01': d({ clicks: 26, spend: 101830 }), '2026-07-02': d({ clicks: 20, spend: 45052 }) },
+  facebook: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+  naver: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
   google: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
-  kakao_moment: { '2026-07-01': d({ clicks: 73, spend: 54750 }), '2026-07-02': d({ clicks: 73, spend: 54750 }) },
-  gfa: { '2026-07-01': d({ clicks: 231, spend: 58021 }), '2026-07-02': d({ clicks: 9, spend: 2108 }) },
-  danggeun: { '2026-07-01': d({ clicks: 57, spend: 30410 }), '2026-07-02': d({ clicks: 52, spend: 30174 }) },
+  kakao_moment: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+  gfa: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+  danggeun: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
 };
 
 // ============================================================
@@ -183,7 +183,7 @@ const dentalData: BrandDailyData = {
 const bbqConfig: BrandReportConfig = {
   brandId: 'welcome-bbq',
   brandName: '웰컴투바베큐',
-  hasRealData: true,
+  hasRealData: false,
   lineItems: [
     { key: 'facebook', label: '메타' }, { key: 'naver', label: '네이버' },
     { key: 'google', label: '구글' }, { key: 'danggeun', label: '당근' },
@@ -196,9 +196,9 @@ const bbqConfig: BrandReportConfig = {
   monthlyBudget: 800_000,
 };
 const bbqData: BrandDailyData = {
-  facebook: { '2026-07-01': d({ clicks: 506, spend: 78665 }), '2026-07-02': d({ clicks: 617, spend: 95833 }) },
-  naver: { '2026-07-01': d({ clicks: 12, spend: 7663 }), '2026-07-02': d({ clicks: 11, spend: 6589 }) },
-  google: { '2026-07-01': d({ clicks: 554, spend: 20126 }), '2026-07-02': d({ clicks: 494, spend: 20085 }) },
+  facebook: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+  naver: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+  google: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
   danggeun: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
 };
 
@@ -217,8 +217,8 @@ function placeholderClickBrand(brandId: string, brandName: string): { config: Br
     ],
   };
   const data: BrandDailyData = {
-    meta: { '2026-07-01': d({ clicks: 40, spend: 32000 }), '2026-07-02': d({ clicks: 45, spend: 34000 }) },
-    naver: { '2026-07-01': d({ clicks: 10, spend: 9000 }), '2026-07-02': d({ clicks: 12, spend: 9500 }) },
+    meta: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
+    naver: { '2026-07-01': d({ clicks: 0, spend: 0 }), '2026-07-02': d({ clicks: 0, spend: 0 }) },
   };
   return { config, data };
 }
@@ -234,8 +234,8 @@ function placeholderDbBrand(brandId: string, brandName: string): { config: Brand
     ],
   };
   const data: BrandDailyData = {
-    meta: { '2026-07-01': d({ spend: 60000, dbCount: 3 }), '2026-07-02': d({ spend: 58000, dbCount: 4 }) },
-    naver: { '2026-07-01': d({ spend: 40000, dbCount: 2 }), '2026-07-02': d({ spend: 42000, dbCount: 2 }) },
+    meta: { '2026-07-01': d({ spend: 0, dbCount: 0 }), '2026-07-02': d({ spend: 0, dbCount: 0 }) },
+    naver: { '2026-07-01': d({ spend: 0, dbCount: 0 }), '2026-07-02': d({ spend: 0, dbCount: 0 }) },
   };
   return { config, data };
 }
