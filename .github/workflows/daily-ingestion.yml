@@ -1,0 +1,28 @@
+name: daily-ingestion
+
+# 시각은 전부 UTC (KST = UTC+9). SCHEDULE.md의 시간표와 대응됩니다.
+on:
+  schedule:
+    - cron: '30 20 * * *' # 05:30 KST — 1차 수집
+    - cron: '15 21 * * *' # 06:15 KST — 실패 재시도
+    - cron: '45 21 * * *' # 06:45 KST — 상태 점검 + 알림
+  workflow_dispatch: {} # 수동 실행 필요 시
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      # GATE: run.js는 아직 구현되지 않았습니다 (SCHEDULE.md "남은 작업" 참고).
+      # 아래 스크립트는 실제 연동 완료 후 활성화하세요.
+      - run: echo "TODO: node dist/integrations/run.js --job=ingest"
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          NAVER_API_KEY: ${{ secrets.NAVER_API_KEY }}
+          NAVER_SECRET_KEY: ${{ secrets.NAVER_SECRET_KEY }}
+          GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          KAKAO_MOMENT_ACCESS_TOKEN: ${{ secrets.KAKAO_MOMENT_ACCESS_TOKEN }}

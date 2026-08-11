@@ -1,0 +1,5 @@
+날짜,광고주,광고주ID,매체,계정ID,campaignId,캠페인명,creativeId,소재명,DB,유효DB,계약,광고비,매출,플랫폼전환
+2026-08-08,샘플 광고주,sample-brand,메타,meta-001,meta-lead-a,상담 DB 캠페인 A,sample-cr-001,상담형 이미지 A,42,31,5,420000,0,45
+2026-08-08,샘플 광고주,sample-brand,네이버,naver-001,naver-search-a,검색 DB 캠페인 A,sample-cr-002,검색 문구 A,28,23,4,310000,0,30
+2026-08-09,샘플 광고주,sample-brand,메타,meta-001,meta-lead-a,상담 DB 캠페인 A,sample-cr-001,상담형 이미지 A,39,30,6,398000,0,41
+2026-08-09,샘플 광고주,sample-brand,구글 검색,google-001,google-search-a,검색 DB 캠페인 B,sample-cr-003,검색 문구 B,16,12,2,220000,0,17

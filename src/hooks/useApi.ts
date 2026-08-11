@@ -1,0 +1,29 @@
+/** apiFetch — 인증 토큰을 자동으로 포함하는 fetch 헬퍼 */
+import { API_BASE, DEMO_MODE } from '../config/runtime';
+
+function getToken(): string | null {
+  try { return localStorage.getItem('acc_token'); } catch { return null; }
+}
+
+export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers ?? {}),
+    },
+  });
+
+  if (res.status === 401) {
+    localStorage.removeItem('acc_token');
+    localStorage.removeItem('acc_user');
+    if (!DEMO_MODE) window.location.reload();
+    throw new Error(DEMO_MODE ? '데모 모드에서는 인증 없이 계속 사용합니다.' : '인증이 만료되었습니다.');
+  }
+
+  const data = await res.json() as T & { error?: string };
+  if (!res.ok) throw new Error((data as { error?: string }).error ?? res.statusText);
+  return data;
+}
