@@ -37,6 +37,4 @@ export type Creative = {
   videoStyleTags?: string[];
 };
 
-// 매체 연동 전에는 실제 소재 데이터가 없으므로 빈 배열로 시작합니다.
-// 실제 광고 API가 연결되거나 소재를 직접 업로드하면 그때부터 목록이 채워집니다.
 export const CREATIVE_LIBRARY: Creative[] = [];

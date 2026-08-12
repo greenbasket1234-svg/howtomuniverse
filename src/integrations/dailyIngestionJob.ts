@@ -17,14 +17,8 @@ export type IngestionResult = {
   error?: string;
 };
 
-// 브랜드 × 채널 자격증명 목록. 실제 저장소에서는 DB 테이블로 옮기고,
-// access token 등 민감정보는 반드시 별도 시크릿 저장소에서 조회하세요.
-// 여기서는 구조만 보여주기 위해 다방이사 예시 하나만 채워둡니다.
-export const CHANNEL_CREDENTIALS: ChannelCredential[] = [
-  { brandId: 'dabang-isa', channelKey: 'meta', accountId: 'act_XXXXXXXXX' },
-  { brandId: 'dabang-isa', channelKey: 'naver', accountId: 'naver_ad_XXXX' },
-  // GATE: 나머지 브랜드 × 채널 자격증명을 실제 DB에서 조회하도록 교체
-];
+// 브랜드 × 채널 자격증명은 운영 DB/시크릿 저장소에서 주입합니다. Zero State에는 기본 계정을 포함하지 않습니다.
+export const CHANNEL_CREDENTIALS: ChannelCredential[] = [];
 
 async function withRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let lastErr: unknown;

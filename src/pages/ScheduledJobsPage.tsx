@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CalendarDays, List, Plus, Trash2, X, Clock3, AlertTriangle, Pause, Play } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
+import { ADVERTISERS } from '../data/operationsMock';
 import { AUTOMATION_EVENT, getAllAutomationJobs, loadAutomationJobs, removeAutomationJob, upsertAutomationJob } from '../automation/automationStore';
 import { findScheduleConflicts } from '../automation/scheduleConflict';
 import { formatKoreanDateTime, nextOccurrences, scheduleSummary } from '../automation/scheduleEngine';
@@ -10,7 +10,7 @@ import type { AutomationJob, AutomationJobType, AutomationSchedule, AutomationSc
 import type { Campaign } from '../types/operations';
 
 const CAMPAIGN_STORAGE_KEY='howtom-campaign-management-v2';
-function campaigns():Campaign[]{try{const v=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'null');return Array.isArray(v)&&v.length?v:MOCK_CAMPAIGNS}catch{return MOCK_CAMPAIGNS}}
+function campaigns():Campaign[]{try{const v=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'[]');return Array.isArray(v)?v:[]}catch{return []}}
 const jobTypeLabel:Record<string,string>={campaign_on:'캠페인 ON',campaign_off:'캠페인 OFF',campaign_schedule:'캠페인 ON/OFF',data_sync:'데이터 동기화',notification:'알림 자동화',report_generation:'보고서 자동 생성',content_generation:'광고 문구 자동 생성'};
 const typeOptions:[AutomationJobType,string][]=[['campaign_on','캠페인 ON'],['campaign_off','캠페인 OFF'],['data_sync','데이터 동기화'],['notification','알림 생성']];
 const managePath=(j:AutomationJob)=>j.jobType==='report_generation'?'/automation/report-generation':j.jobType==='content_generation'?'/automation/ad-copy':j.jobType==='notification'?'/automation/notifications':j.jobType==='data_sync'?'/automation/data-collection':'/campaigns';

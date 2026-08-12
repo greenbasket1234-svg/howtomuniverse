@@ -1,19 +1,19 @@
 {
   "name": "howtom-universe",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node scripts/dev-server.mjs",
+    "dev": "node scripts/dev-server.mjs --source",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview",
     "start": "node server.mjs",
-    "dev:no-open": "node scripts/dev-server.mjs --no-open",
+    "dev:no-open": "node scripts/dev-server.mjs --source --no-open",
     "setup": "npm install --registry=https://registry.npmjs.org/",
     "dev:vite": "vite --host 127.0.0.1 --port 5173",
     "dev:static": "node server.mjs",

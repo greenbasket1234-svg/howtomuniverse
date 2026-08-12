@@ -9,11 +9,12 @@ import { filterByAdvertiser } from '../utils/advertiserMatch';
 import { useSearchParams } from 'react-router-dom';
 import { clearCreativeBrief, loadCreativeBrief } from '../utils/creativeBriefStore';
 import { loadAssets } from '../utils/assetStore';
+import { apiFetch } from '../hooks/useApi';
 
 type Row = Record<string, any> & { id:number };
-const ADVERTISERS=['다방이사','다시마전복수산','서울우리아이치과','온동물병원','완도군수산'];
+const ADVERTISERS:string[]=[];
 function useStoredRows(key:string, initial:Row[]){
-  const [rows,setRows]=useState<Row[]>(()=>{try{const raw=localStorage.getItem(key); return raw?JSON.parse(raw):initial}catch{return initial}});
+  const [rows,setRows]=useState<Row[]>(()=>{try{const raw=localStorage.getItem(key); return raw?JSON.parse(raw):[]}catch{return []}});
   useEffect(()=>{localStorage.setItem(key,JSON.stringify(rows))},[key,rows]);
   return [rows,setRows] as const;
 }
@@ -23,17 +24,17 @@ function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:
 function Btn({children,onClick,kind='primary',disabled=false}:{children:React.ReactNode;onClick?:()=>void;kind?:'primary'|'secondary'|'danger';disabled?:boolean}){return <button disabled={disabled} onClick={onClick} className={'btn '+kind}>{children}</button>}
 
 export function TodayOperationsPage(){
- const cards=[['오늘 실행 예정 광고','6건','09:00 Meta 캠페인 외 5건'],['승인 대기 자동화','3건','예산 증액 2건 · 소재 중지 1건'],['예약 부족 슬롯','4건','금요일 저녁 중심'],['데이터 수집 실패','1건','Google Ads 토큰 확인 필요'],['소재 피로도 위험','2건','교체 권장'],['오늘 마감 태스크','5건','담당자 확인 필요']];
+ const cards:string[][]=[];
  return <><PageHeader title="오늘의 운영 현황" description="오늘 처리해야 할 광고 운영 업무와 위험 신호를 한눈에 확인합니다."/><div className="ops-stat-grid">{cards.slice(0,4).map(x=><Metric key={x[0]} label={x[0]} value={x[1]} sub={x[2]}/>)}</div><div className="ops-two-col"><section className="card ops-card"><h3>우선 처리 업무</h3>{cards.map((x,i)=><div className="action-list-row" key={x[0]}><span className={'status-dot '+(i===3?'danger':i<2?'warning':'success')}/><div><b>{x[0]}</b><small>{x[2]}</small></div><strong>{x[1]}</strong><button className="btn secondary">열기</button></div>)}</section><section className="card ops-card"><h3>운영 타임라인</h3>{['07:00 전일 데이터 마감','08:00 AI 성과 분석 완료','09:00 일일 브리핑 발송','11:00 자동화 승인 검토','16:00 예약률 재점검','18:00 캠페인 종료 확인'].map((x,i)=><div className="timeline-row" key={x}><span>{String(i+7).padStart(2,'0')}:00</span><b>{x.replace(/^\d{2}:\d{2} /,'')}</b></div>)}</section></div></>
 }
 
 export function ReservationReportPage(){
- const rows=[['다방','주말 오후','120','94','78.3%','₩1,840,000','₩19,574'],['갈비연','저녁 단체석','80','68','85.0%','₩1,220,000','₩17,941'],['온동물병원','건강검진','60','39','65.0%','₩940,000','₩24,103']];
- return <><PageHeader title="예약 매출 보고서" description="예약 슬롯, 광고비, 예약 매출과 예약당 비용을 분석합니다."/><div className="ops-stat-grid"><Metric label="전체 슬롯" value="260개"/><Metric label="예약 완료" value="201개"/><Metric label="평균 예약률" value="77.3%"/><Metric label="예약 매출" value="₩18,420,000"/></div><section className="card ops-card"><table className="ops-table"><thead><tr>{['광고주','구분','전체 슬롯','예약','예약률','광고비','예약당 비용'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(r=><tr key={r[0]+r[1]}>{r.map((v,i)=><td key={i}><b>{i===0?v:''}</b>{i!==0&&v}</td>)}</tr>)}</tbody></table></section></>
+ const rows:string[][]=[];
+ return <><PageHeader title="예약 매출 보고서" description="예약 슬롯, 광고비, 예약 매출과 예약당 비용을 분석합니다."/><div className="ops-stat-grid"><Metric label="전체 슬롯" value="0개"/><Metric label="예약 완료" value="0개"/><Metric label="평균 예약률" value="0%"/><Metric label="예약 매출" value="₩0"/></div><section className="card ops-card"><table className="ops-table"><thead><tr>{['광고주','구분','전체 슬롯','예약','예약률','광고비','예약당 비용'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(r=><tr key={r[0]+r[1]}>{r.map((v,i)=><td key={i}><b>{i===0?v:''}</b>{i!==0&&v}</td>)}</tr>)}</tbody></table></section></>
 }
 
 export function CreativeRequestPage(){
- const initial=[{id:1,brand:'다방이사',title:'7월 수영장 릴스 3종',type:'세로 영상',owner:'김디자인',due:'2026-07-10',status:'제작중'},{id:2,brand:'완도군수산',title:'단체예약 배너',type:'정사각형',owner:'박디자인',due:'2026-07-12',status:'검수'}];
+ const initial:Row[]=[];
  const [rows,setRows]=useStoredRows('acc-creative-requests',initial); const [open,setOpen]=useState(false);
  const [searchParams]=useSearchParams(); const sourceCreativeId=searchParams.get('sourceCreative')||''; const sourceAssetId=searchParams.get('sourceAsset')||''; const sourceAsset=sourceAssetId?loadAssets(true).find(a=>a.assetId===sourceAssetId):undefined; const brief=loadCreativeBrief(sourceCreativeId||undefined);
  const { filterValue } = useAdvertiserFilter();
@@ -48,24 +49,14 @@ export function CreativeRequestPage(){
 }
 
 type ReservationSlotRow={id:number;date:string;dayType:'평일'|'주말';reserved:number;total:number;adSpend:number;action:string};
-const initialReservationSlots:ReservationSlotRow[]=[
- {id:1,date:'2026-07-07',dayType:'평일',reserved:9,total:30,adSpend:120000,action:'광고 증액'},
- {id:2,date:'2026-07-08',dayType:'평일',reserved:12,total:30,adSpend:135000,action:'광고 증액'},
- {id:3,date:'2026-07-09',dayType:'평일',reserved:18,total:30,adSpend:142000,action:'유지'},
- {id:4,date:'2026-07-10',dayType:'평일',reserved:23,total:30,adSpend:155000,action:'유지'},
- {id:5,date:'2026-07-11',dayType:'주말',reserved:28,total:30,adSpend:88000,action:'광고 감액'},
- {id:6,date:'2026-07-12',dayType:'주말',reserved:30,total:30,adSpend:42000,action:'광고 중지'},
- {id:7,date:'2026-07-13',dayType:'평일',reserved:14,total:30,adSpend:126000,action:'광고 증액'},
- {id:8,date:'2026-07-14',dayType:'평일',reserved:16,total:30,adSpend:132000,action:'유지'},
-];
+const initialReservationSlots:ReservationSlotRow[]=[];
 
 export function ReservationSlotsManagerPage(){
  const [rows,setRows]=useStoredRows('acc-reservation-slots-v2',initialReservationSlots);
  const [open,setOpen]=useState(false); const [csvOpen,setCsvOpen]=useState(false); const [toast,setToast]=useState('');
  const { filterValue } = useAdvertiserFilter();
- // 이 페이지의 예약 슬롯 데이터는 광고주별로 나뉘어 있지 않고 '월컴투바베큐' 단일 데모입니다.
  // 다른 광고주로 필터링된 상태에서는 관련 없는 데이터를 보여주지 않기 위해 빈 상태로 안내합니다.
- const advertiserName = '월컴투바베큐';
+ const advertiserName = filterValue || '';
  const isFilteredOut = filterValue.trim() && !filterByAdvertiser([advertiserName], filterValue, n => n).length;
  const total=rows.reduce((a,r)=>a+Number(r.total),0), reserved=rows.reduce((a,r)=>a+Number(r.reserved),0), spend=rows.reduce((a,r)=>a+Number(r.adSpend),0);
  const weekday=rows.filter(r=>r.dayType==='평일'), weekend=rows.filter(r=>r.dayType==='주말');
@@ -92,13 +83,13 @@ export function ReservationSlotsManagerPage(){
 }
 
 function CsvSlotModal({onClose,onImport}:{onClose:()=>void;onImport:(csv:string)=>void}){
- const [csv,setCsv]=useState('date,dayType,reserved,total,adSpend,action\n2026-07-15,평일,10,30,120000,광고 증액');
+ const [csv,setCsv]=useState('');
  return <Modal title="예약 슬롯 CSV 업로드" onClose={onClose}><p className="modal-help">첫 행은 date, dayType, reserved, total, adSpend, action 순서로 입력합니다.</p><textarea className="csv-textarea" rows={8} value={csv} onChange={e=>setCsv(e.target.value)}/><div className="action-row"><Btn kind="secondary" onClick={onClose}>취소</Btn><Btn onClick={()=>onImport(csv)}><Upload size={15}/> 업로드</Btn></div></Modal>
 }
 
 export function ReservationAnalysisPage(){
- const data=[['월','42%','₩38,200'],['화','51%','₩31,840'],['수','58%','₩29,410'],['목','67%','₩25,220'],['금','82%','₩18,900'],['토','94%','₩14,200'],['일','88%','₩16,500']];
- return <><PageHeader title="예약률 분석" description="요일·시간대·상품별 예약률과 광고 효율을 비교합니다."/><div className="ops-stat-grid"><Metric label="평균 예약률" value="68.9%"/><Metric label="취소율" value="4.2%"/><Metric label="노쇼율" value="1.8%"/><Metric label="평균 예약당 비용" value="₩24,038"/></div><div className="ops-two-col"><section className="card ops-card"><h3>요일별 예약률</h3>{data.map(r=><div className="bar-row" key={r[0]}><b>{r[0]}</b><div className="mini-progress"><i style={{width:r[1]}}/></div><strong>{r[1]}</strong><span>{r[2]}</span></div>)}</section><section className="card ops-card"><h3>병목 구간</h3>{[['평일 오전','예약률 31%','광고 확장 필요'],['금요일 저녁','잔여 18석','긴급 프로모션 권장'],['토요일 오후','예약률 96%','광고 중지 권장']].map(x=><div className="action-list-row" key={x[0]}><div><b>{x[0]}</b><small>{x[1]}</small></div><span className="status-pill warning">{x[2]}</span></div>)}</section></div></>
+ const data:string[][]=[];
+ return <><PageHeader title="예약률 분석" description="요일·시간대·상품별 예약률과 광고 효율을 비교합니다."/><div className="ops-stat-grid"><Metric label="평균 예약률" value="0%"/><Metric label="취소율" value="0%"/><Metric label="노쇼율" value="0%"/><Metric label="평균 예약당 비용" value="₩0"/></div><div className="ops-two-col"><section className="card ops-card"><h3>요일별 예약률</h3>{data.map(r=><div className="bar-row" key={r[0]}><b>{r[0]}</b><div className="mini-progress"><i style={{width:r[1]}}/></div><strong>{r[1]}</strong><span>{r[2]}</span></div>)}</section><section className="card ops-card"><h3>병목 구간</h3>{([] as string[][]).map(x=><div className="action-list-row" key={x[0]}><div><b>{x[0]}</b><small>{x[1]}</small></div><span className="status-pill warning">{x[2]}</span></div>)}</section></div></>
 }
 
 type BudgetRecRow = {
@@ -137,11 +128,7 @@ function BudgetScheduleEditor({ row, onSave, onClose }: { row: BudgetRecRow; onS
 export function BudgetRecommendationsPage(){
  // 예약률·잔여 슬롯이 아니라, 광고주·매체별 실제 효율 지표(CPA·ROAS 등)를 기준으로 증액/감액을
  // 판단합니다. 대상 시간대는 광고주별로 실행 요일·시간을 직접 지정할 수 있습니다.
- const initial: BudgetRecRow[] = [
-   { id: 1, brand: '다방이사', platform: 'Meta', currentSpend: 300000, proposedSpend: 372000, efficiencyLabel: 'CPA', efficiencyCurrent: '₩9,800', efficiencyBenchmark: '평균 ₩13,200 대비 26% 우수', reason: '최근 7일 CPA가 계정 평균보다 26% 낮아 효율이 높습니다. 예산을 늘려 성과 볼륨을 확보합니다.', action: '증액', enabled: true, schedule: '상시 적용' },
-   { id: 2, brand: '완도군수산', platform: '카페24', currentSpend: 450000, proposedSpend: 342000, efficiencyLabel: 'ROAS', efficiencyCurrent: '312%', efficiencyBenchmark: '평균 480% 대비 35% 저조', reason: '최근 7일 ROAS가 계정 평균보다 35% 낮습니다. 예산을 줄이고 소재·타기팅 점검 후 재평가합니다.', action: '감액', enabled: true, schedule: '금요일 저녁 9시 OFF' },
-   { id: 3, brand: '서울우리아이치과', platform: '네이버', currentSpend: 220000, proposedSpend: 220000, efficiencyLabel: 'CPC', efficiencyCurrent: '₩1,450', efficiencyBenchmark: '평균 ₩1,480 대비 안정', reason: '클릭 효율이 평균과 비슷한 수준으로 안정적입니다. 현재 예산을 유지하며 소재 교체 테스트를 병행합니다.', action: '유지', enabled: false, schedule: '상시 적용' },
- ];
+ const initial: BudgetRecRow[] = [];
  const [rows,setRows]=useStoredRows('acc-budget-recommendations-v2',initial) as unknown as [BudgetRecRow[], (rows: BudgetRecRow[]) => void];
  const [editingSchedule, setEditingSchedule] = useState<BudgetRecRow | null>(null);
  const { filterValue } = useAdvertiserFilter();
@@ -165,7 +152,7 @@ export function BudgetRecommendationsPage(){
 }
 
 export function SeasonPlannerPage(){
- const initial=[{id:1,brand:'다방이사',season:'여름 휴가',start:'2026-07-10',end:'2026-08-20',budget:5000000,status:'기획중'},{id:2,brand:'완도군수산',season:'복날',start:'2026-07-15',end:'2026-07-25',budget:2500000,status:'진행중'}]; const [rows,setRows]=useStoredRows('acc-season-plans',initial); const [open,setOpen]=useState(false);
+ const initial:Row[]=[]; const [rows,setRows]=useStoredRows('acc-season-plans',initial); const [open,setOpen]=useState(false);
  const { filterValue } = useAdvertiserFilter();
  const visible = filterByAdvertiser(rows, filterValue, r => r.brand);
  const add=(e:React.FormEvent<HTMLFormElement>)=>{e.preventDefault();const f=new FormData(e.currentTarget);setRows([...rows,{id:Date.now(),brand:f.get('brand'),season:f.get('season'),start:f.get('start'),end:f.get('end'),budget:Number(f.get('budget')),status:'기획중'}]);setOpen(false)};
@@ -173,76 +160,75 @@ export function SeasonPlannerPage(){
 }
 
 export function PromotionSchedulePage(){
- const initial=[{id:1,brand:'갈비연',name:'복날 전복 특가',start:'2026-07-15',end:'2026-07-25',discount:'20%',goal:'예약 250건',status:'예정'}]; const [rows,setRows]=useStoredRows('acc-promotions',initial); const [open,setOpen]=useState(false);
+ const initial:Row[]=[]; const [rows,setRows]=useStoredRows('acc-promotions',initial); const [open,setOpen]=useState(false);
  const { filterValue } = useAdvertiserFilter();
  const visible = filterByAdvertiser(rows, filterValue, r => r.brand);
  return <><PageHeader title="프로모션 일정" description="프로모션 기간, 목표, 할인과 연결 캠페인을 관리합니다."/>{filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}<section className="card ops-card"><div className="ops-card-head"><h3>프로모션</h3><Btn onClick={()=>setOpen(true)}><Plus size={15}/> 프로모션 추가</Btn></div><table className="ops-table"><thead><tr><th>광고주</th><th>프로모션</th><th>기간</th><th>혜택</th><th>목표</th><th>상태</th></tr></thead><tbody>{visible.map(r=><tr key={r.id}><td>{r.brand}</td><td><b>{r.name}</b></td><td>{r.start} ~ {r.end}</td><td>{r.discount}</td><td>{r.goal}</td><td><select value={r.status} onChange={e=>setRows(rows.map(x=>x.id===r.id?{...x,status:e.target.value}:x))}>{['예정','진행중','종료'].map(s=><option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></section>{open&&<Modal title="프로모션 등록" onClose={()=>setOpen(false)}><form className="final-form" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);setRows([...rows,{id:Date.now(),brand:f.get('brand'),name:f.get('name'),start:f.get('start'),end:f.get('end'),discount:f.get('discount'),goal:f.get('goal'),status:'예정'}]);setOpen(false)}}><label>광고주<select name="brand">{ADVERTISERS.map(a=><option key={a}>{a}</option>)}</select></label><label>프로모션명<input name="name" required/></label><label>시작일<input name="start" type="date" required/></label><label>종료일<input name="end" type="date" required/></label><label>혜택<input name="discount" placeholder="예: 20%"/></label><label>목표<input name="goal" placeholder="예: 예약 250건"/></label><button className="btn primary" type="submit">저장</button></form></Modal>}</>
 }
 
 export function CustomerAnalyticsPage(){
- const segments=[['신규 고객','1,284명','₩32,400'],['재구매 고객','428명','₩8,900'],['재예약 고객','214명','₩11,200'],['고가치 고객','96명','₩5,480']];
- return <><PageHeader title="고객 데이터 분석" description="신규·재구매·재예약 고객과 고객 획득 비용, 생애가치를 분석합니다."/><div className="ops-stat-grid"><Metric label="신규 고객" value="1,284명"/><Metric label="재구매율" value="24.8%"/><Metric label="평균 CAC" value="₩26,930"/><Metric label="예상 LTV" value="₩184,200"/></div><div className="ops-two-col"><section className="card ops-card"><h3>고객 세그먼트</h3>{segments.map(x=><div className="action-list-row" key={x[0]}><div><b>{x[0]}</b><small>평균 획득 비용 {x[2]}</small></div><strong>{x[1]}</strong><button className="btn secondary">캠페인 생성</button></div>)}</section><section className="card ops-card"><h3>유입 매체별 고객</h3>{[['Meta','42%'],['네이버','31%'],['Google','18%'],['기타','9%']].map(x=><div className="bar-row" key={x[0]}><b>{x[0]}</b><div className="mini-progress"><i style={{width:x[1]}}/></div><strong>{x[1]}</strong></div>)}</section></div></>
+ const segments:string[][]=[];
+ return <><PageHeader title="고객 데이터 분석" description="신규·재구매·재예약 고객과 고객 획득 비용, 생애가치를 분석합니다."/><div className="ops-stat-grid"><Metric label="신규 고객" value="0명"/><Metric label="재구매율" value="0%"/><Metric label="평균 CAC" value="₩0"/><Metric label="예상 LTV" value="₩0"/></div><div className="ops-two-col"><section className="card ops-card"><h3>고객 세그먼트</h3>{segments.map(x=><div className="action-list-row" key={x[0]}><div><b>{x[0]}</b><small>평균 획득 비용 {x[2]}</small></div><strong>{x[1]}</strong><button className="btn secondary">캠페인 생성</button></div>)}</section><section className="card ops-card"><h3>유입 매체별 고객</h3>{([] as string[][]).map(x=><div className="bar-row" key={x[0]}><b>{x[0]}</b><div className="mini-progress"><i style={{width:x[1]}}/></div><strong>{x[1]}</strong></div>)}</section></div></>
 }
 
 export function ApprovalQueuePage(){
- const initial=[{id:1,type:'예산 증액',brand:'다방',target:'Meta 여름 캠페인',before:'₩300,000',after:'₩360,000',requester:'자동화 규칙',status:'대기'},{id:2,type:'소재 중지',brand:'갈비연',target:'복날 배너 A',before:'ON',after:'OFF',requester:'피로도 감지',status:'대기'}]; const [rows,setRows]=useStoredRows('acc-approvals',initial);
+ const initial:Row[]=[]; const [rows,setRows]=useStoredRows('acc-approvals',initial);
  const { filterValue } = useAdvertiserFilter();
  const visible = filterByAdvertiser(rows, filterValue, r => r.brand);
  return <><PageHeader title="승인 대기함" description="자동화와 광고 운영 변경 요청을 검토하고 승인 또는 반려합니다."/>{filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}<section className="card ops-card">{visible.map(r=><div className="approval-card" key={r.id}><div><span className="status-pill warning">{r.type}</span><h3>{r.target}</h3><p>{r.brand} · 요청 출처 {r.requester}</p></div><div className="approval-diff"><span>{r.before}</span><b>→</b><strong>{r.after}</strong></div><div className="action-row">{r.status==='대기'?<><Btn kind="secondary" onClick={()=>setRows(rows.map(x=>x.id===r.id?{...x,status:'반려'}:x))}>반려</Btn><Btn onClick={()=>setRows(rows.map(x=>x.id===r.id?{...x,status:'승인 완료'}:x))}>승인</Btn></>:<span className="status-pill success">{r.status}</span>}</div></div>)}{visible.length===0&&<p className="muted">해당 광고주의 승인 요청이 없습니다.</p>}</section></>
 }
 
 export function OperationsHistoryPage(){
- const rows=[['07-06 10:20','예산 변경','다방','Meta 캠페인','₩300,000 → ₩360,000','관리자'],['07-06 09:00','광고 ON','갈비연','복날 캠페인','예약 실행','시스템'],['07-06 08:02','보고서 발송','전체','일일 브리핑','텔레그램','시스템'],['07-05 17:40','소재 중지','다방','수영장 릴스 03','피로도 위험','김마케터']];
+ const rows:string[][]=[];
  const { filterValue } = useAdvertiserFilter();
  const visible = filterByAdvertiser(rows, filterValue, r => r[2]);
  return <><PageHeader title="운영 이력" description="예산, 광고 상태, 소재, 보고서, 연동 변경 이력을 추적합니다."/>{filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}<section className="card ops-card"><table className="ops-table"><thead><tr><th>시각</th><th>유형</th><th>광고주</th><th>대상</th><th>내용</th><th>실행자</th></tr></thead><tbody>{visible.map((r,i)=><tr key={i}>{r.map((v,j)=><td key={j}>{j===1?<span className="status-pill success">{v}</span>:v}</td>)}</tr>)}</tbody></table>{visible.length===0&&<p className="muted">해당 광고주의 이력이 없습니다.</p>}</section></>
 }
 
 export function AdvertiserManagementPage(){
- const [advertisers,setAdvertisers]=useAdvertisers();
+ const [advertisers,setAdvertisers,reloadAdvertisers]=useAdvertisers();
  const { filterValue } = useAdvertiserFilter();
  const [query,setQuery]=useState('');
  const [editing,setEditing]=useState<Advertiser|null>(null);
  const [toast,setToast]=useState('');
  const filtered=advertisers.filter(r=>matchesAdvertiserFilter(r.name,filterValue)&&r.name.includes(query.trim()));
- const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
- const saveAdvertiser=(e:React.FormEvent<HTMLFormElement>)=>{
+ const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
+ const saveAdvertiser=async(e:React.FormEvent<HTMLFormElement>)=>{
    e.preventDefault();
    if(!editing)return;
    const f=new FormData(e.currentTarget);
    const name=String(f.get('name')||'').trim();
    if(!name)return;
-   const next:Advertiser={
-     ...editing,
-     id:editing.id||`${name.toLowerCase().replace(/[^a-z0-9가-힣]+/g,'-')}-${Date.now()}`,
-     name,
-     initial:name.slice(0,1),
-     monthlyBudget:Number(f.get('monthlyBudget')||0),
-     color:String(f.get('color')||'#2563eb'),
-   };
-   setAdvertisers(current=>current.some(item=>item.id===next.id)?current.map(item=>item.id===next.id?next:item):[...current,next]);
-   setEditing(null);
-   setToast(`${name} 광고주 정보가 저장되었습니다.`);
-   setTimeout(()=>setToast(''),2200);
+   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||'')};
+   try{
+     if(editing.id) await apiFetch(`/advertisers/${encodeURIComponent(editing.id)}`,{method:'PATCH',body:JSON.stringify(payload)});
+     else await apiFetch('/advertisers',{method:'POST',body:JSON.stringify(payload)});
+     await reloadAdvertisers();
+     setEditing(null);setToast(`${name} 광고주 정보가 서버에 저장되었습니다.`);setTimeout(()=>setToast(''),2200);
+   }catch(error){setToast(error instanceof Error?error.message:'광고주 저장에 실패했습니다.');}
  };
  return <>
    <PageHeader title="광고주 관리" description="광고주를 등록하면 광고계정 연동과 브랜드 예산 화면에 자동 반영됩니다." action={<Btn onClick={()=>setEditing(createBlank())}><Plus size={15}/> 광고주 등록</Btn>}/>
    <Toolbar query={query} setQuery={setQuery}><span className="status-pill success">등록 광고주 {advertisers.length}개</span></Toolbar>
    {toast&&<div className="save-toast"><CheckCircle2 size={16}/>{toast}</div>}
    <section className="card ops-card">
-     <div className="table-scroll"><table className="ops-table"><thead><tr><th>광고주</th><th>월 예산</th><th>연동 채널</th><th>브랜드 색상</th><th>관리</th></tr></thead><tbody>
+     <div className="table-scroll"><table className="ops-table"><thead><tr><th>광고주</th><th>업종</th><th>월 예산</th><th>연동 채널</th><th>브랜드 색상</th><th>관리</th></tr></thead><tbody>
        {filtered.map(r=><tr key={r.id}>
          <td><div className="advertiser-name-cell"><span style={{background:r.color}}>{r.initial}</span><b>{r.name}</b></div></td>
-         <td>{`₩${r.monthlyBudget.toLocaleString()}`}</td>
+         <td>{r.industry||'-'}</td><td>{`₩${r.monthlyBudget.toLocaleString()}`}</td>
          <td>{r.links.filter(link=>link.status==='연결됨').length}개 / {CHANNELS.length}개</td>
          <td><span className="advertiser-color-preview" style={{background:r.color}}/></td>
-         <td><div className="action-row compact"><button className="btn secondary" onClick={()=>setEditing(r)}><Edit3 size={14}/> 수정</button><button className="icon-btn danger" onClick={()=>{if(confirm(`${r.name} 광고주를 삭제할까요?`))setAdvertisers(current=>current.filter(x=>x.id!==r.id))}}><Trash2 size={15}/></button></div></td>
+         <td><div className="action-row compact"><button className="btn secondary" onClick={()=>setEditing(r)}><Edit3 size={14}/> 수정</button><button className="icon-btn danger" onClick={async()=>{if(!confirm(`${r.name} 광고주를 삭제할까요?`))return;try{await apiFetch(`/advertisers/${encodeURIComponent(r.id)}`,{method:'DELETE'});await reloadAdvertisers();}catch(error){setToast(error instanceof Error?error.message:'삭제에 실패했습니다.')}}}><Trash2 size={15}/></button></div></td>
        </tr>)}
-       {!filtered.length&&<tr><td colSpan={5}><div className="empty-panel">검색 결과가 없습니다.</div></td></tr>}
+       {!filtered.length&&<tr><td colSpan={6}><div className="empty-panel">검색 결과가 없습니다.</div></td></tr>}
      </tbody></table></div>
    </section>
    {editing&&<Modal title={editing.id?'광고주 수정':'광고주 등록'} onClose={()=>setEditing(null)}><form className="final-form" onSubmit={saveAdvertiser}>
-     <label>광고주명<input name="name" defaultValue={editing.name} required placeholder="예: 다방"/></label>
+     <label>광고주명<input name="name" defaultValue={editing.name} required placeholder="광고주명"/></label>
+     <label>업종<select name="industry" defaultValue={editing.industry||''}><option value="">미설정</option><option>병원·의료기관</option><option>치과</option><option>한의원</option><option>동물병원</option><option>세무사·세무법인</option><option>학원·교육</option><option>자동차·렌트·리스</option><option>식품·쇼핑몰</option><option>부동산</option><option>법률</option><option>일반 서비스업</option></select></label>
+     <label>홈페이지<input name="website" defaultValue={editing.website||''} placeholder="https://"/></label>
+     <label>전화번호<input name="phone" defaultValue={editing.phone||''}/></label>
+     <label>주소<input name="address" defaultValue={editing.address||''}/></label>
      <label>월 예산<input name="monthlyBudget" type="number" min="0" step="10000" defaultValue={editing.monthlyBudget} required/></label>
      <label>브랜드 색상<input name="color" type="color" defaultValue={editing.color}/></label>
      <div className="modal-actions"><button type="button" className="btn secondary" onClick={()=>setEditing(null)}>취소</button><button className="btn primary" type="submit"><Save size={15}/> 저장</button></div>
@@ -252,20 +238,13 @@ export function AdvertiserManagementPage(){
 
 export function KpiConversionSettingsPage(){
  const [saved,setSaved]=useState(false); const [funnel,setFunnel]=useState('예약형');
- return <><PageHeader title="KPI 및 전환 설정" description="광고주별 핵심 KPI와 표준 전환 이벤트를 설정합니다."/><div className="ops-two-col"><section className="card ops-card"><h3>기본 KPI</h3><label className="field-label">광고주<select>{ADVERTISERS.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">퍼널 유형<select value={funnel} onChange={e=>setFunnel(e.target.value)}><option>상담형</option><option>커머스형</option><option>예약형</option><option>혼합형</option></select></label><div className="form-grid"><label className="field-label">월 목표 전환<input type="number" defaultValue="120"/></label><label className="field-label">목표 CPA<input type="number" defaultValue="18000"/></label><label className="field-label">목표 ROAS<input type="number" defaultValue="400"/></label><label className="field-label">유효 DB 기준<input defaultValue="연락 가능 + 중복 아님"/></label></div></section><section className="card ops-card"><h3>전환 이벤트 매핑</h3>{(funnel==='예약형'?['페이지 조회','날짜 선택','예약 완료','방문','재예약']:funnel==='커머스형'?['상품 조회','장바구니','결제 시작','구매','재구매']:['DB','유효 DB','상담','예약','계약']).map((x,i)=><div className="mapping-row" key={x}><b>{x}</b><select defaultValue={['page_view','select_date','reservation','visit','repeat'][i]||'lead'}><option>page_view</option><option>lead</option><option>reservation</option><option>purchase</option><option>contract</option><option>custom_event</option></select></div>)}<Btn onClick={()=>setSaved(true)}><Save size={15}/> 저장</Btn>{saved&&<div className="save-toast"><CheckCircle2 size={16}/> KPI 및 전환 설정을 저장했습니다.</div>}</section></div></>
+ return <><PageHeader title="KPI 및 전환 설정" description="광고주별 핵심 KPI와 표준 전환 이벤트를 설정합니다."/><div className="ops-two-col"><section className="card ops-card"><h3>기본 KPI</h3><label className="field-label">광고주<select>{ADVERTISERS.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">퍼널 유형<select value={funnel} onChange={e=>setFunnel(e.target.value)}><option>상담형</option><option>커머스형</option><option>예약형</option><option>혼합형</option></select></label><div className="form-grid"><label className="field-label">월 목표 전환<input type="number" defaultValue=""/></label><label className="field-label">목표 CPA<input type="number" defaultValue=""/></label><label className="field-label">목표 ROAS<input type="number" defaultValue=""/></label><label className="field-label">유효 DB 기준<input defaultValue=""/></label></div></section><section className="card ops-card"><h3>전환 이벤트 매핑</h3>{(funnel==='예약형'?['페이지 조회','날짜 선택','예약 완료','방문','재예약']:funnel==='커머스형'?['상품 조회','장바구니','결제 시작','구매','재구매']:['DB','유효 DB','상담','예약','계약']).map((x,i)=><div className="mapping-row" key={x}><b>{x}</b><select defaultValue={['page_view','select_date','reservation','visit','repeat'][i]||'lead'}><option>page_view</option><option>lead</option><option>reservation</option><option>purchase</option><option>contract</option><option>custom_event</option></select></div>)}<Btn onClick={()=>setSaved(true)}><Save size={15}/> 저장</Btn>{saved&&<div className="save-toast"><CheckCircle2 size={16}/> KPI 및 전환 설정을 저장했습니다.</div>}</section></div></>
 }
 
 export function DataCollectionStatusPage(){
  const [toast,setToast]=useState('');
  const { filterValue } = useAdvertiserFilter();
- const allRows=[
-  {brand:'RS컴퍼니',channel:'Meta',status:'성공',last:'2026-07-12 07:02',rows:'1,284행',issue:'없음'},
-  {brand:'다시마전복수산',channel:'네이버',status:'성공',last:'2026-07-12 07:04',rows:'842행',issue:'없음'},
-  {brand:'서울우리아이치과',channel:'Google Ads',status:'주의',last:'2026-07-11 23:55',rows:'318행',issue:'토큰 만료 예정'},
-  {brand:'온동물병원',channel:'카카오',status:'실패',last:'2026-07-11 07:00',rows:'0행',issue:'API 권한 확인 필요'},
-  {brand:'완도군수산',channel:'당근마켓',status:'성공',last:'2026-07-12 07:08',rows:'226행',issue:'없음'},
-  {brand:'운명백과',channel:'틱톡',status:'대기',last:'연동 전',rows:'0행',issue:'계정 연결 필요'},
- ];
+ const allRows:Row[]=[];
  const rows = filterByAdvertiser(allRows, filterValue, r => r.brand);
  const total=rows.length, success=rows.filter(r=>r.status==='성공').length, failed=rows.filter(r=>r.status==='실패').length;
  const totalCollectedRows = rows.reduce((sum,r)=>sum+Number(String(r.rows).replace(/[^\d]/g,'')||0),0);
@@ -280,10 +259,7 @@ export function DataCollectionStatusPage(){
 }
 
 export function AdvertiserShareLinksPage(){
- const [links,setLinks]=useStoredRows('acc-share-links-v1',[
-  {id:1,brand:'RS컴퍼니',title:'7월 장기리스 보고서',url:'https://HOWTOM_Universe.example/share/rs-july',expires:'2026-07-31',permission:'조회 전용',status:'활성'},
-  {id:2,brand:'온동물병원',title:'스케일링 캠페인 일일보고',url:'https://HOWTOM_Universe.example/share/on-daily',expires:'2026-07-20',permission:'PDF 다운로드 허용',status:'활성'},
- ]);
+ const [links,setLinks]=useStoredRows('acc-share-links-v1',[]);
  const { filterValue } = useAdvertiserFilter();
  const visibleLinks = filterByAdvertiser(links, filterValue, l => l.brand);
  const [open,setOpen]=useState(false); const [toast,setToast]=useState('');

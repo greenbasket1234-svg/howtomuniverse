@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, CheckCircle2, ChevronRight, Eye, MousePointerClick, Sparkles, Target, WalletCards } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { generateSampleData } from '../utils/testSeed';
 import { loadAllGeneratedReports } from '../features/reports/reportCore';
 import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
 import { derived, formatMetric, loadPerformanceDataset, metricValue, pctChange, sumRows, type PerformanceMetric, type PerformancePoint } from '../analytics/integratedPerformance';
@@ -25,7 +24,6 @@ function primaryMetric(type:string):PerformanceMetric{return type==='revenue'?'r
 
 export function IntegratedPerformanceAnalysisPage(){
   const [version,setVersion]=useState(0); const [params,setParams]=useSearchParams();
-  useEffect(()=>{if(loadAllGeneratedReports().length===0){generateSampleData();setVersion(v=>v+1)}},[]);
   const data=useMemo(()=>loadPerformanceDataset(),[version]);
   const [period,setPeriod]=useState('최근 30일'); const [comparison,setComparison]=useState('직전 동일기간'); const [advertiser,setAdvertiser]=useState(params.get('advertiser')||''); const [media,setMedia]=useState(params.get('media')||''); const [campaign,setCampaign]=useState(''); const [trendMetric,setTrendMetric]=useState<PerformanceMetric>('leads'); const [contributionMetric,setContributionMetric]=useState<PerformanceMetric>('leads');
   const [start,end]=rangeFor(period,data.latestDate); const [prevStart,prevEnd]=comparisonRange(start,end,comparison);

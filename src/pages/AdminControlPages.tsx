@@ -104,7 +104,7 @@ function UsersAdmin(){
             <td>{ms.some(m=>!m.advertiserIds?.length)?'전체':`${new Set(ms.flatMap(m=>m.advertiserIds||[])).size}곳`}</td>
             <td><ControlStatus tone={u.status==='active'?'success':'warning'}>{u.status==='active'?'활성':u.status==='invited'?'초대됨':'중지됨'}</ControlStatus></td>
             <td>
-              <button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.userId)}>{isEditing?'닫기':'역할·범위 편집'}</button>
+              <button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.userId)}>{isEditing?'닫기':'역할 범위 편집'}</button>
               {!u.isDemo&&<button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button>}
             </td>
           </tr>

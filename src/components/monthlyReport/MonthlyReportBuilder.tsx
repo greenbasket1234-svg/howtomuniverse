@@ -14,7 +14,6 @@ import { loadSavedProposals, saveProposal, deleteProposal, type SavedProposal } 
 import { ProposalCoverPage, ProposalKpiPage, ProposalMediaRolesPage, ProposalMediaPages, ProposalNewPlatformPage, ProposalChartsPage, ProposalPerformanceChartPage, ProposalStrengthWeaknessPage, ProposalInsightPage, ProposalClosingPage } from './NextMonthProposalPages';
 import { useAdvertiserFilter } from '../../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../../utils/advertiserMatch';
-import { generateSampleData, hasSampleData } from '../../utils/testSeed';
 
 function compactInsightText(value: string) {
   return value.replace(/\s+/g, ' ').trim();
@@ -95,37 +94,6 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
   const { filterValue } = useAdvertiserFilter();
   const [advertiserName, setAdvertiserName] = useState(allAdvertisers[0] ?? '');
   const [reportType, setReportType] = useState<ReportType>(() => (loadProfiles()[allAdvertisers[0] ?? ''] ?? defaultProfileFor(allAdvertisers[0] ?? '')).reportType);
-  const [sampleExists, setSampleExists] = useState(() => hasSampleData());
-  const [sampleGenerating, setSampleGenerating] = useState(false);
-  // 상단 헤더에서 광고주를 검색·선택하면(filterValue), 정확히 한 명만 매칭될 때 이 화면의
-  // 대상 광고주도 함께 전환합니다. 보고서 관리 화면과 같은 원칙입니다.
-  useEffect(() => {
-    if (!filterValue.trim()) return;
-    const matches = allAdvertisers.filter(name => matchesAdvertiserFilter(name, filterValue));
-    if (matches.length === 1 && matches[0] !== advertiserName) setAdvertiserName(matches[0]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterValue]);
-  useEffect(() => {
-    if (!advertiserName) return;
-    const stored = loadProfiles()[advertiserName] ?? defaultProfileFor(advertiserName);
-    setReportType(stored.reportType);
-  }, [advertiserName]);
-  const [month, setMonth] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
-  const [data, setData] = useState<MonthlyReportData | null>(null);
-  const [insights, setInsights] = useState<string[]>([]);
-  const [proposal, setProposal] = useState<NextMonthProposalData | null>(null);
-  const [showValidation, setShowValidation] = useState(false);
-  const [proposalInsights, setProposalInsights] = useState<string[]>([]);
-  const [viewMode, setViewMode] = useState<'report' | 'proposal'>(focusMode === 'proposal' ? 'proposal' : 'report');
-  const [pdfStatus, setPdfStatus] = useState('');
-  const handleGenerateSample = () => {
-    setSampleGenerating(true);
-    const result = generateSampleData();
-    setSampleGenerating(false);
-    setSampleExists(hasSampleData());
-    setPdfStatus(result.ok ? `샘플 데이터를 만들었습니다(${result.count}건). 광고주·월을 고른 뒤 "월간 보고서 생성"을 다시 눌러보세요.` : `오류: ${result.error ?? '샘플 데이터를 만들지 못했습니다.'}`);
-    setTimeout(() => setPdfStatus(''), 5000);
-  };
   const [saving, setSaving] = useState(false);
   const [savedReportId, setSavedReportId] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
@@ -133,6 +101,14 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
   const [savedProposalId, setSavedProposalId] = useState<string | null>(null);
   const [showProposalList, setShowProposalList] = useState(false);
   const [savedProposalList, setSavedProposalList] = useState<SavedProposal[]>(() => loadSavedProposals());
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [data, setData] = useState<MonthlyReportData | null>(null);
+  const [insights, setInsights] = useState<string[]>([]);
+  const [proposal, setProposal] = useState<NextMonthProposalData | null>(null);
+  const [proposalInsights, setProposalInsights] = useState<string[]>([]);
+  const [viewMode, setViewMode] = useState<'report' | 'proposal'>(focusMode === 'proposal' ? 'proposal' : 'report');
+  const [pdfStatus, setPdfStatus] = useState('');
+  const [showValidation, setShowValidation] = useState(false);
   // "보고서 관리"에서 저장한 원본 보고서(GeneratedReport)를 이 화면에서도 확인할 수 있도록,
   // 지금 고른 광고주·월에 해당하는 것만 모읍니다. 월간 보고서를 만들 때 이 원본이 실제로
   // 사용되므로, 여기 개수가 0이면 "월간 보고서 생성"을 눌러도 데모로 채워질 수 있습니다.
@@ -190,7 +166,7 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
     if (!data) return;
     if (data.isSample && !window.confirm('테스트 샘플 월간 보고서입니다. 실제 보고서와 분리된 샘플 저장소에 저장됩니다. 계속하시겠습니까?')) return;
     if (data.currentOrigin === 'demo') {
-      setPdfStatus('이번 달 실제 데이터가 없어 보고서를 저장할 수 없습니다. 왼쪽 메뉴의 "보고서 관리"에서 데이터를 저장한 뒤 다시 만들어 주세요. (테스트로 먼저 확인하려면 위의 "5·6·7월 샘플 데이터 만들기"를 눌러보세요.)');
+      setPdfStatus('이번 달 실제 데이터가 없어 보고서를 저장할 수 없습니다. 왼쪽 메뉴의 "보고서 관리"에서 데이터를 저장한 뒤 다시 만들어 주세요. ');
       setTimeout(() => setPdfStatus(''), 4200);
       return;
     }
@@ -479,12 +455,6 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
         <div><h3>{focusMode === 'proposal' ? '다음달 제안서 만들기' : focusMode === 'report' ? '월간 광고분석 보고서 만들기' : '월간 보고서 만들기'}</h3><p>{focusMode === 'proposal' ? '광고주와 기준이 될 월(이번 달 실적)을 고르면, 그 실적을 토대로 다음달 예산 제안·매체별 KPI·강점과 보완점·인사이트가 담긴 다음달 제안서를 자동으로 만듭니다. PDF에는 모든 장 하단에 페이지별 다음달 제안이 들어갑니다.' : focusMode === 'report' ? '광고주와 보고 월을 고르면 저장된 실제 데이터로 전월 대비 KPI·매체별 성과표·차트·인사이트가 담긴 월간 광고분석 보고서를 자동으로 만듭니다. PDF에는 모든 장 하단에 페이지별 퍼포먼스 마케터 Insight가 들어갑니다.' : '광고주와 보고 월을 고르면 저장된 실제 데이터로 월간 성과 보고서를 만들고, 그 결과를 토대로 다음달 KPI·매체별 기대 성과·예산 운영안·차트·인사이트가 포함된 다음달 제안서까지 자동으로 생성합니다. 두 PDF 모두 모든 장 하단에 페이지별 퍼포먼스 마케터 Insight 또는 다음달 제안이 들어갑니다.'}</p></div>
       </div>
       {focusMode !== 'both' && <div className="channel-switch-tabs" style={{ marginBottom: 14 }}><Link to="/monthly-reports" className={focusMode === 'report' ? 'active' : ''}>월간 보고서</Link><Link to="/next-month-proposal" className={focusMode === 'proposal' ? 'active' : ''}>다음달 제안서</Link></div>}
-      {!sampleExists && (
-        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span>ℹ 아직 저장된 실제 데이터가 없습니다. "월간 보고서 생성"을 눌렀을 때 "저장된 데이터가 없습니다"라고 나오면, 광고주 12곳에 5·6·7월 테스트 샘플 데이터를 바로 만들어서 기능을 먼저 확인해 볼 수 있습니다.</span>
-          <button type="button" className="btn primary sm" onClick={handleGenerateSample} disabled={sampleGenerating}>{sampleGenerating ? '만드는 중...' : '5·6·7월 샘플 데이터 만들기'}</button>
-        </div>
-      )}
       <div className="form-grid">
         <label className="field-label">광고주
           <input value={advertiserName} onChange={e => setAdvertiserName(e.target.value)} list="monthly-report-advertisers" />

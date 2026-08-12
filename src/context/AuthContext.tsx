@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
-import { API_BASE, DEMO_MODE } from '../config/runtime';
+import { API_BASE } from '../config/runtime';
 
 export type UserRole = 'admin' | 'advertiser';
 
@@ -7,6 +7,7 @@ export type AuthUser = {
   id: number;
   email: string;
   name: string;
+  nickname?: string;
   role: UserRole;
   advertiser_id: number | null;
   advertiser_name?: string;
@@ -28,23 +29,10 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 const TOKEN_KEY = 'acc_token';
 const USER_KEY  = 'acc_user';
 
-// 데모 모드에서 사용할 고정 관리자 사용자.
-// user가 null이면 나중에 권한 체크가 들어간 화면에서 문제가 생길 수 있어
-// 데모 모드에서는 항상 이 값으로 채워둡니다.
-const DEMO_USER: AuthUser = {
-  id: 0,
-  email: 'demo@admin.com',
-  name: '관리자',
-  role: 'admin',
-  advertiser_id: null,
-  advertiser_name: undefined,
-};
-
 function storedToken() {
   try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
 }
 function storedUser(): AuthUser | null {
-  if (DEMO_MODE) return DEMO_USER;
   try { const r = localStorage.getItem(USER_KEY); return r ? (JSON.parse(r) as AuthUser) : null; }
   catch { return null; }
 }
@@ -52,13 +40,12 @@ function storedUser(): AuthUser | null {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
     user: storedUser(),
-    token: DEMO_MODE ? 'demo-token' : storedToken(),
-    loading: DEMO_MODE ? false : !!storedToken(), // 토큰 있으면 검증 중
+    token: storedToken(),
+    loading: !!storedToken(), // 토큰 있으면 검증 중
   });
 
-  // 앱 시작 시 토큰 유효성 서버 검증 (데모 모드에서는 백엔드가 없으므로 시도 자체를 하지 않습니다)
+  // 앱 시작 시 토큰 유효성을 항상 서버에서 검증합니다 (로컬·운영 동일).
   useEffect(() => {
-    if (DEMO_MODE) { setState(s => ({ ...s, loading: false })); return; }
     const token = storedToken();
     if (!token) { setState(s => ({ ...s, loading: false })); return; }
 

@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from './useApi';
-import { Advertiser, DEFAULT_ADVERTISERS, saveAdvertisers } from '../data/advertisers';
+import { Advertiser, saveAdvertisers } from '../data/advertisers';
 
 type SetAdvertisers = (next: Advertiser[] | ((prev: Advertiser[]) => Advertiser[])) => void;
 
-/** 백엔드 API 우선, 실패 시 localStorage 폴백 */
+/** 광고주 데이터는 백엔드 API를 단일 Source of Truth로 사용합니다. */
 export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<void>] {
-  const [advertisers, setAdvertisersState] = useState<Advertiser[]>(DEFAULT_ADVERTISERS);
+  const [advertisers, setAdvertisersState] = useState<Advertiser[]>([]);
 
   const loadFromApi = useCallback(async () => {
     try {
       const data = await apiFetch<Record<string, unknown>[]>('/advertisers');
-      if (!Array.isArray(data) || data.length === 0) return;
+      if (!Array.isArray(data)) return;
+      if (data.length === 0) { setAdvertisersState([]); saveAdvertisers([]); return; }
 
       const CHANNELS = ['Meta', '네이버', '구글', '당근', '틱톡', '카카오'] as const;
       const CH_KEY: Record<string, string> = {
@@ -27,6 +28,10 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
           monthlyBudget: Number(adv.monthly_budget ?? 0),
           color:         String(adv.brand_color ?? '#2563eb'),
           initial:       String(adv.name)?.[0] ?? '?',
+          industry:      String(adv.industry ?? ''),
+          website:       String(adv.website ?? ''),
+          phone:         String(adv.phone ?? ''),
+          address:       String(adv.address ?? ''),
           links: CHANNELS.map(channel => {
             const acc = accounts.find((a) => (a as Record<string,unknown>).channel === CH_KEY[channel]) as Record<string,unknown> | undefined;
             const status = acc?.status === 'connected' ? '연결됨' : acc?.status === 'error' ? '수집 실패' : '미연동';
@@ -44,14 +49,8 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
       setAdvertisersState(mapped);
       saveAdvertisers(mapped);
     } catch {
-      // API 실패 → localStorage 폴백
-      try {
-        const raw = localStorage.getItem('ad-control-center-advertisers-v1');
-        if (raw) {
-          const parsed = JSON.parse(raw) as Advertiser[];
-          if (Array.isArray(parsed) && parsed.length) setAdvertisersState(parsed);
-        }
-      } catch { /* 무시 */ }
+      // 운영 백엔드가 실패한 경우 샘플 데이터로 대체하지 않습니다.
+      setAdvertisersState([]);
     }
   }, []);
 
@@ -61,7 +60,7 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
   useEffect(() => {
     const sync = (e: Event) => {
       const detail = (e as CustomEvent<Advertiser[]>).detail;
-      setAdvertisersState(detail ?? DEFAULT_ADVERTISERS);
+      setAdvertisersState(detail ?? []);
     };
     window.addEventListener('adcc:advertisers-changed', sync);
     return () => window.removeEventListener('adcc:advertisers-changed', sync);

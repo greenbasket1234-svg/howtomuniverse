@@ -1,13 +1,9 @@
 import { ReactNode } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { LoginPage } from '../pages/LoginPage';
-import { DEMO_MODE } from '../config/runtime';
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
-
-  // 데모 모드: 로그인 없이 바로 통과
-  if (DEMO_MODE) return <>{children}</>;
 
   if (loading) {
     return (

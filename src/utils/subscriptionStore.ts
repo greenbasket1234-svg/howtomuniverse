@@ -49,19 +49,19 @@ function parse<T>(key:string, fallback:T):T {
 function emit(name:string, detail:unknown){window.dispatchEvent(new CustomEvent(name,{detail}));}
 
 export const DEFAULT_CONTENT_PLAN: Omit<AdvertiserSubscription,'subscriptionId'|'advertiserId'|'startedAt'> = {
-  planId:'content-standard-demo',
-  planName:'콘텐츠 Standard · 프론트 데모',
-  status:'trial',
+  planId:'internal-unconfigured',
+  planName:'미설정',
+  status:'active',
   entitlements:{
     blogEnabled:true,
-    blogPostsPerMonth:20,
-    videoScriptsPerMonth:20,
-    documentsPerMonth:50,
-    adCreationsPerMonth:50,
-    aiCreditsPerMonth:100,
-    blogIntegrations:1,
+    blogPostsPerMonth:undefined,
+    videoScriptsPerMonth:undefined,
+    documentsPerMonth:undefined,
+    adCreationsPerMonth:undefined,
+    aiCreditsPerMonth:undefined,
+    blogIntegrations:undefined,
   },
-  note:'결제 미연동 프론트 단계의 기능/사용량 테스트용 구독 설정',
+  note:'구독 상품이 아직 지정되지 않았습니다.',
 };
 
 // 관리자가 "구독 상품 관리"에서 설계하는 SubscriptionPlanDefinition(PlanEntitlement[])을

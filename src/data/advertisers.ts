@@ -18,58 +18,19 @@ export type Advertiser = {
   color: string;
   initial: string;
   links: AccountLink[];
+  industry?: string;
+  website?: string;
+  phone?: string;
+  address?: string;
 };
 
-export const DEFAULT_ADVERTISERS: Advertiser[] = [
-  {
-    id: 'dabang-move', name: '다방이사', monthlyBudget: 0, color: '#2563eb', initial: '다',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'dashima-abalone', name: '다시마전복수산', monthlyBudget: 0, color: '#10b981', initial: '다',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'seoul-woori-kids-dental', name: '서울우리아이치과', monthlyBudget: 0, color: '#f59e0b', initial: '서',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
+export const DEFAULT_ADVERTISERS: Advertiser[] = [];
 
-  {
-    id: 'wando-fisheries', name: '완도군수산', monthlyBudget: 0, color: '#059669', initial: '완',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'ondong-animal', name: '온동물병원', monthlyBudget: 0, color: '#8b5cf6', initial: '온',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'rs-company', name: 'RS컴퍼니', monthlyBudget: 0, color: '#0ea5e9', initial: 'R',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'unmyeong', name: '운명백과', monthlyBudget: 0, color: '#a855f7', initial: '운',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-  {
-    id: 'default', name: '광고주', monthlyBudget: 0, color: '#6b7280', initial: '광',
-    links: CHANNELS.map(channel => ({ channel, status: '미연동', keyRegistered: false })),
-  },
-];
-
-const STORAGE_KEY = 'ad-control-center-advertisers-v1';
-
+/** 광고주 데이터의 Source of Truth는 백엔드입니다. 브라우저에는 업무 데이터를 영구 저장하지 않습니다. */
 export function loadAdvertisers(): Advertiser[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_ADVERTISERS;
-    const parsed = JSON.parse(raw) as Advertiser[];
-    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_ADVERTISERS;
-  } catch {
-    return DEFAULT_ADVERTISERS;
-  }
+  return [];
 }
 
 export function saveAdvertisers(advertisers: Advertiser[]): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(advertisers)); } catch { /* 무시 */ }
-  window.dispatchEvent(new CustomEvent('adcc:advertisers-changed', { detail: advertisers }));
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('adcc:advertisers-changed', { detail: advertisers }));
 }

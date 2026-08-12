@@ -1,4 +1,4 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { OptionalTopFilterBar } from './OptionalTopFilterBar';
 import { RouteContentErrorBoundary } from './RouteContentErrorBoundary';
@@ -15,6 +15,7 @@ import { UniversalTableFilterEnhancer } from '../components/UniversalTableFilter
 //              └─ RouteContentErrorBoundary
 //                  └─ Outlet
 export function AppLayout() {
+  const { pathname } = useLocation();
   return (
     <div className="app-shell">
       <Sidebar />
@@ -22,9 +23,11 @@ export function AppLayout() {
         <OptionalTopFilterBar />
         <GlobalAdvertiserFilterScope />
         <div className="page-content">
-          <RouteContentErrorBoundary>
-            <Outlet />
-          </RouteContentErrorBoundary>
+          <div className="page-content-fade" key={pathname}>
+            <RouteContentErrorBoundary>
+              <Outlet />
+            </RouteContentErrorBoundary>
+          </div>
         </div>
       </div>
       <UniversalTableFilterEnhancer />

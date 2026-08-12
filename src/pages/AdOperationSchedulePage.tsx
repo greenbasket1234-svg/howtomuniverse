@@ -38,11 +38,7 @@ const STORAGE_KEY = 'adcc-unified-ad-operation-schedule-v1';
 const MIGRATION_KEY = 'adcc-unified-ad-operation-schedule-migrated-v1';
 const BASE_PLATFORMS = ['Meta', '네이버', 'Google', '카카오', '당근', '틱톡', 'YouTube'];
 
-const initialRows: OperationScheduleItem[] = [
-  { id: 1, advertiser: '다방이사', platform: 'Meta', campaign: '7월 이사 상담 캠페인', targetType: '캠페인', date: '2026-08-05', time: '09:00', onOff: 'ON', budgetAction: '증액', currentBudget: 150000, changePercent: 20, proposedBudget: 180000, status: '예정', enabled: true, note: 'CPA 안정 구간 확인 후 단계 증액' },
-  { id: 2, advertiser: '서울우리아이치과', platform: '네이버', campaign: '임플란트 검색광고', targetType: '광고세트', date: '2026-08-07', time: '18:00', onOff: 'ON', budgetAction: '유지', currentBudget: 120000, changePercent: 0, proposedBudget: 120000, status: '예정', enabled: true, note: '예약 전환율 유지 여부 점검' },
-  { id: 3, advertiser: '완도군수산', platform: '카카오', campaign: '저효율 소재 운영', targetType: '광고', date: '2026-08-09', time: '10:00', onOff: 'OFF', budgetAction: '광고 중지', currentBudget: 90000, changePercent: -100, proposedBudget: 0, status: '예정', enabled: true, note: '신규 소재 준비 후 재개' },
-];
+const initialRows: OperationScheduleItem[] = [];
 
 function mapBudgetAction(value: string): BudgetAction {
   if (value.includes('증액')) return '증액';
@@ -61,14 +57,7 @@ function migrateLegacy(): OperationScheduleItem[] {
       date: item.date || '2026-08-01', time: item.time || '09:00', onOff: item.action === 'OFF' ? 'OFF' as const : 'ON' as const, budgetAction: '유지' as BudgetAction,
       currentBudget: 0, changePercent: 0, proposedBudget: 0, status: (['예정','완료','실패'].includes(item.status) ? item.status : '예정') as ScheduleStatus, enabled: item.enabled !== false, note: '기존 광고 운영 스케줄에서 이동',
     }))];
-    const oldSlots = JSON.parse(localStorage.getItem('acc-reservation-slots-v2') || '[]');
-    if (Array.isArray(oldSlots)) rows = [...rows, ...oldSlots.map((item: any, index: number) => {
-      const action = mapBudgetAction(String(item.action || '유지'));
-      const change = action === '증액' ? 20 : action === '감액' ? -20 : action === '광고 중지' ? -100 : 0;
-      const budget = Number(item.adSpend) || 0;
-      return { id: Date.now() + 5000 + index, advertiser: '웰컴투바베큐', platform: 'Meta', campaign: `${item.date || ''} 예약 슬롯 운영`, targetType: '예약 슬롯' as const, date: item.date || '2026-08-01', time: '09:00', onOff: action === '광고 중지' ? 'OFF' as const : 'ON' as const, budgetAction: action, currentBudget: budget, changePercent: change, proposedBudget: Math.max(0, Math.round(budget * (1 + change / 100))), status: '예정' as const, enabled: true, note: `예약 ${item.reserved || 0}/${item.total || 0} 기준으로 자동 이동` };
-    })];
-  } catch { /* 기존 데이터가 손상되면 예시만 사용 */ }
+  } catch { /* 손상된 레거시 데이터는 가져오지 않습니다. */ }
   const unique = new Map<number, OperationScheduleItem>(); rows.forEach(row => unique.set(row.id, row));
   return Array.from(unique.values());
 }
@@ -92,10 +81,10 @@ function proposalBudget(current: number, action: BudgetAction, change: number) {
 
 function localDateIso() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; }
 
-const emptyItem = (): OperationScheduleItem => ({ id: Date.now(), advertiser: BASE_ADVERTISERS[0], platform: 'Meta', campaign: '', targetType: '캠페인', date: localDateIso(), time: '09:00', onOff: 'ON', budgetAction: '유지', currentBudget: 0, changePercent: 0, proposedBudget: 0, status: '예정', enabled: true, note: '', recurrence: 'once', recurrenceDays: [], owner: loadAdvertiserSettings()[BASE_ADVERTISERS[0]]?.owners?.[0] });
+const emptyItem = (): OperationScheduleItem => ({ id: Date.now(), advertiser: BASE_ADVERTISERS[0] ?? '', platform: 'Meta', campaign: '', targetType: '캠페인', date: localDateIso(), time: '09:00', onOff: 'ON', budgetAction: '유지', currentBudget: 0, changePercent: 0, proposedBudget: 0, status: '예정', enabled: true, note: '', recurrence: 'once', recurrenceDays: [], owner: BASE_ADVERTISERS[0] ? loadAdvertiserSettings()[BASE_ADVERTISERS[0]]?.owners?.[0] : undefined });
 
 export function AdOperationSchedulePage() {
-  const advertisers = Array.from(new Set([...BASE_ADVERTISERS, ...loadExtraAdvertisers(), ...Object.keys(loadAdvertiserSettings()), '웰컴투바베큐']));
+  const advertisers = Array.from(new Set([...BASE_ADVERTISERS, ...loadExtraAdvertisers(), ...Object.keys(loadAdvertiserSettings())]));
   const platformOptions = Array.from(new Set([...BASE_PLATFORMS, ...loadCustomPlatforms()]));
   const { filterValue } = useAdvertiserFilter();
   const [rows, setRows] = useState<OperationScheduleItem[]>(loadRows);
@@ -151,7 +140,7 @@ export function AdOperationSchedulePage() {
     <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, margin: '0 0 14px' }}>
       ℹ 등록한 스케줄은 "활성" 토글이 켜진 동안 실행 예정으로 유지되며, 삭제하거나 비활성화하기 전까지 계속 적용됩니다. 일회성 일정은 실행 예정 시각이 지나면 이 화면을 열 때 자동으로 "완료" 상태로 바뀝니다. 매주 반복되는 일정은 계속 미래에도 실행되므로 "예정" 상태를 유지합니다. 다만 이 화면은 실제 매체 API와 아직 연동되지 않은 데모 환경이라, 지금은 상태 전환 시뮬레이션까지만 제공합니다 — 실제 매체에 ON/OFF·예산 변경을 반영하는 연동은 백엔드 작업이 필요합니다.
     </div>
-    <div className="ops-stat-grid unified-schedule-stats"><div className="ops-stat"><span>전체 일정</span><strong>{stats.total}건</strong></div><div className="ops-stat"><span>광고 ON</span><strong>{stats.on}건</strong></div><div className="ops-stat"><span>예산 증액</span><strong>{stats.increase}건</strong></div><div className="ops-stat"><span>중지·OFF</span><strong>{stats.stop}건</strong></div></div>
+    <div className="ops-stat-grid unified-schedule-stats"><div className="ops-stat"><span>전체 일정</span><strong>{stats.total}건</strong></div><div className="ops-stat"><span>광고 ON</span><strong>{stats.on}건</strong></div><div className="ops-stat"><span>예산 증액</span><strong>{stats.increase}건</strong></div><div className="ops-stat"><span>중지 OFF</span><strong>{stats.stop}건</strong></div></div>
     <section className="card ops-card">
       <div className="ops-toolbar"><div className="ops-search"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="광고주·매체·캠페인 검색"/></div><select value={platform} onChange={event => setPlatform(event.target.value)}><option>전체</option>{platformOptions.map(item => <option key={item}>{item}</option>)}</select><select value={budgetFilter} onChange={event => setBudgetFilter(event.target.value as typeof budgetFilter)}><option>전체</option><option>증액</option><option>감액</option><option>유지</option><option>광고 중지</option></select><div className="view-tabs"><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>목록</button><button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><CalendarDays size={13}/> 달력</button></div></div>
       {view === 'list' ? <div className="table-scroll"><table className="ops-table"><thead><tr><th>광고주</th><th>담당자</th><th>매체</th><th>대상</th><th>실행 일시</th><th>ON/OFF</th><th>예산 운영</th><th>현재 일예산</th><th>제안 일예산</th><th>상태</th><th>활성</th><th></th></tr></thead><tbody>{filtered.map(row => <tr key={row.id} style={row.enabled ? undefined : { opacity: 0.5 }}><td><b>{row.advertiser}</b></td><td>{row.owner || <span style={{ color: '#94a3b8' }}>미지정</span>}</td><td>{row.platform}</td><td><b>{row.campaign}</b><small style={{ display: 'block', color: '#94a3b8' }}>{row.targetType} · {row.note}</small></td><td>{row.date}<br/>{row.time}{row.recurrence && row.recurrence !== 'once' && <><br/><span className="status-pill" style={{ fontSize: 10 }}>{row.recurrence === 'weekday' ? '매주 평일' : row.recurrence === 'weekend' ? '매주 주말' : `매주 ${(row.recurrenceDays ?? []).map(d => WEEKDAY_LABELS[d]).join(',')}`}</span></>}</td><td><span className={`status-pill ${row.onOff === 'ON' ? 'success' : 'danger'}`}>{row.onOff}</span></td><td><span className={`budget-action ${row.budgetAction === '증액' ? 'up' : row.budgetAction === '감액' ? 'down' : row.budgetAction === '광고 중지' ? 'stop' : 'keep'}`}>{row.budgetAction}{row.changePercent && row.budgetAction !== '광고 중지' ? ` ${row.changePercent > 0 ? '+' : ''}${row.changePercent}%` : ''}</span></td><td>₩{row.currentBudget.toLocaleString()}</td><td><b>₩{row.proposedBudget.toLocaleString()}</b></td><td>{row.status}</td><td><button type="button" className={'toggle ' + (row.enabled ? 'on' : '')} title={row.enabled ? '활성 — 삭제·비활성화 전까지 실행 예정' : '비활성 — 실행하지 않음'} onClick={() => persist(rows.map(item => item.id === row.id ? { ...item, enabled: !item.enabled } : item))}><span/></button></td><td><div className="inline-actions"><button className="icon-btn" onClick={() => setEditing(row)}><PencilLine size={14}/></button><button className="icon-btn danger" onClick={() => window.confirm('이 운영 스케줄을 삭제할까요?') && persist(rows.filter(item => item.id !== row.id))}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table></div> : <ScheduleCalendar rows={activeFiltered} onEdit={setEditing}/>} 

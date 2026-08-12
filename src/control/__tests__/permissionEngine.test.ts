@@ -35,9 +35,11 @@ describe('permissionEngine.canAccess', () => {
     expect(result.allowed).toBe(false);
   });
 
-  it('기본 시드의 데모 관리자는 관리자 전용 기능에도 접근할 수 있다', async () => {
+  it('관리자 역할이 배정된 사용자는 관리자 전용 기능에 접근할 수 있다', async () => {
     const { canAccess } = await import('../permissionEngine');
-    const result = canAccess({ userId: 'demo-admin', featureKey: 'admin.users.manage' });
+    const { upsertMembership } = await import('../controlStore');
+    upsertMembership({ userId: 'admin-user', roleIds: ['role-admin'] });
+    const result = canAccess({ userId: 'admin-user', featureKey: 'admin.users.manage' });
     expect(result.allowed).toBe(true);
   });
 

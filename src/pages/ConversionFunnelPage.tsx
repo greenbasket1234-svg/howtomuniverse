@@ -24,27 +24,10 @@ type PlatformRow = {
   revenue: number;
 };
 
-const fallbackRows: PlatformRow[] = [
-  { platform:'메타',status:'연동 완료',spend:415683,clicks:2932,db:193,validDb:142,contracts:51,itemViews:4821,carts:388,checkouts:179,purchases:92,revenue:2807800 },
-  { platform:'네이버',status:'연동 완료',spend:190406,clicks:168,db:81,validDb:64,contracts:17,itemViews:821,carts:73,checkouts:41,purchases:28,revenue:767800 },
-  { platform:'구글 검색',status:'연동 완료',spend:131055,clicks:3336,db:49,validDb:37,contracts:11,itemViews:3930,carts:301,checkouts:146,purchases:77,revenue:2040000 },
-  { platform:'직접입력',status:'연동 완료',spend:0,clicks:0,db:112,validDb:96,contracts:51,itemViews:0,carts:0,checkouts:0,purchases:0,revenue:2040000 },
-];
+const fallbackRows: PlatformRow[] = [];
 
-const leadStages:FunnelStage[]=[
-  {label:'클릭',value:6436,color:'#f59e0b'},
-  {label:'전환 클릭',value:1228,color:'#f59e0b'},
-  {label:'길찾기 클릭',value:884,color:'#f59e0b'},
-  {label:'예약',value:342,color:'#f59e0b'},
-  {label:'실제 방문',value:219,color:'#f59e0b'},
-  {label:'리뷰 작성',value:88,color:'#f59e0b'},
-];
-const commerceStages:FunnelStage[]=[
-  {label:'방문',value:9572,color:'#10b981'},
-  {label:'장바구니',value:762,color:'#10b981'},
-  {label:'구매',value:197,color:'#10b981'},
-  {label:'재구매',value:68,color:'#10b981'},
-];
+const leadStages:FunnelStage[]=[];
+const commerceStages:FunnelStage[]=[];
 
 function pct(a:number,b:number){return b?`${(a/b*100).toFixed(1)}%`:'0.0%'}
 function money(n:number){return `₩${Math.round(n).toLocaleString()}`}
@@ -62,7 +45,7 @@ function FunnelCard({title,color,stages}:{title:string;color:string;stages:Funne
 export function ConversionFunnelPage(){
   const [period,setPeriod]=useState('7일');
   const { filterValue, setFilter } = useAdvertiserFilter();
-  // 로컬 셀렉트를 전역 필터와 동기화합니다. 이전에는 이 드롭다운에서 '월컴투바베큐'를
+  // 로컬 셀렉트를 전역 필터와 동기화합니다. 이전에는 이 드롭다운에서 '광고주명'를
   // 선택해도 아래 퍼널 카드가 여전히 두 브랜드를 모두 보여주는 버그가 있었습니다.
   const advertiser = filterValue || '전체 광고주';
   const setAdvertiser = (v:string)=>setFilter(v==='전체 광고주'?'':v);
@@ -109,19 +92,13 @@ export function ConversionFunnelPage(){
     const color=funnelColors[index%funnelColors.length]; const dbPart=actualDb.filter(row=>row.advertiser===name); const perfPart=performanceRows.filter(row=>row.advertiser===name);
     const clicks=perfPart.reduce((a,r)=>a+r.clicks,0),db=dbPart.reduce((a,r)=>a+r.db,0),valid=dbPart.reduce((a,r)=>a+r.validDb,0),contracts=dbPart.reduce((a,r)=>a+r.contracts,0);
     return {name,color,stages:[{label:'클릭',value:clicks,color},{label:'DB',value:db,color},{label:'유효 DB',value:valid,color},{label:'계약',value:contracts,color}]};
-  }) : [
-    {name:'월컴투바베큐',color:'#f59e0b',stages:leadStages},
-    {name:'노멜',color:'#10b981',stages:[{label:'방문',value:2930,color:'#10b981'},{label:'문의',value:211,color:'#10b981'},{label:'예약',value:96,color:'#10b981'},{label:'방문 완료',value:71,color:'#10b981'}]},
-  ];
-  const commerceFunnels=[
-    {name:'월컴투바베큐',color:'#f59e0b',stages:[{label:'상품 조회',value:4821,color:'#f59e0b'},{label:'장바구니',value:388,color:'#f59e0b'},{label:'결제 시작',value:179,color:'#f59e0b'},{label:'구매',value:92,color:'#f59e0b'}]},
-    {name:'노멜',color:'#10b981',stages:commerceStages},
-  ];
+  }) : [];
+  const commerceFunnels: {name:string;color:string;stages:FunnelStage[]}[]=[];
   const visibleFunnels=(mode==='lead'?leadFunnels:commerceFunnels).filter(f=>matchesAdvertiserFilter(f.name,filterValue));
   return <>
     <PageHeader title="전환 퍼널 분석" description="온라인 결제형·오프라인 예약형·쇼핑몰형 퍼널을 정확한 이벤트 기준으로 분석합니다." action={<div className="action-row"><select className="select-control" value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option>전체 광고주</option>{[...new Set([...performance.advertisers,...dbRows.map(row=>row.advertiser)])].sort((a,b)=>a.localeCompare(b,'ko')).map(name=><option key={name}>{name}</option>)}</select><button className="btn secondary" onClick={()=>setSettingsOpen(true)}><Settings2 size={15}/> 퍼널 설정</button></div>}/>
     <div className="funnel-warning"><AlertTriangle size={25}/><div><b>전환 이벤트 연동 상태를 확인하세요</b><p>DB 연동 데이터가 있으면 클릭→DB→유효 DB→계약 퍼널은 Google Sheets의 실제 집계값을 우선 사용합니다. 커머스 퍼널은 기존 전환 이벤트 데이터를 사용합니다.</p></div></div>
-    <div className="funnel-toolbar"><div className="section-tabs compact-tabs"><button className={mode==='lead'?'active':''} onClick={()=>setMode('lead')}>예약·상담 퍼널</button><button className={mode==='commerce'?'active':''} onClick={()=>setMode('commerce')}>커머스 퍼널</button></div><div className="kpi-range-group">{['오늘','어제','7일','14일','30일','60일','90일'].map(p=><button key={p} className={`kpi-range-button ${period===p?'active':''}`} onClick={()=>setPeriod(p)}>{p}</button>)}</div></div>
+    <div className="funnel-toolbar"><div className="section-tabs compact-tabs"><button className={mode==='lead'?'active':''} onClick={()=>setMode('lead')}>예약 상담 퍼널</button><button className={mode==='commerce'?'active':''} onClick={()=>setMode('commerce')}>커머스 퍼널</button></div><div className="kpi-range-group">{['오늘','어제','7일','14일','30일','60일','90일'].map(p=><button key={p} className={`kpi-range-button ${period===p?'active':''}`} onClick={()=>setPeriod(p)}>{p}</button>)}</div></div>
     <div className="funnel-capture-grid">{visibleFunnels.length===0?<p className="muted">해당 광고주의 퍼널 데이터가 없습니다.</p>:visibleFunnels.map(f=><FunnelCard key={f.name} title={f.name} color={f.color} stages={f.stages}/>)}</div>
     <div className="funnel-note"><span>💡</span><p>현재 선택: <b>{advertiser}</b> · <b>{period}</b>. 단계별 이벤트는 환경설정의 퍼널 이벤트 매핑에서 수정할 수 있습니다.</p></div>
     <section className="card ops-card funnel-analysis-table"><div className="ops-card-head"><div><h3>매체별 퍼널 비교</h3><p>광고비부터 최종 전환·매출까지 매체별 병목을 비교합니다. {advertiser === '전체 광고주' ? '(전체 광고주 합산 기준)' : `(${advertiser})`}</p></div><button className="btn secondary" onClick={()=>setSettingsOpen(true)}><ChevronDown size={15}/> 표시 지표 {selectedColumns.length}개</button></div><div className="table-scroll"><table className="ops-table"><thead><tr><th style={{cursor:'pointer'}} onClick={()=>toggleSort('platform')}>매체{sortArrow('platform')}</th><th>상태</th>{selectedColumns.map(c=>{const keyMap:Record<string,SortKey|undefined>={'광고비':'spend','클릭':'clicks','DB':'db','계약':'contracts','매출':'revenue'};const key=keyMap[c];return <th key={c} style={key?{cursor:'pointer'}:undefined} onClick={key?()=>toggleSort(key):undefined}>{c}{key?sortArrow(key):''}</th>;})}</tr></thead><tbody>{sortedRows.map(r=><tr key={r.platform}><td><b>{r.platform}</b></td><td><span className="status-pill success">{r.status}</span></td>{selectedColumns.map(c=><td key={c}>{c==='광고비'?money(r.spend):c==='클릭'?r.clicks.toLocaleString():c==='DB'?r.db:c==='유효 DB'?r.validDb:c==='계약'?r.contracts:c==='상품 조회'?r.itemViews.toLocaleString():c==='장바구니'?r.carts:c==='결제 시작'?r.checkouts:c==='구매'?r.purchases:c==='CPA'?(r.contracts?money(r.spend/r.contracts):'-'):c==='매출'?money(r.revenue):c==='ROAS'?(r.spend?`${Math.round(r.revenue/r.spend*100)}%`:'-'):'-'}</td>)}</tr>)}<tr className="total-row"><td><b>전체 합계</b></td><td>-</td>{selectedColumns.map(c=><td key={c}><b>{c==='광고비'?money(total.spend):c==='클릭'?total.clicks.toLocaleString():c==='DB'?total.db:c==='유효 DB'?total.validDb:c==='계약'?total.contracts:c==='상품 조회'?total.itemViews.toLocaleString():c==='장바구니'?total.carts:c==='결제 시작'?total.checkouts:c==='구매'?total.purchases:c==='CPA'?(total.contracts?money(total.spend/total.contracts):'-'):c==='매출'?money(total.revenue):c==='ROAS'?(total.spend?`${Math.round(total.revenue/total.spend*100)}%`:'-'):'-'}</b></td>)}</tr></tbody></table></div></section>

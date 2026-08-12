@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, AlertTriangle, Pencil, Trash2, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { ADVERTISERS, MOCK_SLOTS } from '../data/operationsMock';
+import { ADVERTISERS } from '../data/operationsMock';
 import { adControlRepository } from '../repositories';
 import { PLATFORM_LABEL, type PlatformKey, type ScheduleSlot, type SlotStatus, type SlotType } from '../types/operations';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
@@ -13,8 +13,8 @@ const platformOptions:PlatformKey[]=['meta','naver','google','karrot','kakao','t
 const pad=(n:number)=>String(n).padStart(2,'0');
 
 type SlotDraft = Omit<ScheduleSlot,'id'> & { id?: string };
-const createDraft=(date='2026-07-18'):SlotDraft=>({
-  advertiserId:'dabang-isa',
+const createDraft=(date=new Date().toISOString().slice(0,10)):SlotDraft=>({
+  advertiserId:'',
   title:'',
   type:'creative',
   platform:'meta',
@@ -26,7 +26,7 @@ const createDraft=(date='2026-07-18'):SlotDraft=>({
 });
 
 export function ScheduleSlotsPage(){
-  const [slots,setSlots]=useState<ScheduleSlot[]>(MOCK_SLOTS);
+  const [slots,setSlots]=useState<ScheduleSlot[]>([]);
   const [advertiser,setAdvertiser]=useState('all');
   const [type,setType]=useState<'all'|SlotType>('all');
   const [editorOpen,setEditorOpen]=useState(false);
@@ -34,12 +34,11 @@ export function ScheduleSlotsPage(){
   const [saving,setSaving]=useState(false);
   const [loadError,setLoadError]=useState('');
   const { filterValue } = useAdvertiserFilter();
-  // 등록된 일정이 2026년 7월에 몰려 있으므로, 처음 열었을 때 바로 볼 수 있도록 그 달을
-  // 기본값으로 시작합니다. 이전 달·다음 달 버튼으로 자유롭게 이동할 수 있습니다.
-  const [year,setYear]=useState(2026);
-  const [month,setMonth]=useState(6); // 0-indexed, 6=7월
+  const today = new Date();
+  const [year,setYear]=useState(today.getFullYear());
+  const [month,setMonth]=useState(today.getMonth());
   const [view,setView]=useState<'month'|'week'|'day'>('month');
-  const [selectedDate,setSelectedDate]=useState('2026-07-18'); // 주간·일간 뷰 기준일
+  const [selectedDate,setSelectedDate]=useState(()=>new Date().toISOString().slice(0,10)); // 주간·일간 뷰 기준일
 
   // 이전엔 이 페이지의 광고주 드롭다운이 상단 전역 검색과 완전히 분리되어 있었습니다.
   // 전역 필터에 매칭되는 광고주가 있으면 자동으로 그 광고주를 선택합니다.
@@ -53,7 +52,7 @@ export function ScheduleSlotsPage(){
     let active=true;
     adControlRepository.getScheduleSlots()
       .then(rows=>{if(active)setSlots(rows)})
-      .catch(()=>{if(active)setLoadError('저장소에서 일정을 불러오지 못해 예시 데이터를 표시합니다.')});
+      .catch(()=>{if(active){setSlots([]);setLoadError('저장소에서 일정을 불러오지 못했습니다.')}});
     return()=>{active=false};
   },[]);
 

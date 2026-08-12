@@ -48,10 +48,7 @@ export type AdvertiserComparisonRow = {
 
 export type AdvertiserAnomaly={advertiser:string;title:string;description:string;tone:'danger'|'warning'|'info'|'success';score:number};
 
-const FALLBACK_KPI_CONFIGS:AdvertiserKpiConfig[]=[
-  {id:'welcomebarbecue',name:'서울우리아이치과',goalType:'CPA',goalTarget:18000,monthlyTargetValue:167,monthlyCurrentValue:44},
-  {id:'noel',name:'운명백과',goalType:'ROAS',goalTarget:400,monthlyTargetValue:16000000,monthlyCurrentValue:698000},
-];
+const FALLBACK_KPI_CONFIGS:AdvertiserKpiConfig[]=[];
 
 export function loadAdvertiserKpiConfigs():AdvertiserKpiConfig[]{
   try{

@@ -8,7 +8,7 @@ import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter, filterByAdvertiser } from '../utils/advertiserMatch';
 
-const advertisers = ['다방','알리는사람들','알에스컴퍼니','온동물병원','갈비연'];
+const advertisers:string[] = [];
 
 function AdvertiserToolbar({value,onChange}:{value:string;onChange:(v:string)=>void}){
   return <div className="ops-toolbar"><div className="ops-search"><Search size={17}/><input value={value} onChange={e=>onChange(e.target.value)} placeholder="광고주 이름으로 검색"/></div><select><option>전체 매체</option><option>Meta</option><option>네이버</option><option>Google</option></select><button className="btn secondary"><Download size={15}/> 내보내기</button></div>
@@ -51,66 +51,7 @@ const KPI_RANGE_OPTIONS: { key: KpiRangeKey; label: string; limit: number; offse
   { key: '90d', label: '90일', limit: 90 },
 ];
 
-const initialKpiBrands: KpiBrandConfig[] = [
-  {
-    id: 'welcomebarbecue',
-    name: '서울우리아이치과',
-    color: '#f59e0b',
-    goalType: 'CPA',
-    goalLabel: '잠재고객 확보 (CPA)',
-    goalTarget: 18000,
-    monthlyTargetLabel: '월 목표 전환률 (이번 달 누적)',
-    monthlyTargetValue: 167,
-    monthlyCurrentValue: 44,
-    periodPrimaryLabel: '기간 전환/예약',
-    dailyAverageLabel: '일 평균 건수',
-    rows: [
-      { date: '07-06', spend: 10969, conversions: 2 },
-      { date: '07-05', spend: 88382, conversions: 8 },
-      { date: '07-04', spend: 88236, conversions: 13 },
-      { date: '07-03', spend: 98271, conversions: 15 },
-      { date: '07-02', spend: 122586, conversions: 5 },
-      { date: '07-01', spend: 106579, conversions: 1 },
-      { date: '06-30', spend: 83879, conversions: 7 },
-      { date: '06-29', spend: 96330, conversions: 8 },
-      { date: '06-28', spend: 87210, conversions: 6 },
-      { date: '06-27', spend: 90310, conversions: 7 },
-      { date: '06-26', spend: 77940, conversions: 6 },
-      { date: '06-25', spend: 84620, conversions: 5 },
-      { date: '06-24', spend: 93240, conversions: 6 },
-      { date: '06-23', spend: 81380, conversions: 5 },
-    ],
-  },
-  {
-    id: 'noel',
-    name: '운명백과',
-    color: '#10b981',
-    goalType: 'ROAS',
-    goalLabel: '매출성장 (ROAS)',
-    goalTarget: 400,
-    monthlyTargetLabel: '월 목표 진행률 (이번 달 누적)',
-    monthlyTargetValue: 16000000,
-    monthlyCurrentValue: 698000,
-    periodPrimaryLabel: '기간 매출',
-    dailyAverageLabel: '일 평균 매출',
-    rows: [
-      { date: '07-06', spend: 0, sales: 0 },
-      { date: '07-05', spend: 1833, sales: 0 },
-      { date: '07-04', spend: 5643, sales: 34900 },
-      { date: '07-03', spend: 28379, sales: 0 },
-      { date: '07-02', spend: 36035, sales: 279200 },
-      { date: '07-01', spend: 33776, sales: 383900 },
-      { date: '06-30', spend: 32576, sales: 69800 },
-      { date: '06-29', spend: 28440, sales: 150400 },
-      { date: '06-28', spend: 31750, sales: 209700 },
-      { date: '06-27', spend: 29810, sales: 168300 },
-      { date: '06-26', spend: 30120, sales: 114900 },
-      { date: '06-25', spend: 26690, sales: 89500 },
-      { date: '06-24', spend: 25200, sales: 102400 },
-      { date: '06-23', spend: 27410, sales: 122500 },
-    ],
-  },
-];
+const initialKpiBrands: KpiBrandConfig[] = [];
 
 function formatWon(value: number) {
   return `₩${Math.round(value).toLocaleString()}`;
@@ -171,8 +112,8 @@ function loadKpiBrands(): KpiBrandConfig[] {
   try {
     const raw = localStorage.getItem(KPI_BRANDS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) && parsed.length ? parsed : initialKpiBrands;
-  } catch { return initialKpiBrands; }
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 }
 function saveKpiBrands(brands: KpiBrandConfig[]) {
   try { localStorage.setItem(KPI_BRANDS_STORAGE_KEY, JSON.stringify(brands)); } catch { /* ignore */ }
@@ -286,7 +227,7 @@ function NewGoalModal({ onClose, onCreate, existingCount }: { onClose: () => voi
           <button className="icon-btn" onClick={onClose} aria-label="닫기"><X size={18} /></button>
         </div>
         <div className="form-grid">
-          <label className="field-label">광고주명<input value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 완도군수산" autoFocus/></label>
+          <label className="field-label">광고주명<input value={name} onChange={(e) => setName(e.target.value)} placeholder="광고주명 입력" autoFocus/></label>
           <label className="field-label">목표 유형
             <select value={goalType} onChange={(e) => setGoalType(e.target.value as KpiGoalType)}>
               <option value="CPA">잠재고객 확보 (CPA)</option>
@@ -497,7 +438,7 @@ export function KpiGoalsPage(){
  const updateBrands = (next: KpiBrandConfig[]) => { setBrands(next); saveKpiBrands(next); };
 
  return <>
-   <PageHeader title="KPI 목표·달성" description="브랜드별 목표(매출성장 ROAS / 잠재고객 CPA)를 설정하고 일별 달성률을 추적합니다." action={<div style={{display:'flex',alignItems:'center',gap:12}}><div className="kpi-page-note">달성률 = 실적 ÷ 목표 · 100% 이상이면 목표 달성</div><button className="btn primary" onClick={()=>setAddingGoal(true)}><Plus size={15}/> 새 목표 추가</button></div>} />
+   <PageHeader title="KPI 목표 달성" description="브랜드별 목표(매출성장 ROAS / 잠재고객 CPA)를 설정하고 일별 달성률을 추적합니다." action={<div style={{display:'flex',alignItems:'center',gap:12}}><div className="kpi-page-note">달성률 = 실적 ÷ 목표 · 100% 이상이면 목표 달성</div><button className="btn primary" onClick={()=>setAddingGoal(true)}><Plus size={15}/> 새 목표 추가</button></div>} />
    <div className="kpi-range-toolbar">
       <div className="kpi-range-group">
         {KPI_RANGE_OPTIONS.map(option => (
@@ -785,7 +726,7 @@ export function ReportBuilderPage(){
  const [activeTab,setActiveTab]=useState<'builder'|'templates'|'generated'>('generated');
  const [showBuilder,setShowBuilder]=useState(false);
  const [name,setName]=useState('성과 보고서');
- const [advertiser,setAdvertiser]=useState('월컴투바베큐');
+ const [advertiser,setAdvertiser]=useState('');
  const [periodMode,setPeriodMode]=useState<'어제'|'오늘'|'최근 7일'|'최근 14일'|'최근 30일'|'최근 60일'|'최근 90일'|'직접 선택'>('어제');
  const [startDate,setStartDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10)});
  const [endDate,setEndDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10)});
@@ -826,7 +767,7 @@ export function ReportBuilderPage(){
    const match=mode.match(/최근 (\d+)일/);
    if(match){const days=Number(match[1]);const start=new Date(today);start.setDate(start.getDate()-(days-1));setStartDate(toISO(start));setEndDate(toISO(today));}
  };
- const openBuilder=()=>{setActiveTab('builder');setShowBuilder(true);setName('성과 보고서');setAdvertiser('월컴투바베큐');applyPeriodMode('어제');setSelectedSections([]);setSectionQuery('');setSheetId(integrationSettings.googleSheets.spreadsheetId||'');setSheetName(integrationSettings.googleSheets.sheetName||'일일보고');};
+ const openBuilder=()=>{setActiveTab('builder');setShowBuilder(true);setName('성과 보고서');setAdvertiser('');applyPeriodMode('어제');setSelectedSections([]);setSectionQuery('');setSheetId(integrationSettings.googleSheets.spreadsheetId||'');setSheetName(integrationSettings.googleSheets.sheetName||'일일보고');};
  const loadTemplate=(template:ReportTemplate)=>{setActiveTab('builder');setShowBuilder(true);setName(template.title);setAdvertiser(template.advertiser);setPeriodMode(template.periodMode);setStartDate(template.startDate);setEndDate(template.endDate);setSelectedSections(template.sections);setSheetId(template.sheetId);setSheetName(template.sheetName);setToast('저장된 광고주 보고서 양식을 불러왔습니다.');setTimeout(()=>setToast(''),2200);};
  const saveTemplate=()=>{
    if(!name.trim()){setToast('양식명을 입력하세요.');return;}
@@ -877,9 +818,9 @@ export function ReportBuilderPage(){
      <div className="ops-card-head"><div><h3>새 보고서 만들기</h3><p>생성할 데이터, 기간, Google Sheets 연동 위치를 선택하세요.</p></div><button className="icon-btn" onClick={()=>{setShowBuilder(false);setActiveTab('generated')}}><X size={18}/></button></div>
      <div className="report-builder-form-grid">
        <label className="field-label">보고서명<input value={name} onChange={e=>setName(e.target.value)} placeholder="성과 보고서"/></label>
-       <label className="field-label">광고주<select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option>월컴투바베큐</option><option>노멜</option>{advertisers.map(a=><option key={a}>{a}</option>)}</select></label>
+       <label className="field-label">광고주<select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option value="">광고주 선택</option>{advertisers.map(a=><option key={a}>{a}</option>)}</select></label>
        <label className="field-label">Google 스프레드시트 ID<input value={sheetId} onChange={e=>setSheetId(e.target.value)} placeholder="연동할 시트 ID 입력"/></label>
-       <label className="field-label">새 시트명<input value={sheetName} onChange={e=>setSheetName(e.target.value)} placeholder="예: 2026-07-06 일일보고"/></label>
+       <label className="field-label">새 시트명<input value={sheetName} onChange={e=>setSheetName(e.target.value)} placeholder="예: 일일보고"/></label>
      </div>
      <div className="report-period-block">
        <b>기간 선택</b>
@@ -919,20 +860,13 @@ export function ReportBuilderPage(){
 
 type DbChannel = '메타'|'당근마켓'|'틱톡'|'카카오'|'구글'|'네이버';
 type DbLeadRow = { id:number; advertiser:string; channel:DbChannel; date:string; db:number; validDb:number; cost:number; owner:string; status:'정상'|'확인 필요'|'중복 점검' };
-const initialDbLeadRows:DbLeadRow[]=[
- {id:1,advertiser:'다방이사',channel:'메타',date:'2026-07-06',db:43,validDb:32,cost:58208,owner:'김마케터',status:'정상'},
- {id:2,advertiser:'다방이사',channel:'당근마켓',date:'2026-07-06',db:18,validDb:13,cost:31000,owner:'박대리',status:'확인 필요'},
- {id:3,advertiser:'완도군수산',channel:'네이버',date:'2026-07-06',db:11,validDb:8,cost:9430,owner:'이과장',status:'정상'},
- {id:4,advertiser:'서울우리아이치과',channel:'구글',date:'2026-07-05',db:24,validDb:19,cost:55200,owner:'최팀장',status:'중복 점검'},
- {id:5,advertiser:'온동물병원',channel:'카카오',date:'2026-07-05',db:9,validDb:6,cost:21000,owner:'정매니저',status:'정상'},
- {id:6,advertiser:'다시마전복수산',channel:'틱톡',date:'2026-07-04',db:15,validDb:10,cost:37200,owner:'김마케터',status:'정상'},
-];
+const initialDbLeadRows:DbLeadRow[]=[];
 
 export function DbManagementPage(){
  const [rows,setRows]=useState<DbLeadRow[]>(()=>JSON.parse(localStorage.getItem('adcc-db-leads')||'null')||initialDbLeadRows);
  const { filterValue } = useAdvertiserFilter();
  const [query,setQuery]=useState(''); const [channel,setChannel]=useState<'전체'|DbChannel>('전체'); const [showForm,setShowForm]=useState(false);
- const [form,setForm]=useState<DbLeadRow>({id:Date.now(),advertiser:'다방이사',channel:'메타',date:new Date().toISOString().slice(0,10),db:0,validDb:0,cost:0,owner:'담당자',status:'정상'});
+ const [form,setForm]=useState<DbLeadRow>({id:Date.now(),advertiser:'',channel:'메타',date:new Date().toISOString().slice(0,10),db:0,validDb:0,cost:0,owner:'',status:'정상'});
  const persist=(next:DbLeadRow[])=>{setRows(next);localStorage.setItem('adcc-db-leads',JSON.stringify(next));};
  const filtered=rows.filter(row=>(row.advertiser+row.channel+row.owner).toLowerCase().includes(query.toLowerCase())&&(channel==='전체'||row.channel===channel)&&matchesAdvertiserFilter(row.advertiser,filterValue));
  const totalDb=filtered.reduce((sum,row)=>sum+row.db,0), validDb=filtered.reduce((sum,row)=>sum+row.validDb,0), totalCost=filtered.reduce((sum,row)=>sum+row.cost,0);
@@ -951,19 +885,11 @@ export function DbManagementPage(){
 
 type CommissionRow={id:number;date:string;month:string;advertiser:string;platform:string;owner:string;sales:number;adSpend:number;rate:number;fixedBonus:number;memo:string};
 type AllowanceRule={id:number;category:'매체별 수당'|'기타 수당';name:string;platform:string;method:'정률'|'정액';value:number;condition:string;memo:string};
-const initialAllowanceRules:AllowanceRule[]=[
-{id:1,category:'매체별 수당',name:'Meta 운영 수당',platform:'Meta',method:'정률',value:5,condition:'매출 기준',memo:'월 매출의 5%'},
-{id:2,category:'매체별 수당',name:'네이버 운영 수당',platform:'네이버',method:'정액',value:100000,condition:'월 정상 운영',memo:'월 10만원'},
-{id:3,category:'기타 수당',name:'신규 광고주 온보딩',platform:'-',method:'정액',value:150000,condition:'최초 세팅 완료',memo:'광고주당 1회'},
-];
-const initialCommissions:CommissionRow[]=[
- {id:1,date:'2026-07-06',month:'2026-07',advertiser:'월컴투바베큐',platform:'Meta',owner:'김마케터',sales:3600000,adSpend:820000,rate:7,fixedBonus:100000,memo:'여름 캠페인'},
- {id:2,date:'2026-07-14',month:'2026-07',advertiser:'노멜',platform:'네이버',owner:'이과장',sales:1280000,adSpend:210000,rate:5,fixedBonus:0,memo:'검색광고'},
- {id:3,date:'2026-07-21',month:'2026-07',advertiser:'알에스컴퍼니',platform:'Google',owner:'최팀장',sales:5400000,adSpend:940000,rate:6,fixedBonus:150000,memo:'리스 문의'},
-];
+const initialAllowanceRules:AllowanceRule[]=[];
+const initialCommissions:CommissionRow[]=[];
 export function CommissionSettlementPage(){
  const STORAGE_KEY='adcc-commission-rows';
- const emptyForm=(baseMonth='2026-07', advertiser='') : CommissionRow => ({id:Date.now(),date:`${baseMonth}-01`,month:baseMonth,advertiser:advertiser||'월컴투바베큐',platform:'Meta',owner:'',sales:0,adSpend:0,rate:5,fixedBonus:0,memo:''});
+ const emptyForm=(baseMonth=new Date().toISOString().slice(0,7), advertiser='') : CommissionRow => ({id:Date.now(),date:`${baseMonth}-01`,month:baseMonth,advertiser,platform:'Meta',owner:'',sales:0,adSpend:0,rate:0,fixedBonus:0,memo:''});
  const [rows,setRows]=useState<CommissionRow[]>(()=>{try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')||initialCommissions}catch{return initialCommissions}});
  const RULES_KEY='adcc-allowance-rules';
  const [allowanceRules,setAllowanceRules]=useState<AllowanceRule[]>(()=>{try{return JSON.parse(localStorage.getItem(RULES_KEY)||'null')||initialAllowanceRules}catch{return initialAllowanceRules}});
@@ -985,12 +911,12 @@ export function CommissionSettlementPage(){
  const [advertiserQuery,setAdvertiserQuery]=useState(filterValue||'');
  const [ownerQuery,setOwnerQuery]=useState('');
  useEffect(()=>{setAdvertiserQuery(filterValue||'')},[filterValue]);
- const [month,setMonth]=useState('2026-07');
+ const [month,setMonth]=useState(()=>new Date().toISOString().slice(0,7));
  const [periodType,setPeriodType]=useState<'month'|'week'|'day'|'year'|'custom'>('month');
  const [year,setYear]=useState('2026');
- const [weekStart,setWeekStart]=useState('2026-07-01');
- const [day,setDay]=useState('2026-07-06');
- const [customRange,setCustomRange]=useState<DateRange>({from:'2026-07-01',to:'2026-07-31'});
+ const [weekStart,setWeekStart]=useState(()=>new Date().toISOString().slice(0,10));
+ const [day,setDay]=useState(()=>new Date().toISOString().slice(0,10));
+ const [customRange,setCustomRange]=useState<DateRange>(()=>{const d=new Date().toISOString().slice(0,10);return {from:d,to:d}});
  const [showForm,setShowForm]=useState(false);
  const formSectionRef=useRef<HTMLElement>(null);
  // '정산 항목 추가/수정'을 누르면 폼이 화면 아래쪽에 나타나는데, 스크롤을 안 하면 아무 반응이 없는 것처럼 보였습니다.
@@ -1075,18 +1001,7 @@ export function CommissionSettlementPage(){
 }
 
 type GoogleCreativeRow = {id:string;name:string;campaign:string;thumb:string;spend:number;impressions:number;clicks:number;status:'라이브'|'캠페인 중지';days:number;health:number;trend:number[]};
-const googleCreativeRows:GoogleCreativeRow[]=[
-{id:'g1',name:'5. 도심 속 나타난 네스호의 괴물 수영장 개시',campaign:'20260619_1. 무더운 여름은 월컴투바베큐에서!',thumb:'linear-gradient(135deg,#133b5c,#2b9aae)',spend:38630,impressions:11337,clicks:1010,status:'라이브',days:17,health:0,trend:[38,62,54,71,64,57]},
-{id:'g2',name:'4. 강아지랑 함께 오시는 분들 완전 환영',campaign:'20260619_1. 무더운 여름은 월컴투바베큐에서!',thumb:'linear-gradient(135deg,#71512f,#d6a867)',spend:31209,impressions:7310,clicks:904,status:'라이브',days:17,health:25,trend:[52,76,44,65,79,63]},
-{id:'g3',name:'1. 무더운 여름은 월컴투바베큐에서!',campaign:'20260619_1. 무더운 여름은 월컴투바베큐에서!',thumb:'linear-gradient(135deg,#4b2d31,#c85834)',spend:25724,impressions:7990,clicks:537,status:'라이브',days:17,health:0,trend:[20,29,54,81,66,47]},
-{id:'g4',name:'2. 캠핑장인데 분위기 거의 야장 핫플',campaign:'20260619_2. 캠핑장인데 분위기 거의 야장 핫플',thumb:'linear-gradient(135deg,#51447e,#de654b)',spend:19902,impressions:9200,clicks:446,status:'라이브',days:17,health:0,trend:[40,71,48,86,53,69]},
-{id:'g5',name:'3. 작은 집 같은 텐트에 옹기종기 모여 앉아',campaign:'20260619_3. 작은 집 같은 텐트에 옹기종기 모여 앉아',thumb:'linear-gradient(135deg,#5e4a2d,#b88d52)',spend:15596,impressions:2548,clicks:442,status:'라이브',days:17,health:20,trend:[16,38,62,56,73,41]},
-{id:'g6',name:'2. 광주캠핑식당',campaign:'20250915_2. 광주캠핑식당',thumb:'linear-gradient(135deg,#693631,#d17a55)',spend:0,impressions:0,clicks:0,status:'캠페인 중지',days:0,health:0,trend:[0,0,0,0,0,0]},
-{id:'g7',name:'1. 몸만오세요!',campaign:'20250915_1. 몸만오세요!',thumb:'linear-gradient(135deg,#9f2a2a,#e9c55c)',spend:0,impressions:0,clicks:0,status:'캠페인 중지',days:0,health:0,trend:[0,0,0,0,0,0]},
-{id:'g8',name:'5. 해피 월컴투바베큐',campaign:'20250915_5. 해피 월컴투바베큐',thumb:'linear-gradient(135deg,#2d2d2d,#b38e31)',spend:0,impressions:0,clicks:0,status:'캠페인 중지',days:0,health:0,trend:[0,0,0,0,0,0]},
-{id:'g9',name:'3.3만원',campaign:'20250915_3.3만원',thumb:'linear-gradient(135deg,#2a513d,#8fbc64)',spend:0,impressions:0,clicks:0,status:'캠페인 중지',days:0,health:0,trend:[0,0,0,0,0,0]},
-{id:'g10',name:'4. 도심 캠핑무드',campaign:'20250915_4. 도심 캠핑무드',thumb:'linear-gradient(135deg,#412b34,#cf835e)',spend:0,impressions:0,clicks:0,status:'캠페인 중지',days:0,health:0,trend:[0,0,0,0,0,0]},
-];
+const googleCreativeRows:GoogleCreativeRow[]=[];
 
 export function GoogleCreativeReportPage(){
  const [period,setPeriod]=useState('7일'); const [query,setQuery]=useState(''); const [rows,setRows]=useState(googleCreativeRows); const [detail,setDetail]=useState<GoogleCreativeRow|null>(null);
@@ -1107,12 +1022,7 @@ export function GoogleCreativeReportPage(){
 }
 
 type AdScheduleItem={id:number;brand:string;channel:string;campaign:string;kind:string;date:string;time:string;action:'ON'|'OFF';status:'예정'|'완료'|'실패';enabled:boolean};
-const initialScheduleItems:AdScheduleItem[]=[
-{id:1,brand:'월컴투바베큐',channel:'Meta',campaign:'여름 수영장 캠페인',kind:'캠페인',date:'2026-07-06',time:'09:00',action:'ON',status:'완료',enabled:true},
-{id:2,brand:'월컴투바베큐',channel:'Meta',campaign:'야장 소재 교체',kind:'광고',date:'2026-07-06',time:'18:00',action:'ON',status:'예정',enabled:true},
-{id:3,brand:'노멜',channel:'네이버',campaign:'스마트스토어 검색광고',kind:'캠페인',date:'2026-07-07',time:'00:00',action:'ON',status:'예정',enabled:true},
-{id:4,brand:'월컴투바베큐',channel:'Google',campaign:'Demand Gen 여름 영상',kind:'캠페인',date:'2026-07-20',time:'23:00',action:'OFF',status:'예정',enabled:true},
-];
+const initialScheduleItems:AdScheduleItem[]=[];
 export function AdSchedulePage(){
  const [items,setItems]=useState<AdScheduleItem[]>(()=>JSON.parse(localStorage.getItem('acc_ad_schedule')||'null')||initialScheduleItems);
  const [selectedIds,setSelectedIds]=useState<number[]>([]); const [showModal,setShowModal]=useState(false); const [editing,setEditing]=useState<AdScheduleItem|null>(null); const [query,setQuery]=useState(''); const [tab,setTab]=useState<'list'|'calendar'>('list');
@@ -1128,7 +1038,7 @@ export function AdSchedulePage(){
  {showModal&&<ScheduleModal initial={editing} onClose={()=>setShowModal(false)} onSave={(item)=>{persist(items.some(x=>x.id===item.id)?items.map(x=>x.id===item.id?item:x):[item,...items]);setShowModal(false)}}/>}</>
 }
 function ScheduleCalendar({items,onSelect}:{items:AdScheduleItem[];onSelect:(item:AdScheduleItem)=>void}){const days=Array.from({length:31},(_,i)=>i+1);return <section className="card ops-card"><div className="calendar-head"><button>‹</button><b>2026년 7월</b><button>›</button></div><div className="mini-calendar-grid">{['일','월','화','수','목','금','토'].map(x=><strong key={x}>{x}</strong>)}{days.map(day=><div className="calendar-cell" key={day}><span>{day}</span>{items.filter(x=>Number(x.date.slice(-2))===day).map(x=><button key={x.id} className={x.action==='ON'?'calendar-event on':'calendar-event off'} onClick={()=>onSelect(x)}>{x.time} {x.channel} {x.action}</button>)}</div>)}</div></section>}
-function ScheduleModal({initial,onClose,onSave}:{initial:AdScheduleItem|null;onClose:()=>void;onSave:(item:AdScheduleItem)=>void}){const [form,setForm]=useState<AdScheduleItem>(initial||{id:Date.now(),brand:'월컴투바베큐',channel:'Meta',campaign:'',kind:'캠페인',date:'2026-07-07',time:'09:00',action:'ON',status:'예정',enabled:true});const update=(k:keyof AdScheduleItem,v:any)=>setForm({...form,[k]:v});return <div className="modal-backdrop"><div className="modal-card wide"><div className="modal-head"><div><h3>{initial?'스케줄 수정':'새 스케줄 등록'}</h3><p>광고주와 매체, 대상 광고, 실행일시를 설정합니다.</p></div><button className="icon-btn" onClick={onClose}><X/></button></div><div className="form-grid"><label className="field-label">광고주<select value={form.brand} onChange={e=>update('brand',e.target.value)}><option>월컴투바베큐</option><option>노멜</option></select></label><label className="field-label">매체<select value={form.channel} onChange={e=>update('channel',e.target.value)}><option>Meta</option><option>네이버</option><option>Google</option><option>카카오</option></select></label><label className="field-label">대상<select value={form.kind} onChange={e=>update('kind',e.target.value)}><option>캠페인</option><option>광고세트</option><option>광고</option></select></label><label className="field-label">동작<select value={form.action} onChange={e=>update('action',e.target.value as 'ON'|'OFF')}><option>ON</option><option>OFF</option></select></label><label className="field-label">실행일<input type="date" value={form.date} onChange={e=>update('date',e.target.value)}/></label><label className="field-label">시간<input type="time" value={form.time} onChange={e=>update('time',e.target.value)}/></label></div><label className="field-label">캠페인 또는 광고명<input value={form.campaign} onChange={e=>update('campaign',e.target.value)} placeholder="실행할 대상을 입력"/></label><div className="modal-actions"><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={()=>form.campaign&&onSave(form)}><Save size={15}/> 저장</button></div></div></div>}
+function ScheduleModal({initial,onClose,onSave}:{initial:AdScheduleItem|null;onClose:()=>void;onSave:(item:AdScheduleItem)=>void}){const [form,setForm]=useState<AdScheduleItem>(initial||{id:Date.now(),brand:'',channel:'Meta',campaign:'',kind:'캠페인',date:new Date().toISOString().slice(0,10),time:'09:00',action:'ON',status:'예정',enabled:true});const update=(k:keyof AdScheduleItem,v:any)=>setForm({...form,[k]:v});return <div className="modal-backdrop"><div className="modal-card wide"><div className="modal-head"><div><h3>{initial?'스케줄 수정':'새 스케줄 등록'}</h3><p>광고주와 매체, 대상 광고, 실행일시를 설정합니다.</p></div><button className="icon-btn" onClick={onClose}><X/></button></div><div className="form-grid"><label className="field-label">광고주<select value={form.brand} onChange={e=>update('brand',e.target.value)}><option value="">광고주 선택</option>{advertisers.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">매체<select value={form.channel} onChange={e=>update('channel',e.target.value)}><option>Meta</option><option>네이버</option><option>Google</option><option>카카오</option></select></label><label className="field-label">대상<select value={form.kind} onChange={e=>update('kind',e.target.value)}><option>캠페인</option><option>광고세트</option><option>광고</option></select></label><label className="field-label">동작<select value={form.action} onChange={e=>update('action',e.target.value as 'ON'|'OFF')}><option>ON</option><option>OFF</option></select></label><label className="field-label">실행일<input type="date" value={form.date} onChange={e=>update('date',e.target.value)}/></label><label className="field-label">시간<input type="time" value={form.time} onChange={e=>update('time',e.target.value)}/></label></div><label className="field-label">캠페인 또는 광고명<input value={form.campaign} onChange={e=>update('campaign',e.target.value)} placeholder="실행할 대상을 입력"/></label><div className="modal-actions"><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={()=>form.campaign&&onSave(form)}><Save size={15}/> 저장</button></div></div></div>}
 
 type AttributionLinkItem = {
   id: number;
@@ -1146,10 +1056,7 @@ type AttributionLinkItem = {
   createdAt: string;
 };
 
-const initialAttributionLinks: AttributionLinkItem[] = [
-  { id: 1, name: '7월 수영장 릴스', url: 'https://welcomebbq.co.kr/pool', platform: 'Meta', campaign: 'pool_july', memo: '주말 예약 유도', source: 'facebook', medium: 'cpc', content: 'reels_v1', term: '', clicks: 1284, conversions: 43, createdAt: '2026-07-03 14:20' },
-  { id: 2, name: '네이버 검색 여름 캠페인', url: 'https://welcomebbq.co.kr/summer', platform: '네이버', campaign: 'summer_search', memo: '브랜드 검색', source: 'naver', medium: 'cpc', content: 'powerlink_a', term: '광주바베큐', clicks: 892, conversions: 27, createdAt: '2026-07-02 09:05' },
-];
+const initialAttributionLinks: AttributionLinkItem[] = [];
 
 function buildAttributionUrl(item: Omit<AttributionLinkItem,'id'|'clicks'|'conversions'|'createdAt'>) {
   const params = new URLSearchParams();
@@ -1195,7 +1102,7 @@ export function AttributionLinksPage(){
 }
 
 type UploadedDataItem={id:number;brand:string;source:string;period:string;days:number;reservations:number;conversions:number;revenue:number;uploadedAt:string;status:'완료'|'오류'};
-const initialUploadedData:UploadedDataItem[]=[{id:1,brand:'서울우리아이치과',source:'WTB어드민(자동)',period:'2026-04-08~2026-07-06',days:90,reservations:796,conversions:0,revenue:25900000,uploadedAt:'2026-07-06 12:47',status:'완료'}];
+const initialUploadedData:UploadedDataItem[]=[];
 
 function parseCsvPreview(csv:string){
  const lines=csv.trim().split(/\r?\n/).filter(Boolean); if(lines.length<2) return {rows:0,reservations:0,conversions:0,revenue:0};
@@ -1206,7 +1113,7 @@ function parseCsvPreview(csv:string){
 }
 
 export function CustomDataUploadPage(){
- const [brand,setBrand]=useState('서울우리아이치과'); const [channel,setChannel]=useState('직접입력 (기타)'); const [label,setLabel]=useState(''); const [csv,setCsv]=useState('date,reservations,revenue\n2026-06-01,5,250000\n2026-06-02,3,150000');
+ const [brand,setBrand]=useState(''); const [channel,setChannel]=useState('직접입력 (기타)'); const [label,setLabel]=useState(''); const [csv,setCsv]=useState('');
  const [items,setItems]=useState<UploadedDataItem[]>(()=>JSON.parse(localStorage.getItem('acc_custom_uploads')||'null')||initialUploadedData); const [preview,setPreview]=useState<ReturnType<typeof parseCsvPreview>|null>(null); const [toast,setToast]=useState('');
  const { filterValue } = useAdvertiserFilter();
  const visibleItems = filterByAdvertiser(items, filterValue, i => i.brand);
@@ -1216,15 +1123,15 @@ export function CustomDataUploadPage(){
  return <>
   <PageHeader title="커스텀 데이터 업로드" description="매체 API로 얻기 어려운 실적을 CSV로 올려 KPI·대시보드·보고서에 반영합니다."/>
   {filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}
-  <section className="card sync-banner"><div><h3>서울우리아이치과 어드민 자동 연동</h3><p><span className="status-pill success">연결됨</span> 예약(접수일 기준·광고 기인 유입만)이 30분마다 자동으로 들어옵니다. 최근 예약 796건 / 90일 동기화</p></div><button className="btn primary" onClick={()=>setToast('어드민 데이터를 다시 가져왔습니다.')}><RotateCcw size={15}/> 지금 가져오기</button></section>
+  <section className="card sync-banner"><div><h3>외부 데이터 연동</h3><p>연결된 외부 데이터가 없습니다. 실제 연동을 설정하면 수집 상태가 여기에 표시됩니다.</p></div></section>
   {toast&&<div className="save-toast"><CheckCircle2 size={16}/>{toast}</div>}
-  <section className="card ops-card custom-upload-panel"><h3>새 데이터 업로드</h3><div className="form-grid three-col"><label className="field-label">브랜드<select value={brand} onChange={e=>setBrand(e.target.value)}><option>서울우리아이치과</option><option>운명백과</option><option>다방이사</option><option>온동물병원</option></select></label><label className="field-label">매체<select value={channel} onChange={e=>setChannel(e.target.value)}><option>직접입력 (기타)</option><option>네이버</option><option>Meta</option><option>Google</option></select></label><label className="field-label">출처 라벨<input value={label} onChange={e=>setLabel(e.target.value)} placeholder="예: 네이버예약"/></label></div><div className="csv-guide"><b>CSV 형식</b><span>첫 행은 헤더, date 컬럼 필수 + reservations, conversions, revenue 등의 영문 또는 한글 헤더를 지원합니다.</span><button className="btn secondary mini" onClick={()=>setCsv('date,reservations,conversions,revenue\n2026-07-01,4,1,320000\n2026-07-02,6,2,480000')}>템플릿 넣기</button></div><div className="file-inline-row"><label className="btn secondary">파일 선택<input type="file" accept=".csv" hidden onChange={e=>fileInput(e.target.files?.[0]||null)}/></label><span>또는 아래에 직접 붙여넣기</span></div><textarea className="csv-textarea" value={csv} onChange={e=>setCsv(e.target.value)} rows={7}/><div className="action-row left"><button className="btn secondary" onClick={()=>setPreview(parseCsvPreview(csv))}>미리보기</button><button className="btn primary" onClick={save}>저장(반영)</button></div>{preview&&<div className="upload-preview-grid"><div><span>행 수</span><b>{preview.rows}</b></div><div><span>예약</span><b>{preview.reservations}</b></div><div><span>전환</span><b>{preview.conversions}</b></div><div><span>매출</span><b>₩{preview.revenue.toLocaleString()}</b></div></div>}</section>
+  <section className="card ops-card custom-upload-panel"><h3>새 데이터 업로드</h3><div className="form-grid three-col"><label className="field-label">브랜드<select value={brand} onChange={e=>setBrand(e.target.value)}><option value="">광고주 선택</option>{advertisers.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">매체<select value={channel} onChange={e=>setChannel(e.target.value)}><option>직접입력 (기타)</option><option>네이버</option><option>Meta</option><option>Google</option></select></label><label className="field-label">출처 라벨<input value={label} onChange={e=>setLabel(e.target.value)} placeholder="예: 네이버예약"/></label></div><div className="csv-guide"><b>CSV 형식</b><span>첫 행은 헤더, date 컬럼 필수 + reservations, conversions, revenue 등의 영문 또는 한글 헤더를 지원합니다.</span><button className="btn secondary mini" onClick={()=>setCsv('date,reservations,conversions,revenue\n')}>템플릿 넣기</button></div><div className="file-inline-row"><label className="btn secondary">파일 선택<input type="file" accept=".csv" hidden onChange={e=>fileInput(e.target.files?.[0]||null)}/></label><span>또는 아래에 직접 붙여넣기</span></div><textarea className="csv-textarea" value={csv} onChange={e=>setCsv(e.target.value)} rows={7}/><div className="action-row left"><button className="btn secondary" onClick={()=>setPreview(parseCsvPreview(csv))}>미리보기</button><button className="btn primary" onClick={save}>저장(반영)</button></div>{preview&&<div className="upload-preview-grid"><div><span>행 수</span><b>{preview.rows}</b></div><div><span>예약</span><b>{preview.reservations}</b></div><div><span>전환</span><b>{preview.conversions}</b></div><div><span>매출</span><b>₩{preview.revenue.toLocaleString()}</b></div></div>}</section>
   <section className="card ops-card"><div className="ops-card-head"><div><h3>업로드된 데이터 ({visibleItems.length})</h3><p>업로드 즉시 KPI 목표·달성, 대시보드, 보고서에 반영됩니다.</p></div></div><div className="table-scroll"><table className="ops-table"><thead><tr><th>브랜드 · 출처</th><th>기간</th><th>일수</th><th>예약</th><th>전환</th><th>매출</th><th>업로드 시각</th><th></th></tr></thead><tbody>{visibleItems.map(item=><tr key={item.id}><td><b>{item.brand} · {item.source}</b></td><td>{item.period}</td><td>{item.days}</td><td>{item.reservations}</td><td>{item.conversions}</td><td>₩{item.revenue.toLocaleString()}</td><td>{item.uploadedAt}</td><td><button className="icon-btn danger" onClick={()=>confirm('업로드 데이터를 삭제할까요?')&&persist(items.filter(x=>x.id!==item.id))}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section>
  </>
 }
 
 type ProjectTask={id:number;title:string;brand:string;owner:string;campaign:string;priority:'높음'|'보통'|'낮음';due:string;description:string;status:'대기'|'진행중'|'검토'|'완료'};
-const initialProjectTasks:ProjectTask[]=[{id:1,title:'새 광고 세팅 필요 - 20260610_인스타4 삼겹살',brand:'서울우리아이치과',owner:'서장님',campaign:'20260610_인스타4 삼겹살',priority:'높음',due:'2026-07-10',description:'자동화 규칙과 소재 피로도 감지로 생성된 업무입니다.',status:'대기'}];
+const initialProjectTasks:ProjectTask[]=[];
 
 export function ProjectTasksPage(){
  const [tasks,setTasks]=useState<ProjectTask[]>(()=>{try{return JSON.parse(localStorage.getItem('acc_project_tasks_v2')||'null')||initialProjectTasks}catch{return initialProjectTasks}});
@@ -1239,14 +1146,14 @@ export function ProjectTasksPage(){
   <PageHeader title="프로젝트" description="광고 운영 업무를 태스크로 관리 — 대기 → 진행중 → 검토 → 완료 칸반" action={<button className="btn primary" onClick={()=>setFormOpen(!formOpen)}><Plus size={15}/> 새 작업</button>}/>
   <p className="project-auto-note">총 {visibleTasks.length}개 · 자동화 규칙/피로도 감지가 “새 광고 세팅 필요” 태스크를 자동 생성합니다.</p>
   {toast&&<div className="save-toast"><CheckCircle2 size={16}/>{toast}</div>}
-  {formOpen&&<section className="card ops-card project-create-panel"><h3>새 작업</h3><form onSubmit={add}><div className="form-grid"><label className="field-label">제목 *<input name="title" required/></label><label className="field-label">담당자<input name="owner" defaultValue="서장님" required/></label><label className="field-label">브랜드<select name="brand"><option>서울우리아이치과</option><option>운명백과</option><option>다방이사</option><option>온동물병원</option></select></label><label className="field-label">관련 캠페인/소재<input name="campaign"/></label><label className="field-label">우선순위<select name="priority"><option>보통</option><option>높음</option><option>낮음</option></select></label><label className="field-label">마감일<input name="due" type="date" required/></label></div><label className="field-label">설명<textarea name="description" rows={4}/></label><div className="action-row left"><button className="btn primary" type="submit"><Save size={15}/> 저장</button><button className="btn secondary" type="button" onClick={()=>setFormOpen(false)}>취소</button></div></form></section>}
+  {formOpen&&<section className="card ops-card project-create-panel"><h3>새 작업</h3><form onSubmit={add}><div className="form-grid"><label className="field-label">제목 *<input name="title" required/></label><label className="field-label">담당자<input name="owner" required/></label><label className="field-label">브랜드<select name="brand"><option value="">광고주 선택</option>{advertisers.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">관련 캠페인/소재<input name="campaign"/></label><label className="field-label">우선순위<select name="priority"><option>보통</option><option>높음</option><option>낮음</option></select></label><label className="field-label">마감일<input name="due" type="date" required/></label></div><label className="field-label">설명<textarea name="description" rows={4}/></label><div className="action-row left"><button className="btn primary" type="submit"><Save size={15}/> 저장</button><button className="btn secondary" type="button" onClick={()=>setFormOpen(false)}>취소</button></div></form></section>}
   <div className="project-kanban">{statuses.map(status=><section className="project-column" key={status}><div className="project-column-head"><b>{status==='대기'?'📥':status==='진행중'?'🖊️':status==='검토'?'👀':'✅'} {status}</b><span>{visibleTasks.filter(t=>t.status===status).length}</span></div><div className="project-column-body">{visibleTasks.filter(t=>t.status===status).map(task=><article className="project-task-card" key={task.id}><span className={`priority-badge priority-${task.priority}`}>{task.priority}</span><h4>{task.title}</h4><p>{task.brand} · {task.owner}</p>{task.description&&<small>{task.description}</small>}<div className="task-meta"><span>마감 {task.due}</span><button className="icon-btn danger" onClick={()=>confirm('작업을 삭제할까요?')&&persist(tasks.filter(x=>x.id!==task.id))}><Trash2 size={14}/></button></div><div className="task-move-actions"><button disabled={status==='대기'} onClick={()=>move(task,-1)}>◀</button><button disabled={status==='완료'} onClick={()=>move(task,1)}>▶</button></div></article>)}{visibleTasks.filter(t=>t.status===status).length===0&&<div className="project-empty">비어 있음</div>}</div></section>)}</div>
  </>
 }
 
 export function NotificationSendPage(){
- const [token,setToken]=useState('89457072...JAI8'); const [chatId,setChatId]=useState('6420389859'); const [time,setTime]=useState('09:00'); const [enabled,setEnabled]=useState(true); const [toast,setToast]=useState(''); const [preview,setPreview]=useState(false);
- const [lastSentAt,setLastSentAt]=useState('2026-07-06 09:00');
+ const [token,setToken]=useState(''); const [chatId,setChatId]=useState(''); const [time,setTime]=useState('09:00'); const [enabled,setEnabled]=useState(false); const [toast,setToast]=useState(''); const [preview,setPreview]=useState(false);
+ const [lastSentAt,setLastSentAt]=useState('없음');
  const { filterValue } = useAdvertiserFilter();
  const notify=(message:string)=>{setToast(message);setTimeout(()=>setToast(''),3200)};
  const nowStamp=()=>new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -1256,9 +1163,9 @@ export function NotificationSendPage(){
   {filterValue&&<div className="footnote" style={{marginBottom:8}}>참고: 텔레그램 브리핑 발송 설정은 계정 전체 기준이며, 상단 광고주 필터(<b>{filterValue}</b>)의 영향을 받지 않습니다.</div>}
   {toast&&<div className="save-toast prominent"><CheckCircle2 size={18}/>{toast}</div>}
   <section className="card ops-card telegram-guide"><h3>처음 설정하기 (3분)</h3><ol><li>휴대폰에 텔레그램 앱 설치 후 가입</li><li>텔레그램 검색창에서 <code>@BotFather</code> 검색 → 대화 시작 → <code>/newbot</code> 입력</li><li>봇 이름과 사용자명을 정하면 토큰이 발급됩니다.</li><li>방금 만든 봇과 대화를 열고 아무 메시지나 전송합니다.</li><li>아래 Chat ID 자동 감지를 눌러 테스트 발송으로 확인합니다.</li></ol></section>
-  <section className="card ops-card"><h3>연결 설정</h3><div className="telegram-token-row"><label className="field-label">봇 토큰 (BotFather 발급)<input value={token} onChange={e=>setToken(e.target.value)} placeholder="봇 토큰 입력"/></label><button className="btn primary" onClick={()=>{setChatId('6420389859');notify('Chat ID를 자동으로 감지했습니다: 6420389859')}}>Chat ID 자동 감지</button></div><div className="telegram-settings-row"><label className="field-label">Chat ID<input value={chatId} onChange={e=>setChatId(e.target.value)}/></label><label className="field-label">매일 발송 시각 (KST)<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label><button className="btn success" onClick={()=>{setEnabled(true);notify(`자동 발송을 저장했습니다. 매일 ${time}`)}}>저장 + 자동 발송 켜기</button><button className="btn secondary" onClick={()=>{setEnabled(false);notify('자동 발송을 중지했습니다.')}}>자동 발송 끄기</button></div><p className="telegram-status">상태: <span className={`status-pill ${enabled?'success':'warning'}`}>● {enabled?`자동 발송 켜짐 · 매일 ${time}`:'자동 발송 꺼짐'}</span> 마지막 발송: <b>{lastSentAt}</b></p></section>
+  <section className="card ops-card"><h3>연결 설정</h3><div className="telegram-token-row"><label className="field-label">봇 토큰 (BotFather 발급)<input value={token} onChange={e=>setToken(e.target.value)} placeholder="봇 토큰 입력"/></label><button className="btn primary" onClick={()=>{notify('실제 Telegram API 연결 후 Chat ID 자동 감지를 사용할 수 있습니다.')}}>Chat ID 자동 감지</button></div><div className="telegram-settings-row"><label className="field-label">Chat ID<input value={chatId} onChange={e=>setChatId(e.target.value)}/></label><label className="field-label">매일 발송 시각 (KST)<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label><button className="btn success" onClick={()=>{setEnabled(true);notify(`자동 발송을 저장했습니다. 매일 ${time}`)}}>저장 + 자동 발송 켜기</button><button className="btn secondary" onClick={()=>{setEnabled(false);notify('자동 발송을 중지했습니다.')}}>자동 발송 끄기</button></div><p className="telegram-status">상태: <span className={`status-pill ${enabled?'success':'warning'}`}>● {enabled?`자동 발송 켜짐 · 매일 ${time}`:'자동 발송 꺼짐'}</span> 마지막 발송: <b>{lastSentAt}</b></p></section>
   <section className="card ops-card"><h3>테스트</h3><div className="action-row left"><button className="btn primary" onClick={()=>{setLastSentAt(nowStamp()+' (테스트)');notify('테스트 메시지를 발송했습니다.')}}><Send size={15}/> 테스트 발송</button><button className="btn secondary" onClick={()=>{setLastSentAt(nowStamp());notify('현재 브리핑을 발송했습니다.')}}>지금 브리핑 발송</button><button className="btn secondary" onClick={()=>setPreview(true)}>브리핑 미리보기</button></div></section>
-  <section className="card ops-card"><h3>성과 데이터 영구 축적</h3><p><span className="status-pill success">축적 중</span> <b>1,793행</b> 저장됨 · 범위 2026-04-04 ~ 2026-07-06</p><small>매 동기화마다 일별 성과를 DB에 저장해 장기 비교가 가능합니다.</small></section>
-  {preview&&<div className="modal-backdrop" onClick={()=>setPreview(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><h3>텔레그램 브리핑 미리보기</h3><p>오늘 발송될 메시지 예시입니다.</p></div><button className="icon-btn" onClick={()=>setPreview(false)}>×</button></div><div className="telegram-preview"><b>[HOWTOM 유니버스] 일일 성과 브리핑</b><p>광고비 ₩737,144 · 전환 17건 · ROAS 381%</p><p>⚠️ CPA 상승 소재 2건<br/>✅ 우수 광고 3건<br/>💡 예산 감액 추천 1건</p></div><div className="modal-actions"><button className="btn primary" onClick={()=>setPreview(false)}>확인</button></div></div></div>}
+  <section className="card ops-card"><h3>성과 데이터 영구 축적</h3><p><span className="status-pill neutral">대기</span> <b>0행</b> 저장됨 · 연결된 성과 데이터 없음</p><small>매 동기화마다 일별 성과를 DB에 저장해 장기 비교가 가능합니다.</small></section>
+  {preview&&<div className="modal-backdrop" onClick={()=>setPreview(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><h3>텔레그램 브리핑 미리보기</h3><p>오늘 발송될 메시지 예시입니다.</p></div><button className="icon-btn" onClick={()=>setPreview(false)}>×</button></div><div className="telegram-preview"><b>[HOWTOM 유니버스] 일일 성과 브리핑</b><p>연결된 성과 데이터가 없습니다.</p><p>실제 광고 데이터가 수집되면 브리핑 내용이 여기에 표시됩니다.</p></div><div className="modal-actions"><button className="btn primary" onClick={()=>setPreview(false)}>확인</button></div></div></div>}
  </>
 }

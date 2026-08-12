@@ -107,12 +107,12 @@ export function SearchAdBrandListPage({ channel }: { channel: ChannelKey }) {
       )}
       <div className="card" style={{ padding: 0 }}>
         <table className="brand-table">
-          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>광고주명{sortArrow('name')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('keywordCount')}>키워드 수{sortArrow('keywordCount')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalBudget')}>총 일예산{sortArrow('totalBudget')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalSpend')}>현재 소진 비용{sortArrow('totalSpend')}<br/><small style={{ fontWeight: 400, color: '#94a3b8' }}>(예시 데이터 누적 기준)</small></th><th></th></tr></thead>
+          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>광고주명{sortArrow('name')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('keywordCount')}>키워드 수{sortArrow('keywordCount')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalBudget')}>총 일예산{sortArrow('totalBudget')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalSpend')}>현재 소진 비용{sortArrow('totalSpend')}</th><th></th></tr></thead>
           <tbody>
             {sortedRows.map(({ config, keywordCount, totalBudget, totalSpend }) => {
               return (
                 <tr key={config.brandId}>
-                  <td className="brand-name-cell">{config.brandName}{!config.hasRealData && <span className="sample-tag">(예시)</span>}</td>
+                  <td className="brand-name-cell">{config.brandName}</td>
                   <td className="num">{keywordCount}개</td>
                   <td className="num">{won(totalBudget)}</td>
                   <td className="num">{won(totalSpend)}</td>
@@ -209,7 +209,7 @@ export function SearchAdKeywordDetailPage({ channel }: { channel: ChannelKey }) 
               {filteredRows.map((row) => (
                 <tr key={row.id}>
                   <td><strong>{row.keyword}</strong>{row.memo && <div className="table-cell-note">{row.memo}</div>}</td>
-                  <td>{row.adGroup}</td>
+                  <td>{row.adGroup || '-'}</td>
                   <td className="num">{row.impressions.toLocaleString()}</td>
                   <td className="num">{row.clicks.toLocaleString()}</td>
                   <td className="num">{pct(row.clicks, row.impressions)}</td>

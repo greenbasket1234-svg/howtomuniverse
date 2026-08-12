@@ -45,7 +45,6 @@ const TYPE_ICON: Record<LogType, string> = {
   batch:'⚙', connect:'🔗', error:'❌', info:'ℹ', warning:'⚠',
 };
 
-// 매체 연동 전에는 실제 로그가 없으므로 빈 배열로 시작합니다.
 const SAMPLE_LOGS: ApiLog[] = [];
 
 export function AlertsLogsPage() {

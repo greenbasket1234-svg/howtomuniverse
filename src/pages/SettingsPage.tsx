@@ -35,7 +35,6 @@ import { BASE_ADVERTISERS, loadExtraAdvertisers } from '../features/reports/repo
 import { deleteAdvertiserSetting, loadAdvertiserSettings, saveAdvertiserSetting, AD_PLATFORM_OPTIONS, AD_PLACEMENT_OPTIONS, AD_TYPE_OPTIONS, type AdvertiserPreset, type AdvertiserSetting } from '../utils/advertiserSettings';
 import { RAW_METRICS, loadProfiles, saveProfiles, inferReportType } from '../features/reports/reportCore';
 import { loadCustomRoles, saveCustomRoles, type CustomRole, type MenuAccessLevel } from '../utils/customRoles';
-import { generateSampleData, deleteSampleData, hasSampleData } from '../utils/testSeed';
 import { loadProposalSettings, saveProposalSettings, detectPreset, PROPOSAL_SETTINGS_PRESETS, type ProposalCalculationSettings, type ProposalSettingsPreset } from '../utils/proposalSettings';
 import { deleteDbRowsForConnection, loadDbConnections, saveDbConnections, type GoogleSheetDbConnection } from '../utils/dbDataStore';
 import { syncDbConnection } from '../utils/googleSheetDbSync';
@@ -51,8 +50,7 @@ type SettingsSectionKey =
   | 'db-integrations'
   | 'formulas-thresholds'
   | 'proposal-settings'
-  | 'backup'
-  | 'test-data';
+  | 'backup';
 
 type SettingsSection = {
   key: SettingsSectionKey;
@@ -74,7 +72,6 @@ const sections: SettingsSection[] = [
   { key: 'formulas-thresholds', title: '수식 및 임계값', description: 'CTR, CPA, ROAS, 피로도, 예산 경고 기준과 계산 방식을 관리합니다.', icon: Calculator },
   { key: 'proposal-settings', title: '제안 계산 기준', description: '다음달 제안서의 신규 매체 예산 비율, 증액·감액 폭 등 계산 기준값을 조정합니다.', icon: SlidersHorizontal },
   { key: 'backup', title: '데이터 백업·복원', description: '저장된 전체 데이터를 파일로 백업하고, 필요할 때 복원합니다.', icon: Database },
-  { key: 'test-data', title: '테스트 샘플 데이터', description: '등록 광고주 전체에 5·6·7월 샘플 데이터를 만들어 월간 보고서 비교 기능을 미리 확인합니다. 앱을 처음 실행하면 자동으로 한 번 생성됩니다.', icon: RefreshCw },
 ];
 
 export function SettingsPage() {
@@ -209,7 +206,6 @@ function getSubmenu(key: SettingsSectionKey): string[] {
     'formulas-thresholds': ['지표 수식', '예산 임계값', '피로도 임계값'],
     'proposal-settings': ['예산 배분 비율', '증액·감액 기준'],
     backup: ['전체 백업', '복원', '저장 공간'],
-    'test-data': ['샘플 생성·삭제'],
   };
   return map[key];
 }
@@ -232,32 +228,6 @@ function CheckboxGrid({ values }: { values: string[] }) {
   return <div className="settings-checkbox-grid">{values.map((value) => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => setSelected((prev) => prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value])}/><span>{value}</span></label>)}</div>;
 }
 
-function TestDataSettings() {
-  const [hasData, setHasData] = useState(() => hasSampleData());
-  const [status, setStatus] = useState('');
-  const run = (label: string, fn: () => { ok: boolean; count?: number; error?: string }) => {
-    const result = fn();
-    setHasData(hasSampleData());
-    if (!result.ok) { setStatus(`오류: ${result.error ?? '알 수 없는 문제가 발생했습니다.'}`); return; }
-    setStatus(label + (result.count !== undefined ? ` (${result.count}건)` : ''));
-    setTimeout(() => setStatus(''), 4000);
-  };
-  return (
-    <SectionCard id="setting-testdata" title="테스트 샘플 데이터" description="등록된 광고주 전체(추가 광고주·저장된 프로필 포함)에 5·6·7월 샘플 데이터를 만들어, 월간 보고서의 전월 비교·자동 인사이트 기능을 데이터 입력 없이 미리 확인할 수 있습니다.">
-      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 14 }}>
-        샘플 데이터는 실제 보고서와 분리된 테스트 전용 저장소에 보관됩니다. 같은 광고주·월에 실제 데이터가 있으면 월간 보고서와 전체 통합형은 실제 데이터만 사용하며, 샘플은 실제 데이터가 없을 때만 테스트용으로 표시됩니다.
-      </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn primary" onClick={() => run('샘플 데이터를 생성했습니다.', generateSampleData)}><RefreshCw size={15}/> 샘플 생성</button>
-        <button className="btn secondary" onClick={() => run('샘플 데이터를 재생성했습니다.', generateSampleData)} disabled={!hasData}><RefreshCw size={15}/> 샘플 재생성</button>
-        <button className="btn secondary" onClick={() => run('샘플 데이터를 삭제했습니다.', deleteSampleData)} disabled={!hasData}><Trash2 size={15}/> 샘플 삭제</button>
-      </div>
-      {status && <p style={{ fontSize: 12.5, color: status.startsWith('오류') ? '#dc2626' : '#16a34a', marginTop: 10 }}>{status}</p>}
-      <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 10 }}>현재 샘플 데이터: {hasData ? '있음' : '없음'}</p>
-    </SectionCard>
-  );
-}
-
 function renderSettingsContent(key: SettingsSectionKey) {
   if (key === 'advertisers') return <AdvertiserSettings/>;
   if (key === 'metrics') return <MetricSettings/>;
@@ -269,18 +239,17 @@ function renderSettingsContent(key: SettingsSectionKey) {
   if (key === 'db-integrations') return <DbIntegrationSettingsPanel/>;
   if (key === 'proposal-settings') return <ProposalCalculationSettingsPanel/>;
   if (key === 'backup') return <BackupRestoreSettings/>;
-  if (key === 'test-data') return <TestDataSettings/>;
   return <FormulaSettings/>;
 }
 
 function AdvertiserSettings() {
-  const ownerOptions = ['관리자', '김마케터', '이운영', '박분석'];
+  const ownerOptions: string[] = [];
   const [saved, setSaved] = useState<Record<string, AdvertiserSetting>>(() => loadAdvertiserSettings());
   const advertisers = Array.from(new Set([...BASE_ADVERTISERS, ...loadExtraAdvertisers(), ...Object.keys(saved)]));
   const [selected, setSelected] = useState(advertisers[0] ?? '');
   const [viewMode, setViewMode] = useState<'edit' | 'view'>('edit');
   const [notice, setNotice] = useState('');
-  const defaultSetting = (name: string): AdvertiserSetting => ({ advertiserName: name, industry: '서비스', currency: 'KRW 대한민국 원', timezone: 'Asia/Seoul', preset: '상담형', owners: ['관리자'], platforms: [], placements: [], adTypes: [], updatedAt: '' });
+  const defaultSetting = (name: string): AdvertiserSetting => ({ advertiserName: name, industry: '서비스', currency: 'KRW 대한민국 원', timezone: 'Asia/Seoul', preset: '상담형', owners: [], platforms: [], placements: [], adTypes: [], updatedAt: '' });
   const [draft, setDraft] = useState<AdvertiserSetting>(() => saved[selected] ?? defaultSetting(selected));
   useEffect(() => { setDraft(saved[selected] ?? defaultSetting(selected)); }, [selected, saved]);
   const current = draft;
@@ -923,7 +892,7 @@ function BackupRestoreSettings() {
           </label>
         </div>
       </SectionCard>
-      <SectionCard id="backup-3" title="저장 공간 사용량" description="브라우저 localStorage는 보통 5~10MB까지 저장할 수 있습니다. 한도에 가까워지면 오래된 샘플 데이터나 저장된 보고서를 정리해 주세요.">
+      <SectionCard id="backup-3" title="저장 공간 사용량" description="브라우저 localStorage는 보통 5~10MB까지 저장할 수 있습니다. 한도에 가까워지면 오래된 임시 저장 데이터나 저장된 보고서를 정리해 주세요.">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1, height: 10, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
             <div style={{ width: `${Math.min(100, (usageKb / 5120) * 100)}%`, height: '100%', background: usageKb > 4000 ? '#dc2626' : usageKb > 2500 ? '#f59e0b' : '#16a34a' }} />
@@ -977,10 +946,10 @@ function DbIntegrationSettingsPanel() {
         </aside>
         <div className="db-settings-form">
           <div className="settings-form-grid cols-2">
-            <Field label="연결 이름"><input value={draft.name} onChange={e=>update('name',e.target.value)} placeholder="예: 스마트렌트카 DB 시트"/></Field>
+            <Field label="연결 이름"><input value={draft.name} onChange={e=>update('name',e.target.value)} placeholder="예: 광고주 DB 시트"/></Field>
             <Field label="시트 탭 이름" hint="비워두면 Apps Script의 기본 시트를 사용합니다."><input value={draft.sheetName??''} onChange={e=>update('sheetName',e.target.value)} placeholder="예: DB집계"/></Field>
             <Field label="Apps Script 웹앱 URL" hint="배포된 /exec URL을 입력합니다."><input value={draft.endpointUrl} onChange={e=>update('endpointUrl',e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"/></Field>
-            <Field label="광고주 기본값" hint="시트에 광고주 컬럼이 없을 때만 사용합니다."><input value={draft.advertiserFallback??''} onChange={e=>update('advertiserFallback',e.target.value)} placeholder="예: 스마트렌트카"/></Field>
+            <Field label="광고주 기본값" hint="시트에 광고주 컬럼이 없을 때만 사용합니다."><input value={draft.advertiserFallback??''} onChange={e=>update('advertiserFallback',e.target.value)} placeholder="예: 광고주명"/></Field>
           </div>
           <div className="db-settings-switches">
             <label><span><b>연결 사용</b><small>끄면 전체 동기화에서 제외됩니다.</small></span><input type="checkbox" checked={draft.enabled} onChange={e=>update('enabled',e.target.checked)}/></label>
@@ -998,7 +967,7 @@ function DbIntegrationSettingsPanel() {
       <p className="settings-hint">* 연결 설정에서 광고주 기본값을 지정하면 시트의 광고주 컬럼은 생략할 수 있습니다. 이름·전화번호·이메일 같은 고객 개인정보 컬럼은 HOWTOM이 읽지 않습니다.</p>
     </SectionCard>
     <SectionCard id="setting-2" title="데이터 연결 기준" description="DB는 광고 플랫폼 전환과 분리해서 저장하며, 실제 DB가 있으면 분석 화면의 DB/리드 수를 우선 적용합니다.">
-      <div className="db-rule-list"><p><b>매체별 분석</b><span>날짜 + 광고주 + 매체가 일치하면 실제 DB로 리드 수를 교체합니다.</span></p><p><b>캠페인 분석</b><span>campaignId/캠페인명이 있으면 캠페인 DB 상세에 연결할 수 있습니다. 광고비를 임의 분할하지 않습니다.</span></p><p><b>소재 분석</b><span>creativeId/소재명이 있으면 소재별 실제 DB·유효DB·계약 품질 분석에 연결합니다. 식별값이 없으면 매체/캠페인 DB를 소재에 임의 분배하지 않습니다.</span></p><p><b>통합 홈·전환 퍼널</b><span>연동된 실제 DB·유효DB·계약을 우선 집계합니다.</span></p><p><b>광고 플랫폼 전환</b><span>시트에 플랫폼전환 컬럼이 있으면 실제 DB와 일치율을 별도로 비교합니다.</span></p></div>
+      <div className="db-rule-list"><p><b>매체별 분석</b><span>날짜 + 광고주 + 매체가 일치하면 실제 DB로 리드 수를 교체합니다.</span></p><p><b>캠페인 분석</b><span>campaignId/캠페인명이 있으면 캠페인 DB 상세에 연결할 수 있습니다. 광고비를 임의 분할하지 않습니다.</span></p><p><b>소재 분석</b><span>creativeId/소재명이 있으면 소재별 실제 DB·유효DB·계약 품질 분석에 연결합니다. 식별값이 없으면 매체/캠페인 DB를 소재에 임의 분배하지 않습니다.</span></p><p><b>통합 홈 전환 퍼널</b><span>연동된 실제 DB·유효DB·계약을 우선 집계합니다.</span></p><p><b>광고 플랫폼 전환</b><span>시트에 플랫폼전환 컬럼이 있으면 실제 DB와 일치율을 별도로 비교합니다.</span></p></div>
     </SectionCard>
   </>;
 }

@@ -67,19 +67,7 @@ const DEFAULT_ORG: Organization = {
   updatedAt: now(),
 };
 
-const DEFAULT_USERS: ControlUser[] = [
-  {
-    userId: 'demo-admin',
-    name: '데모 관리자',
-    email: 'demo@howtom.local',
-    title: '관리자',
-    department: 'HOWTOM',
-    status: 'active',
-    isDemo: true,
-    createdAt: now(),
-    updatedAt: now(),
-  },
-];
+const DEFAULT_USERS: ControlUser[] = [];
 
 const ALL_INTERNAL_PERMISSIONS = [
   'dashboard.view','ads.view','campaign.view','campaign.edit','insights.view','insights.ai.use',
@@ -103,34 +91,12 @@ const DEFAULT_ROLES: RoleDefinition[] = [
   { roleId:'role-advertiser-pro', name:'광고주 Pro', description:'광고주 포털 분석·승인 확장 권한입니다.', scope:'advertiser', permissionKeys:ADVERTISER_PRO, system:true, createdAt:now(), updatedAt:now() },
 ];
 
-const DEFAULT_PLANS: SubscriptionPlanDefinition[] = [
-  {
-    planId:'basic-draft', name:'Basic', description:'대시보드와 월간 보고서 중심의 열람형 상품 설계안', monthlyPrice:34000, status:'draft',
-    entitlements:[
-      {featureKey:'dashboard.view',enabled:true},{featureKey:'reports.view',enabled:true},{featureKey:'insights.view',enabled:false},
-      {featureKey:'insights.ai.use',enabled:false},{featureKey:'media.connections',enabled:true,limit:3,unit:'매체'},
-      {featureKey:'data.sync',enabled:true,limit:1,unit:'일 1회'},
-    ], createdAt:now(), updatedAt:now(),
-  },
-  {
-    planId:'pro-draft', name:'Pro', description:'제안서·소재 분석·AI 추천을 포함한 확장 상품 설계안', monthlyPrice:69000, status:'draft',
-    entitlements:[
-      {featureKey:'dashboard.view',enabled:true},{featureKey:'reports.view',enabled:true},{featureKey:'reports.proposal',enabled:true},
-      {featureKey:'insights.view',enabled:true},{featureKey:'insights.ai.use',enabled:true},{featureKey:'media.connections',enabled:true,limit:5,unit:'매체'},
-      {featureKey:'data.sync',enabled:true,limit:8,unit:'일 최대'},
-    ], createdAt:now(), updatedAt:now(),
-  },
-  {
-    planId:'hospital-blog-draft', name:'병원 블로그', description:'병원 특화 블로그 부가 구독 상품 설계안', monthlyPrice:129000, status:'draft',
-    entitlements:[{featureKey:'content.blog',enabled:true,limit:20,unit:'편/월'},{featureKey:'ai.content',enabled:true,limit:60,unit:'회/월'}],
-    createdAt:now(), updatedAt:now(),
-  },
-];
+const DEFAULT_PLANS: SubscriptionPlanDefinition[] = [];
 
 const DEFAULT_FLAGS: FeatureFlag[] = [
   ['insights.competitors','경쟁사 분석','internal'],['insights.trends','광고 트렌드','internal'],['insights.hook-cta','후킹·CTA 분석','internal'],
   ['insights.ai','AI 추천','internal'],['automation.report','보고서 자동 생성','internal'],['automation.ad-copy','광고 문구 자동 생성','internal'],
-  ['content.blog','블로그 작성','public'],['advertiser.portal','광고주 포털','public'],['billing.pg','정기 결제','disabled'],['security.sso','SSO','disabled'],
+  ['content.blog','블로그 제작','public'],['advertiser.portal','광고주 포털','public'],['billing.pg','정기 결제','disabled'],['security.sso','SSO','disabled'],
 ].map(([featureKey,label,state]) => ({featureKey,label,state:state as FeatureFlag['state'],updatedAt:now()}));
 
 const DEFAULT_SECURITY: SecurityPolicy = {
@@ -146,7 +112,7 @@ export function ensureControlSeed() {
   if (!localStorage.getItem(KEYS.organization)) save(KEYS.organization, DEFAULT_ORG);
   if (!localStorage.getItem(KEYS.users)) save(KEYS.users, DEFAULT_USERS);
   if (!localStorage.getItem(KEYS.roles)) save(KEYS.roles, DEFAULT_ROLES);
-  if (!localStorage.getItem(KEYS.memberships)) save(KEYS.memberships, [{membershipId:'membership-demo-admin',organizationId:'howtom',userId:'demo-admin',roleIds:['role-admin'],advertiserIds:undefined,createdAt:now(),updatedAt:now()}] as Membership[]);
+  if (!localStorage.getItem(KEYS.memberships)) save(KEYS.memberships, [] as Membership[]);
   if (!localStorage.getItem(KEYS.plans)) save(KEYS.plans, DEFAULT_PLANS);
   if (!localStorage.getItem(KEYS.flags)) save(KEYS.flags, DEFAULT_FLAGS);
   if (!localStorage.getItem(KEYS.security)) save(KEYS.security, DEFAULT_SECURITY);
@@ -230,7 +196,7 @@ export function loadNotices(){ensureControlSeed();return parse<Notice[]>(KEYS.no
 export function upsertNotice(input:Partial<Notice>&{title:string;body:string}){const rows=loadNotices();const stamp=now();const noticeId=input.noticeId||makeId('notice');const current=rows.find(x=>x.noticeId===noticeId);const row:Notice={noticeId,title:input.title,body:input.body,audience:input.audience||'internal',status:input.status||'draft',createdAt:current?.createdAt||stamp,updatedAt:stamp};save(KEYS.notices,current?rows.map(x=>x.noticeId===noticeId?row:x):[row,...rows],'howtom:control-changed');appendAudit({action:current?'notice.update':'notice.create',targetType:'notice',targetId:noticeId});return row;}
 
 export function loadAuditEvents(){ensureControlSeed();return parse<AuditEvent[]>(KEYS.audit,[]);}
-export function appendAudit(input:Omit<AuditEvent,'auditId'|'createdAt'|'result'> & {result?:AuditEvent['result']}){const row:AuditEvent={...input,auditId:makeId('audit'),result:input.result||'success',actorId:input.actorId||'demo-admin',organizationId:input.organizationId||'howtom',createdAt:now()};const rows=parse<AuditEvent[]>(KEYS.audit,[]);save(KEYS.audit,[row,...rows].slice(0,2000),'howtom:audit-changed');return row;}
+export function appendAudit(input:Omit<AuditEvent,'auditId'|'createdAt'|'result'> & {result?:AuditEvent['result']}){const row:AuditEvent={...input,auditId:makeId('audit'),result:input.result||'success',actorId:input.actorId||'system',organizationId:input.organizationId||'howtom',createdAt:now()};const rows=parse<AuditEvent[]>(KEYS.audit,[]);save(KEYS.audit,[row,...rows].slice(0,2000),'howtom:audit-changed');return row;}
 
 export function loadSecurityPolicy(){ensureControlSeed();return parse<SecurityPolicy>(KEYS.security,DEFAULT_SECURITY);}
 export function saveSecurityPolicy(policy:SecurityPolicy){save(KEYS.security,policy,'howtom:control-changed');appendAudit({action:'security.policy.update',targetType:'security-policy'});}

@@ -4,8 +4,6 @@ import { AppErrorBoundary } from './layouts/AppErrorBoundary';
 import { AppLayout } from './layouts/AppLayout';
 import { AuthGate } from './gates/AuthGate';
 import { KeywordHubLayout, CreativeHubLayout, AutomationHubLayout, CalendarHubLayout, AdAccountsHubLayout, ReportsBrandLayout } from './layouts/HubLayouts';
-import { generateSampleData, hasSampleData } from './utils/testSeed';
-import { loadGeneratedReports } from './features/reports/reportCore';
 import { runAutoDbSyncIfDue } from './utils/googleSheetDbSync';
 
 import { BrandListPage } from './pages/BrandListPage';
@@ -55,7 +53,8 @@ import { CompetitorAnalysisPage, AdTrendsPage, HookCtaAnalysisPage } from './pag
 import { ContentHomePage, InsightsHomePage, UniversePlannedPage } from './pages/UniverseHubPages';
 import { AssetsHomePage, AssetImagesPage, AssetVideosPage, AssetDocumentsPage, AssetCreativesPage, AdvertiserAssetFoldersPage, AssetTrashPage } from './pages/AssetManagementPages';
 import { ReferencesPage, AdCreationPage, ProductionLibraryPage, ContentTemplatesPage } from './pages/ContentSystemPages';
-import { BlogWritingPage, VideoScriptsPage, DocumentsWritingPage, AdvertiserSubscriptionsPage } from './pages/ProfessionalContentPages';
+import { VideoScriptsPage, DocumentsWritingPage, AdvertiserSubscriptionsPage } from './pages/ProfessionalContentPages';
+import { BlogProductionPage } from './features/blog/BlogProductionPage';
 import { AdvertiserWorkspaceDashboardPage, AdvertiserContactsPage, AdvertiserPermissionsPage, AdvertiserApprovalsPage, AdvertiserSharedMaterialsPage, AdvertiserActivityPage, AdvertiserPortalPreviewPage } from './pages/AdvertiserControlPages';
 import { PlatformSettingsHubPage, PlatformSettingsSectionPage } from './pages/SettingsControlPages';
 import { AdminControlDashboardPage, AdminControlPage } from './pages/AdminControlPages';
@@ -66,11 +65,6 @@ function LegacyCreativeDetail(){const {creativeId}=useParams();return <Navigate 
 function LegacySettingsRedirect(){const {sectionKey}=useParams();return <Navigate to={`/settings/advanced/${sectionKey??''}`} replace/>}
 
 export default function App(){
-  // 매체 연동 전까지는 화면이 빈 채로 보이는 것이 정상 상태입니다.
-  // (이전에는 처음 실행 시 5·6·7월 테스트 샘플 데이터를 자동으로 채워 넣었지만,
-  //  실제 데이터와 구분이 안 될 수 있어 자동 생성을 껐습니다.
-  //  설정 화면의 '샘플 데이터 생성' 버튼으로 필요할 때만 수동으로 만들 수 있습니다.)
-  void hasSampleData; void loadGeneratedReports; void generateSampleData;
   useEffect(() => {
     let cancelled = false;
     const run = async () => { if (!cancelled) await runAutoDbSyncIfDue(); };
@@ -83,7 +77,7 @@ export default function App(){
   <Route element={<AppLayout/>}>
     <Route path="home" element={<UniverseHomePage/>}/>
     <Route path="insights" element={<InsightsHomePage/>}/><Route path="insights/performance" element={<IntegratedPerformanceAnalysisPage/>}/><Route path="insights/media" element={<MediaPerformancePage/>}/><Route path="insights/advertisers" element={<AdvertiserPerformancePage/>}/><Route path="insights/campaigns" element={<CampaignAnalysisPage/>}/><Route path="insights/creatives" element={<CreativeAnalysisPage/>}/><Route path="insights/competitors" element={<CompetitorAnalysisPage/>}/><Route path="insights/trends" element={<AdTrendsPage/>}/><Route path="insights/hook-cta" element={<HookCtaAnalysisPage/>}/><Route path="insights/ai-recommendations" element={<AIRecommendationsPage/>}/><Route path="insights/ai-recommendations/:recommendationId" element={<AIRecommendationDetailPage/>}/>
-    <Route path="content" element={<ContentHomePage/>}/><Route path="content/references" element={<ReferencesPage/>}/><Route path="content/ad-creation" element={<AdCreationPage/>}/><Route path="content/blog" element={<BlogWritingPage/>}/><Route path="content/video-scripts" element={<VideoScriptsPage/>}/><Route path="content/documents" element={<DocumentsWritingPage/>}/><Route path="content/productions" element={<ProductionLibraryPage/>}/><Route path="content/templates" element={<ContentTemplatesPage/>}/>
+    <Route path="content" element={<ContentHomePage/>}/><Route path="content/references" element={<ReferencesPage/>}/><Route path="content/ad-creation" element={<AdCreationPage/>}/><Route path="content/blog" element={<BlogProductionPage/>}/><Route path="content/video-scripts" element={<VideoScriptsPage/>}/><Route path="content/documents" element={<DocumentsWritingPage/>}/><Route path="content/productions" element={<ProductionLibraryPage/>}/><Route path="content/templates" element={<ContentTemplatesPage/>}/>
     <Route path="assets" element={<AssetsHomePage/>}/><Route path="assets/images" element={<AssetImagesPage/>}/><Route path="assets/videos" element={<AssetVideosPage/>}/><Route path="assets/documents" element={<AssetDocumentsPage/>}/><Route path="assets/creatives" element={<AssetCreativesPage/>}/><Route path="assets/advertisers" element={<AdvertiserAssetFoldersPage/>}/><Route path="assets/trash" element={<AssetTrashPage/>}/>
     <Route path="admin" element={<AdminOnlyGate><AdminControlDashboardPage/></AdminOnlyGate>}/><Route path="admin/:sectionKey" element={<AdminOnlyGate><AdminControlPage/></AdminOnlyGate>}/>
     <Route path="planned/:moduleKey" element={<UniversePlannedPage/>}/>

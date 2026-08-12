@@ -1,11 +1,10 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, LogOut } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { ChevronLeft, ChevronRight, LogOut, Menu, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { activeUniverseGroup, isUniverseItemActive, universeMenuGroups, type UniverseMenuGroup } from '../data/universeMenu';
 import { HowtomUniverseLogo } from '../components/HowtomUniverseLogo';
 import { loadMenuVisibility } from '../control/controlStore';
-import { DEMO_MODE } from '../config/runtime';
 const SIDEBAR_COLLAPSED_KEY = 'howtom-universe-v08-sidebar-collapsed';
 const ACTIVE_SECTION_KEY = 'howtom-universe-v08-active-section';
 
@@ -21,12 +20,10 @@ function SidebarFooter({ collapsed }: { collapsed: boolean }) {
       {!collapsed && (
         <div className="sidebar-footer-copy">
           <div className="sidebar-footer-name">{user?.name || user?.email || '사용자'}</div>
-          <div className="sidebar-footer-role">{isAdmin ? '관리자' : '광고주'}{DEMO_MODE ? ' · 데모 모드' : ''}</div>
-          {!DEMO_MODE && (
-            <button type="button" className="sidebar-footer-logout" onClick={logout}>
-              <LogOut size={15} /> 로그아웃
-            </button>
-          )}
+          <div className="sidebar-footer-role">{isAdmin ? '관리자' : '광고주'}</div>
+          <button type="button" className="sidebar-footer-logout" onClick={logout}>
+            <LogOut size={15} /> 로그아웃
+          </button>
         </div>
       )}
     </div>
@@ -37,6 +34,11 @@ export function Sidebar() {
   const { pathname } = useLocation();
   const { isAdmin } = useAuth();
   const currentGroup = activeUniverseGroup(pathname);
+  // 모바일(좁은 화면)에서는 사이드바 전체를 화면 밖에 숨겨두고, 상단 햄버거 버튼을 눌렀을 때만
+  // 오프캔버스 드로어로 슬라이드해 들어오게 합니다. 데스크톱 사이드바를 그냥 축소한 아이콘
+  // 레일만으로는(72px) 실제 스마트폰 화면에서 여전히 콘텐츠 폭을 크게 잡아먹기 때문입니다.
+  const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
   // 관리자 > 메뉴 노출 설정을 실제로 반영합니다. 라우트 자체는 지우지 않고 사이드바
   // 목록에서만 숨기는 방식이라(관리자 설정 화면 설명과 동일한 원칙), 관리자가 직접 주소로
   // 들어가면 여전히 화면은 열립니다 - 이건 "노출 정책"이지 "접근 차단"이 아니기 때문입니다.
@@ -79,6 +81,13 @@ export function Sidebar() {
   const activeSection = groups.find(group => group.key === activeSectionKey) ?? null;
   const railMode = manualCollapsed || Boolean(activeSection);
 
+  // 서브메뉴는 닫히는 동안에도 내용을 유지해야 자연스럽게 접힙니다.
+  // (바로 언마운트하면 폭이 줄기 전에 글자가 사라져 끊겨 보입니다.)
+  const [renderedSection, setRenderedSection] = useState<UniverseMenuGroup | null>(activeSection);
+  useEffect(() => {
+    if (activeSection) setRenderedSection(activeSection);
+  }, [activeSection]);
+
   const selectMainMenu = (group: UniverseMenuGroup) => {
     setActiveSectionKey(group.key);
     setManualCollapsed(false);
@@ -116,7 +125,22 @@ export function Sidebar() {
 
   return (
     <Fragment>
-      <aside className={`sidebar universe-sidebar universe-primary-sidebar ${railMode ? 'is-collapsed' : ''}`}>
+      <header className="mobile-topbar">
+        <Link to="/home" className="mobile-topbar-brand" aria-label="HOWTOM 유니버스 통합 홈" onClick={resetToHome}>
+          <HowtomUniverseLogo compact />
+        </Link>
+        <button
+          type="button"
+          className="mobile-topbar-toggle"
+          onClick={() => setMobileOpen(v => !v)}
+          aria-label={mobileOpen ? '메뉴 닫기' : '메뉴 열기'}
+          aria-expanded={mobileOpen}
+        >
+          {mobileOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
+      </header>
+      {mobileOpen && <div className="mobile-sidebar-backdrop" onClick={() => setMobileOpen(false)} aria-hidden="true" />}
+      <aside className={`sidebar universe-sidebar universe-primary-sidebar ${railMode ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="universe-brand-row">
           <Link to="/home" className="universe-brand universe-brand-css-link" aria-label="HOWTOM 유니버스 통합 홈" onClick={resetToHome}>
             <HowtomUniverseLogo compact={railMode} />
@@ -154,18 +178,30 @@ export function Sidebar() {
         <SidebarFooter collapsed={railMode} />
       </aside>
 
-      {activeSection && (
-        <aside className="universe-secondary-sidebar" aria-label={`${activeSection.label} 서브메뉴`}>
+      {renderedSection && (
+        <aside
+          className={`universe-secondary-sidebar ${activeSection ? 'is-open' : 'is-closed'} ${mobileOpen ? 'mobile-open' : ''}`}
+          aria-label={`${renderedSection.label} 서브메뉴`}
+          aria-hidden={activeSection ? undefined : true}
+        >
           <div className="universe-secondary-head">
+            <button type="button" className="universe-secondary-back" onClick={() => setActiveSectionKey(null)} aria-label="메인 메뉴로 돌아가기">
+              <ChevronLeft size={17} />
+            </button>
             <span>메뉴</span>
-            <strong>{activeSection.label}</strong>
+            <strong>{renderedSection.label}</strong>
           </div>
-          <nav className="universe-secondary-nav">
-            {activeSection.items.map(item => {
+          <nav className="universe-secondary-nav" key={renderedSection.key}>
+            {renderedSection.items.map((item, index) => {
               const active = isUniverseItemActive(pathname, item);
               const label = `${item.label}${item.planned ? ' (미구현)' : ''}`;
               return (
-                <Link key={item.key} to={item.path} className={`universe-secondary-item ${active ? 'active' : ''} ${item.planned ? 'planned' : ''}`}>
+                <Link
+                  key={item.key}
+                  to={item.path}
+                  style={{ '--stagger': index } as CSSProperties}
+                  className={`universe-secondary-item ${active ? 'active' : ''} ${item.planned ? 'planned' : ''}`}
+                >
                   {label}
                 </Link>
               );

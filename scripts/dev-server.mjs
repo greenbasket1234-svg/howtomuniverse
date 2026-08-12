@@ -105,13 +105,13 @@ process.once('exit', stopChildren);
 async function startStaticMode() {
   if (!existsSync(distIndex)) {
     console.error('[오류] 개발 패키지와 dist/index.html이 모두 없습니다.');
-    console.error('[해결] 인터넷 연결 후 npm run setup을 실행하거나, dist가 포함된 완성본을 다시 받으세요.');
+    console.error('[해결] 인터넷 연결 후 npm run setup 및 npm run build를 실행하세요.');
     process.exit(1);
   }
 
   const port = await findAvailablePort(requestedPort);
   const url = `http://127.0.0.1:${port}/home`;
-  console.log('[안내] 설치된 개발 패키지가 없어 포함된 완성 빌드로 실행합니다.');
+  console.log('[안내] 개발 패키지가 없어 현재 dist 빌드로 실행합니다.');
   console.log(`[안내] HOWTOM 유니버스: ${url}`);
   console.log('[안내] 이 모드에서도 화면과 내장 데모 API를 사용할 수 있습니다.');
   console.log('[안내] 소스 수정 실시간 반영이 필요하면 npm run setup 후 npm run dev:source를 실행하세요.');
@@ -145,7 +145,7 @@ async function startSourceMode() {
     if (!forceSource) return startStaticMode();
     const installed = await installDependencies();
     if (!installed) {
-      console.warn('[경고] 패키지 설치에 실패해 포함된 완성 빌드로 전환합니다.');
+      console.warn('[경고] 패키지 설치에 실패해 기존 dist 빌드 실행을 시도합니다.');
       return startStaticMode();
     }
   }
@@ -187,7 +187,7 @@ async function startSourceMode() {
     if (shuttingDown) return;
     if (code && code !== 0) {
       console.error(`[오류] Vite 개발 서버가 비정상 종료되었습니다. 종료 코드: ${code}, 신호: ${signal ?? '-'}`);
-      console.warn('[안내] 포함된 완성 빌드(dist)로 자동 전환합니다.');
+      console.warn('[안내] 기존 dist 빌드로 자동 전환을 시도합니다.');
       try { apiChild.kill(); } catch { /* ignore */ }
       await startStaticMode();
     }

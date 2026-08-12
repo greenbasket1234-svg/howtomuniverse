@@ -5,18 +5,7 @@ import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 type Creative={id:string;name:string;campaign:string;thumb:string;spend:number;impressions:number;clicks:number;frequency:number;status:'라이브'|'보관됨';days:number;health:number;trend:number[]};
-const creatives:Creative[]=[
-{id:'m1',name:'20260618_인스타1 퇴근캠핑',campaign:'월컴투바베큐 · 20260609_트래픽',thumb:'linear-gradient(135deg,#275a91,#e5a94c)',spend:120587,impressions:20617,clicks:623,frequency:1.03,status:'라이브',days:14,health:5,trend:[45,62,55,72,61,83]},
-{id:'m2',name:'20260610_인스타4 삼겹살',campaign:'월컴투바베큐 · 20260609_트래픽',thumb:'linear-gradient(135deg,#7d3a20,#d8a449)',spend:83041,impressions:20059,clicks:730,frequency:1.07,status:'라이브',days:26,health:20,trend:[37,55,42,66,80,73]},
-{id:'m3',name:'20260616_인스타1 야장',campaign:'월컴투바베큐 · 20260609_트래픽',thumb:'linear-gradient(135deg,#d2782c,#f0bf55)',spend:60073,impressions:9367,clicks:314,frequency:1.04,status:'라이브',days:20,health:0,trend:[42,68,51,34,59,47]},
-{id:'m4',name:'20260610_인스타3 수영장',campaign:'월컴투바베큐 · 20260609_트래픽',thumb:'linear-gradient(135deg,#28587f,#98c8d9)',spend:39051,impressions:5972,clicks:359,frequency:1.03,status:'라이브',days:26,health:0,trend:[80,56,46,27,21,18]},
-{id:'m5',name:'20260630_인스타4 수완지구 캠핑',campaign:'월컴투바베큐 · 20260630_트래픽',thumb:'linear-gradient(135deg,#f0e1bd,#c5d5a7)',spend:27231,impressions:8042,clicks:278,frequency:1.02,status:'보관됨',days:0,health:0,trend:[44,65,51,75,32,12]},
-{id:'m6',name:'20260630_인스타2 용기증기',campaign:'월컴투바베큐 · 20260630_트래픽',thumb:'linear-gradient(135deg,#2b271f,#c97c42)',spend:18247,impressions:2455,clicks:126,frequency:1.02,status:'보관됨',days:0,health:0,trend:[20,55,22,65,42,88]},
-{id:'m7',name:'20260701_인스타6 반려동물',campaign:'월컴투바베큐 · 20260630_트래픽',thumb:'linear-gradient(135deg,#bd8f64,#eee0c1)',spend:16919,impressions:3389,clicks:135,frequency:1.04,status:'라이브',days:5,health:0,trend:[12,25,61,23,47,39]},
-{id:'m8',name:'20260701_인스타8 강아지 포미',campaign:'월컴투바베큐 · 20260630_트래픽',thumb:'linear-gradient(135deg,#886c4f,#d8c5a7)',spend:16130,impressions:2446,clicks:123,frequency:1.05,status:'라이브',days:5,health:0,trend:[20,38,50,68,49,73]},
-{id:'m9',name:'수영장',campaign:'월컴투바베큐 · 수영장',thumb:'linear-gradient(135deg,#3e7aa1,#a9d9e8)',spend:8388,impressions:1861,clicks:82,frequency:1.02,status:'라이브',days:3,health:0,trend:[25,44,53,62,77,71]},
-{id:'m10',name:'드론',campaign:'월컴투바베큐 · 드론',thumb:'linear-gradient(135deg,#4f7748,#b8c98b)',spend:8387,impressions:1839,clicks:55,frequency:1.13,status:'라이브',days:3,health:0,trend:[12,35,65,74,50,88]},
-];
+const creatives:Creative[]=[];
 const periods=['오늘','어제','7일','14일','30일','60일','90일']; const won=(n:number)=>`₩${Math.round(n).toLocaleString()}`;
 
 export function MetaCreativeReportPage(){

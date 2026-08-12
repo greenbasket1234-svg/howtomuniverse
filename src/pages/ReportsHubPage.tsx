@@ -22,28 +22,14 @@ type Snapshot = {
   revenue: number;
 };
 
+const zeroSnapshot=(label:string):Snapshot=>({label,spend:0,impressions:0,clicks:0,conversions:0,revenue:0});
 const SNAPSHOTS: Record<ReportRange, Snapshot> = {
-  yesterday: { label: '7/5 (일) · 어제', spend: 90215, impressions: 19754, clicks: 886, conversions: 8, revenue: 360000 },
-  today: { label: '7/6 (월) · 오늘', spend: 78160, impressions: 16820, clicks: 754, conversions: 7, revenue: 331000 },
-  daily: { label: '7/5 (일) · 일간', spend: 90215, impressions: 19754, clicks: 886, conversions: 8, revenue: 360000 },
-  weekly: { label: '6/29 ~ 7/5 · 주간', spend: 620107, impressions: 133338, clicks: 6436, conversions: 51, revenue: 2807800 },
-  monthly: { label: '7월 · 월간', spend: 737144, impressions: 159420, clicks: 7132, conversions: 58, revenue: 3209400 },
-  custom: { label: '직접 선택', spend: 737144, impressions: 159420, clicks: 7132, conversions: 58, revenue: 3209400 },
+  yesterday:zeroSnapshot('어제'),today:zeroSnapshot('오늘'),daily:zeroSnapshot('일간'),weekly:zeroSnapshot('주간'),monthly:zeroSnapshot('월간'),custom:zeroSnapshot('직접 선택'),
 };
 
-const brandChannelData = [
-  { brand: '월컴투바베큐', color: '#f59e0b', meta: 58208, naver: 9430, google: 20744, other: 0 },
-  { brand: '노멜', color: '#10b981', meta: 0, naver: 1833, google: 0, other: 0 },
-];
+const brandChannelData: { brand: string; color: string; meta: number; naver: number; google: number; other: number }[] = [];
 
-const campaignRows = [
-  { campaign: '20260609_드론택', brand: '월컴투바베큐', media: 'Meta', spend: 58208, impressions: 12507, clicks: 408, cpm: 4654, ctr: 3.26, conversions: 0, revenue: 0 },
-  { campaign: '20260619.1_무더운 여름은 월컴투바베큐에서!', brand: '월컴투바베큐', media: 'Google Ads', spend: 20744, impressions: 5934, clicks: 458, cpm: 3496, ctr: 7.72, conversions: 0, revenue: 0 },
-  { campaign: '#월컴투바베큐', brand: '월컴투바베큐', media: '네이버 검색', spend: 9430, impressions: 330, clicks: 17, cpm: 28576, ctr: 5.15, conversions: 0, revenue: 0 },
-  { campaign: '00_노멜_자사몰_자사명', brand: '노멜', media: '네이버 검색', spend: 1300, impressions: 252, clicks: 2, cpm: 5159, ctr: 0.79, conversions: 0, revenue: 0 },
-  { campaign: '노멜_자사몰_M', brand: '노멜', media: '네이버 검색', spend: 533, impressions: 594, clicks: 1, cpm: 897, ctr: 0.17, conversions: 0, revenue: 0 },
-  { campaign: '직접입력_WTB어드민(자동)', brand: '월컴투바베큐', media: '기타', spend: 0, impressions: 0, clicks: 0, cpm: 0, ctr: 0, conversions: 8, revenue: 360000 },
-];
+const campaignRows: { campaign: string; brand: string; media: string; spend: number; impressions: number; clicks: number; cpm: number; ctr: number; conversions: number; revenue: number }[] = [];
 
 function won(value: number) {
   return `₩${Math.round(value).toLocaleString()}`;
@@ -95,10 +81,10 @@ function getWeekRange(anchor: string) {
 function ReportOverview() {
   const [tab, setTab] = useState<ReportTab>('period');
   const [range, setRange] = useState<ReportRange>('yesterday');
-  const [customRange, setCustomRange] = useState<DateRange>({ from: '2026-07-01', to: '2026-07-06' });
-  const [dailyDate, setDailyDate] = useState('2026-07-05');
-  const [weeklyAnchor, setWeeklyAnchor] = useState('2026-07-05');
-  const [monthlyValue, setMonthlyValue] = useState('2026-07');
+  const [customRange, setCustomRange] = useState<DateRange>(()=>{const d=new Date().toISOString().slice(0,10);return {from:d,to:d}});
+  const [dailyDate, setDailyDate] = useState(()=>new Date().toISOString().slice(0,10));
+  const [weeklyAnchor, setWeeklyAnchor] = useState(()=>new Date().toISOString().slice(0,10));
+  const [monthlyValue, setMonthlyValue] = useState(()=>new Date().toISOString().slice(0,7));
   const weekRange = getWeekRange(weeklyAnchor);
   const snapshotBase = SNAPSHOTS[range];
   const dynamicLabel = range === 'custom'
@@ -227,8 +213,8 @@ function ReportOverview() {
           <table className="ops-table report-table">
             <thead><tr><th>브랜드</th><th>광고비</th><th>노출</th><th>클릭</th><th>CTR</th><th>전환/예약</th><th>전환매출</th><th>ROAS</th></tr></thead>
             <tbody>
-              <tr><td><span className="report-brand-dot orange"/>월컴투바베큐<small>오프라인 예약/방문형</small></td><td>{won(88382)}</td><td>18,771</td><td>883</td><td>4.70%</td><td>8</td><td>{won(360000)}</td><td>407%</td></tr>
-              <tr><td><span className="report-brand-dot green"/>노멜<small>쇼핑몰 구매전환형</small></td><td>{won(1833)}</td><td>983</td><td>3</td><td>0.31%</td><td>0</td><td>-</td><td>-</td></tr>
+              
+              
             </tbody>
           </table>
         </div>
@@ -257,7 +243,7 @@ function ReportOverview() {
 export function ReportsHubPage() {
   const { brandId } = useParams();
   const [period, setPeriod] = useState<PeriodType>('daily');
-  const [range, setRange] = useState<DateRange>({ from: '2026-07-01', to: '2026-07-12' });
+  const [range, setRange] = useState<DateRange>(()=>{const d=new Date().toISOString().slice(0,10);return {from:d,to:d}});
   const report = BRAND_REPORTS.find((r) => r.config.brandId === brandId);
   const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set());
 
@@ -284,7 +270,6 @@ export function ReportsHubPage() {
     <div>
       <Link to="/reports" className="breadcrumb-back">← 통합 보고서로</Link>
       <PageHeader title={`${report.config.brandName} 보고서`} description="브랜드 통합 보고서입니다. 채널·지표 구성은 광고주 설정을 따릅니다." action={<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><DateRangePicker value={range} onChange={setRange}/><PeriodSelector value={period} onChange={setPeriod}/><MetricPicker options={metricOptions} selected={selectedGroups} onChange={setSelectedGroups}/></div>} />
-      {!report.config.hasRealData && <div className="footnote" style={{marginBottom:12}}><Badge tone="neutral">예시 구성</Badge> 이 광고주는 실제 보고서 캡처가 아직 없어 예시 데이터로 채웠습니다.</div>}
       <div className="card"><div className="card-title">통합 보고서</div>{filteredConfig.rowGroups.length===0?<EmptyState title="표시할 지표를 선택해주세요." description="상단의 지표 선택에서 최소 1개 이상 켜주세요."/>:<BrandReportGrid config={filteredConfig} data={report.data} dates={dates} period={period}/>}</div>
     </div>
   );

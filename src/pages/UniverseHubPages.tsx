@@ -37,7 +37,7 @@ const hubCards = {
   ],
   content: [
     ['광고 제작', '브리프·후킹·카피·CTA·소재 기획을 한 화면에서 제작합니다.', '/content/ad-creation', Sparkles],
-    ['블로그 작성', '병원 블로그를 비롯한 업종별 SEO 포스팅을 작성하고 외부 발행까지 관리합니다.', '/content/blog', PenLine],
+    ['블로그 제작', '광고주 문체·자산·SEO·업종별 규정 검수와 의료광고 심의 관리를 한곳에서 진행합니다.', '/content/blog', PenLine],
     ['영상 대본', '릴스·쇼츠·광고 영상 대본과 장면 구성을 작성합니다.', '/content/video-scripts', Clapperboard],
     ['문서 작성', '기획서·제안 초안·전략서 등 업무 문서를 블록 단위로 작성합니다.', '/content/documents', FileText],
     ['제작물 보관함', '제작 프로젝트와 결과 자산을 광고주·캠페인 기준으로 확인합니다.', '/content/productions', FolderOpen],

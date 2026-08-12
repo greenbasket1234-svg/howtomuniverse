@@ -14,7 +14,7 @@ export const FEATURE_CATALOG: FeaturePermission[] = [
   {featureKey:'insights.ai.use',label:'AI 추천 사용',group:'인사이트',actions:['view','create'],advertiserVisible:true},
   {featureKey:'content.create',label:'콘텐츠 제작',group:'콘텐츠',actions:['create','edit'],advertiserVisible:false},
   {featureKey:'content.approve',label:'콘텐츠 승인',group:'콘텐츠',actions:['approve'],advertiserVisible:true},
-  {featureKey:'content.blog',label:'블로그 작성',group:'콘텐츠',actions:['create','edit'],advertiserVisible:true},
+  {featureKey:'content.blog',label:'블로그 제작',group:'콘텐츠',actions:['create','edit'],advertiserVisible:true},
   {featureKey:'assets.view',label:'공유 자료 열람',group:'자산관리',actions:['view'],advertiserVisible:true},
   {featureKey:'assets.upload',label:'자산 업로드',group:'자산관리',actions:['create'],advertiserVisible:false},
   {featureKey:'automation.view',label:'자동화 현황 열람',group:'AI 자동화',actions:['view'],advertiserVisible:false},

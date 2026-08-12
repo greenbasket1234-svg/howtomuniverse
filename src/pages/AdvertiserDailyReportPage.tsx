@@ -16,7 +16,6 @@ import { MonthlyReportBuilder } from '../components/monthlyReport/MonthlyReportB
 import { loadCustomPlatforms, loadMetricLabelOverrides, loadCustomMetrics, evaluateFormula, type CustomMetricDefinition } from '../utils/metricCatalog';
 import { loadReportIntegrationSettings } from '../data/reportIntegrations';
 import { sendRowToGoogleSheet } from '../utils/googleSheetSync';
-import { generateSampleData, hasSampleData } from '../utils/testSeed';
 import {
   ALL_REPORT_METRICS,
   BASE_ADVERTISERS,
@@ -210,12 +209,12 @@ function ReportGrid({ advertiserName, month, rows, editable, onCellChange, onDel
 export function AdvertiserDailyReportPage() {
   const { filterValue, setFilter } = useAdvertiserFilter();
   const [tab, setTab] = useState<ReportTab>('preview');
-  const [month, setMonth] = useState('2026-07');
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0,7));
   const [profiles, setProfiles] = useState<Record<string, DailyReportProfile>>(() => loadProfiles());
   function resolveInitialAdvertiser(value: string) {
-    if (!value.trim()) return '다방이사';
+    if (!value.trim()) return '';
     const matches = BASE_ADVERTISERS.filter(name => matchesAdvertiserFilter(name, value));
-    return matches.length === 1 ? matches[0] : '다방이사';
+    return matches.length === 1 ? matches[0] : '';
   }
   const [advertiserName, setAdvertiserName] = useState(() => resolveInitialAdvertiser(filterValue));
   const [extraAdvertisers, setExtraAdvertisers] = useState<string[]>(() => loadExtraAdvertisers());
@@ -251,19 +250,9 @@ export function AdvertiserDailyReportPage() {
   // 사용자가 미리보기 textarea를 직접 고치면(엑셀 내용과 달라질 수 있으므로) 비웁니다.
   const [pendingExcelRows, setPendingExcelRows] = useState<string[][] | null>(null);
   const [notice, setNotice] = useState('');
-  const [sampleExists, setSampleExists] = useState(() => hasSampleData());
-  const [sampleGenerating, setSampleGenerating] = useState(false);
-  const handleGenerateSampleData = () => {
-    setSampleGenerating(true);
-    const result = generateSampleData();
-    setSampleGenerating(false);
-    setSampleExists(hasSampleData());
-    setNotice(result.ok ? `샘플 데이터를 만들었습니다(${result.count}건). 위에서 광고주·월(2026-05~07)을 고르면 확인할 수 있습니다.` : `오류: ${result.error ?? '샘플 데이터를 만들지 못했습니다.'}`);
-    setTimeout(() => setNotice(''), 5000);
-  };
   const [syncingApi, setSyncingApi] = useState(false);
   const [apiSourceLabel, setApiSourceLabel] = useState('대기 중');
-  const [reportSource, setReportSource] = useState<'api' | 'manual' | 'upload' | 'demo' | 'sample'>('demo');
+  const [reportSource, setReportSource] = useState<'api' | 'manual' | 'upload' | 'demo' | 'sample'>('manual');
   // 샘플을 열어 셀·행·양식을 수정해도 실제 보고서로 전환되지 않도록, 데이터 출처와 별개로
   // 현재 편집 세션의 샘플 여부를 유지합니다.
   const [sampleContext, setSampleContext] = useState(false);
@@ -296,7 +285,7 @@ export function AdvertiserDailyReportPage() {
     // 정확히 광고주 1명만 매칭될 때만 보고서 대상 광고주를 자동으로 전환합니다.
     // (예전엔 filterValue를 그대로 advertiserName에 넣어서, "서울"만 쳐도 광고주명이 "서울"이 되어버렸습니다.)
     const matches = allAdvertisers.filter(name => matchesAdvertiserFilter(name, filterValue));
-    if (matches.length === 1 && matches[0] !== advertiserName) { setSampleContext(false); setReportSource('demo'); setAdvertiserName(matches[0]); }
+    if (matches.length === 1 && matches[0] !== advertiserName) { setSampleContext(false); setReportSource('manual'); setAdvertiserName(matches[0]); }
   }, [filterValue]);
 
   const rawProfile = sampleProfileOverride ?? profiles[advertiserName] ?? defaultProfileFor(advertiserName);
@@ -481,10 +470,6 @@ export function AdvertiserDailyReportPage() {
       if (savedForMonth?.rows) {
         const totalRow = savedForMonth.rows.find(r => !r.platform && r.metric === 'spend' && !r.derived);
         spend = totalRow ? totalRow.total : savedForMonth.rows.filter(r => r.platform && r.metric === 'spend' && !r.derived).reduce((s, r) => s + r.total, 0);
-      } else {
-        const demoProfile = defaultProfileFor(name);
-        const demoSource = sourceFor(demoProfile.reportType, name);
-        spend = Object.values(demoSource).reduce((s, bundle) => s + (bundle.spend ?? []).reduce((a, v) => a + v, 0), 0);
       }
       return { platform: name, spend };
     }).filter(item => item.spend > 0).sort((a, b) => b.spend - a.spend);
@@ -644,14 +629,14 @@ export function AdvertiserDailyReportPage() {
     const matches = allAdvertisers.filter(name => matchesAdvertiserFilter(name, value));
     if (matches.length === 1) {
       setSampleContext(false);
-      setReportSource('demo');
+      setReportSource('manual');
       setAdvertiserName(matches[0]);
       setFilter(matches[0]);
       const nextType = (profiles[matches[0]] ?? defaultProfileFor(matches[0])).reportType;
       setTemplateName(`${matches[0]} · ${REPORT_TYPE_LABEL[nextType]} 양식`);
     } else if (allAdvertisers.includes(value)) {
       setSampleContext(false);
-      setReportSource('demo');
+      setReportSource('manual');
       setAdvertiserName(value);
       setFilter(value);
       const nextType = (profiles[value] ?? defaultProfileFor(value)).reportType;
@@ -758,7 +743,7 @@ export function AdvertiserDailyReportPage() {
       : type === 'click' ? { ...defaultProfileFor(advertiserName), reportType: 'click' as const, clickMode: 'efficiency' as const, platforms: ['메타', '네이버', '구글', '카카오모먼트', 'GFA', '당근'], metrics: ['impressions', 'clicks', 'ctr', 'spend', 'cpc'] as MetricKey[] }
       : { ...defaultProfileFor(advertiserName), reportType: 'lead' as const, platforms: ['메타', '당근', '네이버', '구글 SA', 'YouTube AD', '틱톡'], metrics: ['leads', 'clicks', 'impressions', 'spend', 'cpa', 'cpc', 'ctr', 'conversionRate'] as MetricKey[] };
     updateProfile({ ...next, advertiserName });
-    setReportSource(currentIsSample ? 'sample' : 'demo');
+    setReportSource(currentIsSample ? 'sample' : 'manual');
     setApiSourceLabel('대기 중');
     setTemplateName(`${advertiserName} · ${REPORT_TYPE_LABEL[next.reportType]} 양식`);
   };
@@ -793,22 +778,20 @@ export function AdvertiserDailyReportPage() {
         method: 'POST',
         body: JSON.stringify({ advertiserName, month, reportType: profile.reportType, platforms: profile.platforms, metrics: profile.metrics }),
       });
-      const apiSource = normalizeApiSource(result.source, sourceFor(profile.reportType, profile.advertiserName));
+      if (!result.source || !Object.keys(result.source).length) throw new Error('연결된 매체 데이터가 없습니다.');
+      const apiSource = normalizeApiSource(result.source, {});
       const syncedRows = buildRows(profile, month, apiSource);
       setRowsOverride(prev => ({ ...prev, [storageKey]: syncedRows }));
-      setApiSourceLabel(result.mode === 'demo' ? '실제 API 미연동 · 데모 데이터 자동 입력' : `API 자동수집 완료 ${result.collectedAt ? new Date(result.collectedAt).toLocaleString('ko-KR') : ''}`);
+      setApiSourceLabel(`API 자동수집 완료 ${result.collectedAt ? new Date(result.collectedAt).toLocaleString('ko-KR') : ''}`);
       setSampleContext(false);
-      setReportSource(result.mode === 'demo' ? 'demo' : 'api');
+      setReportSource('api');
       setTab('preview');
-      setNotice(result.mode === 'demo' ? '데모 데이터가 자동 입력되었습니다. 실제 API 토큰 연결 후 실데이터 수집으로 전환됩니다.' : '매체별 API 데이터가 자동 입력되고 계산 지표가 갱신되었습니다.');
-    } catch {
-      const fallbackRows = buildRows(profile, month, sourceFor(profile.reportType, profile.advertiserName));
-      setRowsOverride(prev => ({ ...prev, [storageKey]: fallbackRows }));
-      setApiSourceLabel('API 연결 전 · 데모 데이터 자동 입력');
+      setNotice('매체별 API 데이터가 자동 입력되고 계산 지표가 갱신되었습니다.');
+    } catch (error) {
+      setApiSourceLabel('연결된 API 데이터 없음');
       setSampleContext(false);
-      setReportSource('demo');
-      setTab('preview');
-      setNotice('API 서버가 없어 데모 데이터로 자동 입력했습니다. 실제 API 연결 후 같은 구조로 수집됩니다.');
+      setReportSource('manual');
+      setNotice(error instanceof Error ? error.message : '연결된 광고 API가 없습니다. 매체·계정 연동 후 다시 시도해 주세요.');
     } finally {
       setSyncingApi(false);
       setTimeout(() => setNotice(''), 3200);
@@ -954,7 +937,7 @@ export function AdvertiserDailyReportPage() {
     };
     const nextProfiles = { ...profiles, [advertiserName]: sanitizeReportProfile(profile) };
     // 같은 광고주에서 이름까지 똑같을 때만 이전 버전을 덮어씁니다. 이름을 다르게 저장하면
-    // "서울우리아이치과 · 병원용", "서울우리아이치과 · 원장님 보고용"처럼 여러 버전을 함께 보관할 수 있습니다.
+    // "광고주명 · 병원용", "광고주명 · 원장님 보고용"처럼 여러 버전을 함께 보관할 수 있습니다.
     const nextTemplates = [template, ...savedTemplates.filter(item => !(item.advertiserName === advertiserName && item.name === trimmedName))].slice(0, 50);
     setProfiles(nextProfiles);
     saveProfiles(nextProfiles);
@@ -971,7 +954,7 @@ export function AdvertiserDailyReportPage() {
       return;
     }
     setSampleContext(false);
-    setReportSource('demo');
+    setReportSource('manual');
     setAdvertiserName(template.advertiserName);
     setTemplateName(template.name);
     setProfiles(prev => {
@@ -1253,7 +1236,7 @@ export function AdvertiserDailyReportPage() {
           </label>
           <label className="field-label">
             조회 연월
-            <input type="month" value={month} onChange={(event) => { setSampleContext(false); setReportSource('demo'); setMonth(event.target.value); }} />
+            <input type="month" value={month} onChange={(event) => { setSampleContext(false); setReportSource('manual'); setMonth(event.target.value); }} />
           </label>
           <label className="field-label">
             보고서 유형
@@ -1288,10 +1271,10 @@ export function AdvertiserDailyReportPage() {
       </section>
 
       <section className="card report-workflow-card">
-        <div className="workflow-step"><b>1</b><span>광고주·월 선택</span><small>상단에서 광고주, 월, 보고서 유형을 먼저 고릅니다.</small></div>
+        <div className="workflow-step"><b>1</b><span>광고주 월 선택</span><small>상단에서 광고주, 월, 보고서 유형을 먼저 고릅니다.</small></div>
         <div className="workflow-step"><b>2</b><span>보고서 확인</span><small>조회 화면에서 바로 데이터 추가·수정·삭제가 가능합니다.</small></div>
         <div className="workflow-step"><b>3</b><span>양식 관리</span><small>매체와 지표의 추가·수정·삭제는 환경설정에서 관리합니다.</small></div>
-        <div className="workflow-step"><b>4</b><span>저장·출력</span><small>일별, 주별, 월별 보고서를 따로 저장합니다.</small></div>
+        <div className="workflow-step"><b>4</b><span>저장 출력</span><small>일별, 주별, 월별 보고서를 따로 저장합니다.</small></div>
       </section>
 
       <div className="daily-report-tabs simplified">
@@ -1330,12 +1313,6 @@ export function AdvertiserDailyReportPage() {
 
       {tab === 'preview' && (
         <section className="card daily-report-grid-card">
-          {!sampleExists && (
-            <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span>ℹ 아직 저장된 실제 데이터가 없어 화면이 비어 보일 수 있습니다. 광고주 12곳에 5·6·7월 테스트 샘플 데이터를 바로 만들어서 화면과 기능을 먼저 확인해 볼 수 있습니다.</span>
-              <button type="button" className="btn primary sm" onClick={handleGenerateSampleData} disabled={sampleGenerating}>{sampleGenerating ? '만드는 중...' : '5·6·7월 샘플 데이터 만들기'}</button>
-            </div>
-          )}
           {currentIsSample && (
             <div style={{ background: '#111827', color: '#fbbf24', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 14, fontWeight: 700, textAlign: 'center' }}>
               🧪 테스트 샘플 데이터입니다 — 실제 운영 데이터가 아닙니다. 광고주에게 전달하지 마세요.
@@ -1343,7 +1320,7 @@ export function AdvertiserDailyReportPage() {
           )}
           <div className="daily-report-section-head">
             <div><h3>{advertiserName} {periodLabel ?? `${Number(month.split('-')[1])}월`} 매체별 광고보고서</h3><p>왼쪽 지표명과 TOTAL 열은 고정되고 날짜 영역은 가로 스크롤로 확인합니다.</p></div>
-            <button className="btn secondary" onClick={() => { setRowsOverride(prev => { const next = { ...prev }; delete next[storageKey]; return next; }); setReportSource(currentIsSample ? 'sample' : 'demo'); setApiSourceLabel(currentIsSample ? '테스트 샘플 기본 데이터' : '기본 데모 데이터'); }}><RefreshCw size={15}/> 기본 데이터 복원</button>
+            <button className="btn secondary" onClick={() => { setRowsOverride(prev => { const next = { ...prev }; delete next[storageKey]; return next; }); setReportSource(currentIsSample ? 'sample' : 'manual'); setApiSourceLabel(currentIsSample ? '테스트 데이터' : '입력 전'); }}><RefreshCw size={15}/> 기본 데이터 복원</button>
           </div>
           <div className="period-type-row">
             <div className="period-type-toggle">
@@ -1536,11 +1513,11 @@ export function AdvertiserDailyReportPage() {
                         { metric: 'clicks', name: '클릭수', color: '#db2777', type: 'bar', format: 'number' },
                         { metric: 'leads', name: 'DB', color: '#16a34a', type: 'line', format: 'number' },
                       ], chartPlatform)} />
-                      <TrendComboChart title="CTR · CVR 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="CTR CVR 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'ctr', name: 'CTR', color: '#7c3aed', type: 'bar', format: 'percent' },
                         { metric: 'conversionRate', name: 'CVR', color: '#0d9488', type: 'line', format: 'percent' },
                       ], chartPlatform)} />
-                      <TrendComboChart title="CPC · CPA 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="CPC CPA 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'cpc', name: 'CPC', color: '#f97316', type: 'bar', format: 'currency' },
                         { metric: 'cpa', name: 'CPA', color: '#dc2626', type: 'line', format: 'currency' },
                       ], chartPlatform)} />
@@ -1614,7 +1591,7 @@ export function AdvertiserDailyReportPage() {
           <div className="data-step-heading"><h3>데이터 입력/수집</h3><p>세 가지 방법 중 하나를 골라 진행하세요. 나중에 언제든 다른 방법으로 바꿀 수 있습니다.</p></div>
           <div className="data-method-cards">
             <button type="button" className="data-method-card" onClick={()=>setTab('api')}>
-              <RefreshCw size={22}/><b>1. API로 자동 입력</b><span>연결된 매체에서 원본 데이터를 자동으로 가져옵니다. 아직 실제 API 미연동 시에는 데모 데이터로 채워집니다.</span>
+              <RefreshCw size={22}/><b>1. API로 자동 입력</b><span>연결된 매체에서 실제 원본 데이터를 자동으로 가져옵니다. API가 연결되지 않은 경우 임의 데이터를 채우지 않습니다.</span>
             </button>
             <button type="button" className="data-method-card" onClick={()=>setTab('input')}>
               <Settings2 size={22}/><b>2. 표에 직접 입력</b><span>표의 각 셀에 숫자를 직접 입력하거나 수정합니다. 파생 지표는 자동으로 다시 계산됩니다.</span>
@@ -1642,13 +1619,13 @@ export function AdvertiserDailyReportPage() {
             {profile.platforms.map(platform => (
               <div key={platform} className="api-sync-platform-card">
                 <b>{platform}</b>
-                <span>{syncingApi ? '수집 대기' : apiSourceLabel.includes('데모') ? '데모 데이터 자동 입력' : apiSourceLabel.includes('완료') ? 'API 수집 완료' : '연결 대기'}</span>
+                <span>{syncingApi ? '수집 대기' : apiSourceLabel.includes('완료') ? 'API 수집 완료' : '연결 대기'}</span>
                 <small>원본 지표: {profile.metrics.filter(metric => metric !== 'frequency').map(metric => getMetricLabel(metric)).join(', ')}</small>
               </div>
             ))}
           </div>
           <div className="api-sync-note">
-            실제 API 미연동 · 현재는 데모 데이터 자동 입력 상태입니다. Meta, 네이버, Google Ads, 카카오, 당근, 틱톡 API 토큰을 연결하면 실데이터 수집으로 전환됩니다.
+            연결된 실제 광고 API가 없습니다. Meta, 네이버, Google Ads, 카카오, 당근, 틱톡 API를 연결하면 실데이터 수집이 시작됩니다.
           </div>
         </section>
       )}

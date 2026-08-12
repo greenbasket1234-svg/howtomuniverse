@@ -55,7 +55,6 @@ export function BrandListPage({ variant }: { variant: 'dashboard' | 'reports' })
               <tr key={config.brandId}>
                 <td className="brand-name-cell">
                   {config.brandName}
-                  {!config.hasRealData && <span className="sample-tag">(예시)</span>}
                 </td>
                 <td className="num">₩{spend.toLocaleString()}</td>
                 <td style={{ textAlign: 'right' }}>

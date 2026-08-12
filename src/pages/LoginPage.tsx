@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { User, Lock, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { HowtomUniverseLogo } from '../components/HowtomUniverseLogo';
-import { REMOTE_DEMO_BLOCKED } from '../config/runtime';
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -98,10 +97,8 @@ export function LoginPage() {
           </button>
         </form>
 
-        <div className={`space-login-notice${REMOTE_DEMO_BLOCKED ? ' is-blocked' : ''}`}>
-          {REMOTE_DEMO_BLOCKED
-            ? '외부 주소에서는 관리자 데모 자동 로그인이 차단됩니다. 실제 운영은 /api/auth/login 인증 백엔드를 연결한 뒤 사용하세요.'
-            : '운영 로그인은 /api/auth/login 인증 백엔드 연결 후 사용합니다. 로컬 데모는 localhost에서만 자동으로 열립니다.'}
+        <div className="space-login-notice">
+          관리자 계정으로 로그인하세요. 계정 정보는 서버 환경변수(HOWTOM_ADMIN_EMAIL / HOWTOM_ADMIN_PASSWORD)로 설정합니다.
         </div>
       </div>
     </div>

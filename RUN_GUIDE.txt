@@ -1,32 +1,23 @@
-HOWTOM 유니버스 v0.8 실행 안내
+HOWTOM 유니버스 v1.1.0 실행 안내
 
-기본 실행: npm run dev
-기본 시작 화면: http://127.0.0.1:<포트>/home
+[Railway 권장]
+- railway.toml이 npm ci -> npm run build -> node server.mjs 순으로 실행합니다.
+- Variables: HOWTOM_ADMIN_EMAIL, HOWTOM_ADMIN_PASSWORD, JWT_SECRET, HOWTOM_DATA_DIR=/data
+- Volume을 /data에 연결하면 광고주/블로그 데이터가 재배포 후에도 유지됩니다.
 
-광고관제소 실행 안내 / How to Run
+[로컬 개발]
+1. Node.js 20 이상 설치
+2. 프로젝트 폴더에서 npm run dev
+3. 패키지가 없으면 자동 설치를 시도합니다.
+4. 화면과 API 서버가 함께 실행됩니다.
 
-[Windows에서 바로 실행 — Node.js 불필요]
-1. start-app.cmd 더블클릭
-2. 브라우저에서 http://127.0.0.1:3000/dashboard 가 자동으로 열립니다.
-3. 종료하려면 별도로 열린 "광고관제소 서버" 창을 닫으세요.
-※ 이 방식은 화면 파일만 제공하는 간단 서버입니다. Google Sheets/Notion 연동 등
-   서버 API가 필요한 기능은 동작하지 않습니다. 그런 기능까지 쓰려면 아래 개발 실행을 사용하세요.
+[로컬 운영 형태 확인]
+1. npm ci
+2. npm run build
+3. HOWTOM_ADMIN_EMAIL / HOWTOM_ADMIN_PASSWORD / JWT_SECRET 환경변수 설정
+4. npm start
 
-[Windows에서 개발 서버로 실행 — Node.js 필요]
-1. start-dev.cmd 더블클릭
-2. 필요한 패키지(node_modules)가 이미 설치돼 있으면 실시간 개발 서버로 실행됩니다.
-   패키지가 없으면 자동 설치 대신, 포함된 완성 빌드(dist)로 즉시 실행됩니다(오류 화면 없이 바로 사용 가능).
-   소스를 직접 수정하며 실시간 반영까지 쓰려면 먼저 아래 명령으로 패키지를 설치해 주세요.
-     npm install
-   또는 다음 명령으로 실행하면 패키지가 없을 때 자동으로 설치까지 시도합니다.
-     npm run dev:source
-3. 브라우저가 자동으로 열립니다.
-※ Node.js 20 이상을 권장합니다(포함된 테스트 도구 vitest 기준).
-
-[macOS / Linux / 터미널]
-npm install
-npm run dev
-
-※ 예전 버전에는 한글 이름의 .cmd 실행 파일이 있었으나, ZIP 압축 프로그램에 따라
-   한글 파일명이 깨져서 실행이 안 되는 문제가 있었습니다. 이제 모든 실행 파일 이름을
-   영문(start-app.cmd, start-dev.cmd)으로 통일했습니다.
+주의
+- 이 소스 배포본에는 이전 버전의 dist를 포함하지 않습니다. 반드시 새 빌드를 생성해 사용하세요.
+- 실제 비밀번호와 JWT Secret은 ZIP 안에 저장하지 말고 Railway Variables 또는 실행 환경변수로 설정하세요.
+- 최초 상태는 Zero State이며 광고주/성과/블로그 샘플 데이터가 없습니다.

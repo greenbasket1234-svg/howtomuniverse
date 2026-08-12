@@ -77,8 +77,7 @@ export function KeywordAnalysisBrandListPage() {
                     <Link className="brand-name-link" to={`/keywords/${config.brandId}/analysis`}>
                       {config.brandName}
                     </Link>
-                    {!config.hasRealData && <span className="sample-tag">(예시)</span>}
-                  </td>
+                    </td>
                   <td>
                     <div className="keyword-platform-badges">
                       {KEYWORD_PLATFORMS.map(platform => (
@@ -198,7 +197,7 @@ export function KeywordAnalysisPage() {
                 <tr key={row.id}>
                   <td><Badge tone="accent" style={{ background: `${getPlatformColor(row.platform)}1a`, color: getPlatformColor(row.platform), border: `1px solid ${getPlatformColor(row.platform)}55` }}>{row.platform}</Badge></td>
                   <td><strong>{row.keyword}</strong>{row.memo && <div className="table-cell-note">{row.memo}</div>}</td>
-                  <td>{row.campaign}</td><td>{row.adGroup}</td>
+                  <td>{row.campaign || '-'}</td><td>{row.adGroup || '-'}</td>
                   <td className="num">{row.impressions.toLocaleString()}</td>
                   <td className="num">{row.clicks.toLocaleString()}</td>
                   <td className="num">{pct(row.clicks, row.impressions)}</td>

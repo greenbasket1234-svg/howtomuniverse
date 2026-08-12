@@ -6,16 +6,7 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 type CreativeObjective='판매'|'트래픽'|'DB 수집'|'DA(Display Ads)'|'SA(Search Ads)';
 type Fatigue={id:number;name:string;campaign:string;thumb:string;type:'이미지'|'영상';objective:CreativeObjective;score:number;cpm3:number|null;cpm7:number|null;ctr:number|null;cpc:number|null;frequency:number;days:number};
-const seed:Fatigue[]=[
-{id:1,name:'20260610_인스타4 삼겹살',campaign:'월컴투바베큐 · 라이브',thumb:'🍖',type:'이미지',objective:'판매',score:35,cpm3:-16,cpm7:-22,ctr:30,cpc:-13,frequency:1.0,days:27},
-{id:2,name:'20260610_인스타2 퇴근캠핑',campaign:'월컴투바베큐 · 중지',thumb:'🏕️',type:'영상',objective:'DB 수집',score:20,cpm3:null,cpm7:null,ctr:100,cpc:-100,frequency:1.0,days:7},
-{id:3,name:'20260610_인스타3 수영장',campaign:'월컴투바베큐 · 라이브',thumb:'🏊',type:'영상',objective:'트래픽',score:20,cpm3:8,cpm7:2,ctr:-30,cpc:-15,frequency:1.0,days:27},
-{id:4,name:'20260610_인스타1 야장',campaign:'월컴투바베큐 · 라이브',thumb:'🌇',type:'이미지',objective:'DA(Display Ads)',score:20,cpm3:3,cpm7:1,ctr:-15,cpc:-13,frequency:1.1,days:21},
-{id:5,name:'20260609_인스타2 퇴근캠핑',campaign:'월컴투바베큐 · 중지',thumb:'🌉',type:'영상',objective:'트래픽',score:10,cpm3:3,cpm7:0,ctr:-19,cpc:-10,frequency:1.0,days:15},
-{id:6,name:'20260610_인스타1 야장',campaign:'월컴투바베큐 · 라이브',thumb:'🌆',type:'이미지',objective:'판매',score:5,cpm3:null,cpm7:null,ctr:null,cpc:null,frequency:1.0,days:6},
-{id:7,name:'20260701_인스타5 소형견',campaign:'월컴투바베큐 · 라이브',thumb:'🐶',type:'영상',objective:'DB 수집',score:5,cpm3:null,cpm7:null,ctr:null,cpc:null,frequency:1.0,days:6},
-{id:8,name:'수영장',campaign:'월컴투바베큐 · 라이브',thumb:'🏊‍♀️',type:'이미지',objective:'SA(Search Ads)',score:5,cpm3:null,cpm7:null,ctr:null,cpc:null,frequency:1.0,days:4},
-];
+const seed:Fatigue[]=[];
 
 type SortKey='score'|'ctr'|'cpc'|'cpm3'|'cpm7'|'days';
 const SORT_LABEL:Record<SortKey,string>={score:'피로도',ctr:'CTR 하락',cpc:'CPC 상승',cpm3:'3일 CPM',cpm7:'7일 CPM',days:'사용기간'};

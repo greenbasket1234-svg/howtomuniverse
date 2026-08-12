@@ -59,22 +59,61 @@ export function upsertPublishRecord(input:Omit<ExternalPublishRecord,'publishId'
  */
 export interface BlogProviderAdapter {
   testConnection(integration:BlogIntegration):Promise<{ok:boolean;message:string}>;
-  createDraft(projectId:string,integration:BlogIntegration):Promise<{externalId?:string;message:string}>;
+  createDraft(projectId:string,integration:BlogIntegration,payload:BlogDraftPayload,credentials?:BlogApiCredentials):Promise<{externalId?:string;url?:string;message:string}>;
   getStatus(externalId:string,integration:BlogIntegration):Promise<{status:PublishStatus;url?:string}>;
 }
+
+// 발행에 필요한 실제 글 내용입니다(제목·HTML 본문). 저장소가 아니라 발행 호출 시점에만 넘깁니다.
+export type BlogDraftPayload = { title:string; contentHtml:string; status?:'draft'|'publish' };
+
+// WordPress 등 API 모드에 필요한 인증 정보입니다. 절대 localStorage/상태 저장소에 담지 않고,
+// "외부 업체로 보내기"를 누른 그 순간에만 입력받아 fetch 호출 한 번에 쓰고 버립니다.
+export type BlogApiCredentials = { username:string; appPassword:string };
 
 export const frontendBlogProviderAdapter:BlogProviderAdapter={
   async testConnection(integration){
     if(integration.mode==='manual')return {ok:true,message:'수동 내보내기 모드가 준비되었습니다.'};
     if(integration.mode==='external-link'&&integration.externalSiteUrl)return {ok:true,message:'외부 사이트 주소가 등록되었습니다.'};
     if(integration.mode==='sso'&&integration.externalSiteUrl)return {ok:true,message:'SSO/외부 이동 대상 주소가 등록되었습니다. 실제 인증은 서버 단계에서 연결합니다.'};
-    if(integration.mode==='api'&&integration.apiBaseUrl)return {ok:true,message:'API 기본 주소가 등록되었습니다. Secret/API 호출은 서버 단계에서 연결합니다.'};
+    if(integration.mode==='api'&&integration.apiBaseUrl)return {ok:true,message:'API 기본 주소가 등록되었습니다. "외부 업체로 보내기"를 누르면 그 자리에서 계정 정보를 입력해 바로 전송합니다.'};
     return {ok:false,message:'선택한 연동 방식에 필요한 주소를 입력하세요.'};
   },
-  async createDraft(_projectId,integration){
+  async createDraft(_projectId,integration,payload,credentials){
     if(integration.mode==='manual')return {message:'HTML/텍스트 내보내기를 사용하세요.'};
     if(integration.mode==='external-link'||integration.mode==='sso')return {message:'외부 업체 사이트에서 계속 작성할 수 있습니다.'};
-    return {message:'API 초안 생성은 업체 명세와 서버 인증 연결 후 활성화됩니다.'};
+    if(integration.mode==='api')return wordpressCreateDraft(integration,payload,credentials);
+    return {message:'선택한 연동 방식을 확인해 주세요.'};
   },
   async getStatus(){return {status:'pending'};},
 };
+
+// WordPress REST API(/wp-json/wp/v2/posts)로 실제 글을 전송합니다. WordPress 사이트가
+// Application Password 인증을 켜두고 브라우저 CORS를 허용해야 성공합니다(사이트 관리자
+// 설정 필요 — 워드프레스 5.6+ 기본 내장 기능). 다른 업체(티스토리·네이버 블로그 등)는
+// 브라우저 직접 호출을 막아두는 경우가 많아, 그런 업체는 API 모드 대신 SSO/외부 이동
+// 모드를 쓰는 걸 권장합니다.
+async function wordpressCreateDraft(integration:BlogIntegration,payload:BlogDraftPayload,credentials?:BlogApiCredentials):Promise<{externalId?:string;url?:string;message:string}>{
+  if(!integration.apiBaseUrl)return {message:'API 기본 URL이 설정되어 있지 않습니다. 연동 설정에서 먼저 입력하세요.'};
+  if(!credentials?.username||!credentials?.appPassword)return {message:'사용자명과 Application Password를 입력해야 전송할 수 있습니다.'};
+  const endpoint=`${integration.apiBaseUrl.replace(/\/+$/,'')}/wp-json/wp/v2/posts`;
+  try{
+    const res=await fetch(endpoint,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        // Application Password는 WordPress가 공식 지원하는 Basic 인증 방식입니다.
+        // 이 헤더는 이 fetch 요청 한 번에만 쓰이고, 함수가 끝나면 메모리에서도 사라집니다.
+        Authorization:`Basic ${btoa(`${credentials.username}:${credentials.appPassword}`)}`,
+      },
+      body:JSON.stringify({title:payload.title,content:payload.contentHtml,status:payload.status||'draft'}),
+    });
+    if(!res.ok){
+      const detail=await res.json().catch(()=>null);
+      return {message:`전송 실패 (${res.status}) ${detail?.message||'API 응답을 확인하세요. 사이트의 CORS·Application Password 설정이 필요할 수 있습니다.'}`};
+    }
+    const data=await res.json();
+    return {externalId:String(data.id),url:data.link,message:payload.status==='publish'?'워드프레스에 발행되었습니다.':'워드프레스에 초안으로 저장되었습니다.'};
+  }catch{
+    return {message:'네트워크 오류로 전송하지 못했습니다. 사이트 URL과 CORS 허용 여부를 확인하세요.'};
+  }
+}

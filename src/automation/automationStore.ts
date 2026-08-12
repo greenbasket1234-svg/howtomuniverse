@@ -1,4 +1,4 @@
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
+import { ADVERTISERS } from '../data/operationsMock';
 import type { Campaign } from '../types/operations';
 import type { AutomationJob, AutomationRun, DataCollectionConfig } from './automationTypes';
 import { nextRunIso, scheduleSummary } from './scheduleEngine';
@@ -41,7 +41,7 @@ export function removeAutomationJob(jobId:string){
   saveAutomationJobs(jobs.filter(x=>x.jobId!==jobId));
 }
 
-function loadCampaigns():Campaign[]{try{const v=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'null');return Array.isArray(v)&&v.length?v:MOCK_CAMPAIGNS}catch{return MOCK_CAMPAIGNS}}
+function loadCampaigns():Campaign[]{try{const v=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'[]');return Array.isArray(v)?v:[]}catch{return []}}
 function saveCampaigns(rows:Campaign[]){localStorage.setItem(CAMPAIGN_STORAGE_KEY,JSON.stringify(rows));emit()}
 function syncCampaignRule(campaignId:string,label:string){
   const rows=loadCampaigns();

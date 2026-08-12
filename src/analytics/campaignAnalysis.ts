@@ -74,11 +74,7 @@ export type CampaignChangeDriver={
 };
 
 const CAMPAIGN_STORAGE_KEY='howtom-campaign-management-v2';
-const ADVERTISER_ALIASES:Record<string,string[]>={
-  'dabang-isa':['다방이사'],
-  'wando-seafood':['완도군수산','완도전복몰'],
-  'welcome-bbq':['웰컴투바베큐'],
-};
+const ADVERTISER_ALIASES:Record<string,string[]>={};
 
 export function loadCampaigns():Campaign[]{
   try{

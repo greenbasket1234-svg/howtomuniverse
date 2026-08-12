@@ -16,7 +16,6 @@ function presets(): { key: string; label: string; range: () => DateRange }[] {
     { key: '7d', label: '최근 7일', range: () => ({ from: toISO(addDays(today, -6)), to: toISO(today) }) },
     { key: '30d', label: '최근 30일', range: () => ({ from: toISO(addDays(today, -29)), to: toISO(today) }) },
     { key: 'this_month', label: '이번 달', range: () => ({ from: toISO(startOfMonth(today)), to: toISO(today) }) },
-    { key: 'jul2026', label: '2026년 7월 (예시 데이터)', range: () => ({ from: '2026-07-01', to: '2026-07-12' }) },
   ];
 }
 
