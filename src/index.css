@@ -2335,7 +2335,7 @@ body{font-size:15.5px;line-height:1.55}
   border-radius:50%;
   overflow:hidden;
   background:radial-gradient(circle at 36% 30%,
-    #2a72b0 0%, #1c5c92 20%, #17537f 40%, #144d78 60%, #10456c 80%, #0e4066 100%);
+    #5fa3d8 0%, #3d84bc 20%, #2a6ba0 40%, #1e5789 60%, #17466f 80%, #143d61 100%);
 }
 .space-login-earth-continents{
   position:absolute; inset:0;
@@ -2379,7 +2379,7 @@ body{font-size:15.5px;line-height:1.55}
 }
 .space-login-earth-rim{
   position:absolute; inset:0; border-radius:50%;
-  background:linear-gradient(155deg, rgba(160,200,255,.5) 0%, transparent 12%);
+  background:linear-gradient(155deg, rgba(180,215,255,.6) 0%, transparent 16%);
 }
 
 @media (max-width: 560px){
