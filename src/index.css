@@ -2334,7 +2334,7 @@ body{font-size:15.5px;line-height:1.55}
   border-radius:50%;
   overflow:hidden;
   background:radial-gradient(circle at 36% 30%,
-    #1c5c92 0%, #124674 18%, #0b3459 36%, #0a2e4f 54%, #0a2845 74%, #0b2440 92%, #0c2240 100%);
+    #2a72b0 0%, #1c5c92 20%, #17537f 40%, #144d78 60%, #10456c 80%, #0e4066 100%);
 }
 .space-login-earth-continents{
   position:absolute; inset:0;
