@@ -550,6 +550,50 @@ async function handleApi(req, res, pathname) {
     if (req.method === 'GET' && pathname === '/api/integrations/meta/status') {
       return sendJson(res, 200, { configured: metaConfigured() });
     }
+
+    // ---- 보고서 관리(AdvertiserDailyReportPage) 'API 자동수집' 버튼이 호출하는 엔드포인트 ----
+    if (req.method === 'POST' && pathname === '/api/reports/daily-performance') {
+      const body = await readJson(req);
+      const advertiserName = cleanText(body.advertiserName || '', 120);
+      const month = cleanText(body.month || '', 7); // 'YYYY-MM'
+      const platforms = Array.isArray(body.platforms) ? body.platforms : [];
+      const [yearStr, monthStr] = month.split('-');
+      const year = Number(yearStr), monthNum = Number(monthStr);
+      if (!advertiserName || !year || !monthNum) return sendJson(res, 200, { ok: true, source: {} });
+
+      const advertiser = readDb().advertisers.find(a => a.name === advertiserName);
+      const metaAccount = advertiser?.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
+
+      const source = {};
+      if (platforms.includes('meta') && metaAccount?.account_id && metaConfigured()) {
+        try {
+          const daysInMonth = new Date(year, monthNum, 0).getDate();
+          const pad = n => String(n).padStart(2, '0');
+          const since = `${year}-${pad(monthNum)}-01`;
+          const todayIso = new Date().toISOString().slice(0, 10);
+          const monthEndIso = `${year}-${pad(monthNum)}-${pad(daysInMonth)}`;
+          const until = monthEndIso > todayIso ? todayIso : monthEndIso; // 미래 날짜는 요청하지 않습니다.
+          if (since <= until) {
+            const rows = await metaFetchInsights(metaAccount.account_id, since, until);
+            const byDate = new Map(rows.map(r => [r.date, r]));
+            const impressions = [], clicks = [], spend = [], leads = [];
+            for (let day = 1; day <= daysInMonth; day++) {
+              const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
+              const row = byDate.get(iso);
+              impressions.push(row?.impressions || 0);
+              clicks.push(row?.clicks || 0);
+              spend.push(row?.spend || 0);
+              leads.push(row?.dbCount || 0);
+            }
+            source.meta = { impressions, clicks, spend, leads };
+          }
+        } catch (error) {
+          // Meta API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
+          void error;
+        }
+      }
+      return sendJson(res, 200, { ok: true, source, mode: 'live', collectedAt: new Date().toISOString() });
+    }
     if (req.method === 'GET' && pathname === '/api/integrations/meta/accounts') {
       if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
       try {
