@@ -565,7 +565,7 @@ async function handleApi(req, res, pathname) {
       const metaAccount = advertiser?.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
 
       const source = {};
-      if (platforms.includes('meta') && metaAccount?.account_id && metaConfigured()) {
+      if (platforms.includes('메타') && metaAccount?.account_id && metaConfigured()) {
         try {
           const daysInMonth = new Date(year, monthNum, 0).getDate();
           const pad = n => String(n).padStart(2, '0');
@@ -585,7 +585,7 @@ async function handleApi(req, res, pathname) {
               spend.push(row?.spend || 0);
               leads.push(row?.dbCount || 0);
             }
-            source.meta = { impressions, clicks, spend, leads };
+            source['메타'] = { impressions, clicks, spend, leads };
           }
         } catch (error) {
           // Meta API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
