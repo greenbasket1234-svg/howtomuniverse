@@ -205,18 +205,24 @@ export function AdvertiserManagementPage(){
    }catch(error){setMetaError(error instanceof Error?error.message:'Meta 계정 목록을 불러오지 못했습니다.');}
    setMetaLoading(false);
  };
+ const CH_KEY:Record<string,string>={Meta:'meta','네이버':'naver','구글':'google','당근':'daangn','틱톡':'tiktok','카카오':'kakao'};
  const saveAdvertiser=async(e:React.FormEvent<HTMLFormElement>)=>{
    e.preventDefault();
    if(!editing)return;
    const f=new FormData(e.currentTarget);
    const name=String(f.get('name')||'').trim();
    if(!name)return;
-   const links=editing.links.map(link=>
-     link.channel==='Meta' && metaSelected
-       ? {...link,accountId:metaSelected,accountName:metaAccounts.find(a=>a.account_id===metaSelected)?.name||link.accountName,status:'연결됨' as const}
-       : link
-   );
-   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||''),links};
+   // 백엔드는 링크 상태를 'links'가 아니라 'accounts'(channel은 소문자 영문 키) 형식으로 저장합니다.
+   const accounts=editing.links
+     .map(link=>{
+       const isMeta=link.channel==='Meta';
+       const accountId=isMeta?metaSelected:link.accountId;
+       const connected=isMeta?Boolean(metaSelected):link.status==='연결됨';
+       if(!connected||!accountId)return null;
+       return {channel:CH_KEY[link.channel],status:'connected',account_id:accountId};
+     })
+     .filter((v):v is {channel:string;status:string;account_id:string}=>v!==null);
+   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||''),accounts};
    try{
      if(editing.id) await apiFetch(`/advertisers/${encodeURIComponent(editing.id)}`,{method:'PATCH',body:JSON.stringify(payload)});
      else await apiFetch('/advertisers',{method:'POST',body:JSON.stringify(payload)});
