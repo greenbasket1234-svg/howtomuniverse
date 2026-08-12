@@ -191,20 +191,37 @@ export function AdvertiserManagementPage(){
  const [query,setQuery]=useState('');
  const [editing,setEditing]=useState<Advertiser|null>(null);
  const [toast,setToast]=useState('');
+ const [metaAccounts,setMetaAccounts]=useState<{id:string;name:string;account_id:string}[]>([]);
+ const [metaSelected,setMetaSelected]=useState('');
+ const [metaLoading,setMetaLoading]=useState(false);
+ const [metaError,setMetaError]=useState('');
  const filtered=advertisers.filter(r=>matchesAdvertiserFilter(r.name,filterValue)&&r.name.includes(query.trim()));
  const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
+ const loadMetaAccounts=async()=>{
+   setMetaLoading(true);setMetaError('');
+   try{
+     const result=await apiFetch<{accounts:{id:string;name:string;account_id:string}[]}>('/integrations/meta/accounts');
+     setMetaAccounts(result.accounts||[]);
+   }catch(error){setMetaError(error instanceof Error?error.message:'Meta 계정 목록을 불러오지 못했습니다.');}
+   setMetaLoading(false);
+ };
  const saveAdvertiser=async(e:React.FormEvent<HTMLFormElement>)=>{
    e.preventDefault();
    if(!editing)return;
    const f=new FormData(e.currentTarget);
    const name=String(f.get('name')||'').trim();
    if(!name)return;
-   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||'')};
+   const links=editing.links.map(link=>
+     link.channel==='Meta' && metaSelected
+       ? {...link,accountId:metaSelected,accountName:metaAccounts.find(a=>a.account_id===metaSelected)?.name||link.accountName,status:'연결됨' as const}
+       : link
+   );
+   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||''),links};
    try{
      if(editing.id) await apiFetch(`/advertisers/${encodeURIComponent(editing.id)}`,{method:'PATCH',body:JSON.stringify(payload)});
      else await apiFetch('/advertisers',{method:'POST',body:JSON.stringify(payload)});
      await reloadAdvertisers();
-     setEditing(null);setToast(`${name} 광고주 정보가 서버에 저장되었습니다.`);setTimeout(()=>setToast(''),2200);
+     setEditing(null);setMetaSelected('');setMetaAccounts([]);setToast(`${name} 광고주 정보가 서버에 저장되었습니다.`);setTimeout(()=>setToast(''),2200);
    }catch(error){setToast(error instanceof Error?error.message:'광고주 저장에 실패했습니다.');}
  };
  return <>
@@ -231,6 +248,20 @@ export function AdvertiserManagementPage(){
      <label>주소<input name="address" defaultValue={editing.address||''}/></label>
      <label>월 예산<input name="monthlyBudget" type="number" min="0" step="10000" defaultValue={editing.monthlyBudget} required/></label>
      <label>브랜드 색상<input name="color" type="color" defaultValue={editing.color}/></label>
+     <div className="final-form-meta">
+       <div className="final-form-meta-head">
+         <span>Meta 광고계정</span>
+         <button type="button" className="btn secondary sm" onClick={loadMetaAccounts} disabled={metaLoading}>{metaLoading?'불러오는 중...':'연결된 계정 불러오기'}</button>
+       </div>
+       {metaError&&<div className="final-form-meta-error">{metaError}</div>}
+       {!!metaAccounts.length&&<select value={metaSelected} onChange={e=>setMetaSelected(e.target.value)}>
+         <option value="">선택 안 함</option>
+         {metaAccounts.map(a=><option key={a.id} value={a.account_id}>{a.name} ({a.id})</option>)}
+       </select>}
+       {(()=>{const current=editing.links.find(l=>l.channel==='Meta');return current?.accountId
+         ? <div className="final-form-meta-current">현재 연결됨: {current.accountName||current.accountId} · {current.status}</div>
+         : <div className="final-form-meta-current muted">아직 연결된 Meta 계정이 없습니다.</div>;})()}
+     </div>
      <div className="modal-actions"><button type="button" className="btn secondary" onClick={()=>setEditing(null)}>취소</button><button className="btn primary" type="submit"><Save size={15}/> 저장</button></div>
    </form></Modal>}
  </>

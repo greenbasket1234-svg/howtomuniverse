@@ -121,6 +121,70 @@ const ADMIN_PASSWORD = process.env.HOWTOM_ADMIN_PASSWORD || '';
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7일
 
 /* ========================================================================
+   Meta(Facebook/Instagram) 광고 API 연동
+   -----------------------------------------------------------------------
+   - META_ACCESS_TOKEN 은 Business Manager의 System User Access Token입니다.
+   - 이 토큰은 반드시 Railway Variables로만 주입하고, 코드/깃 저장소에는 절대
+     직접 적지 않습니다.
+   ======================================================================== */
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_API_VERSION = process.env.META_API_VERSION || 'v21.0';
+const META_GRAPH_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
+
+function metaConfigured() {
+  return Boolean(META_ACCESS_TOKEN);
+}
+
+async function metaGraphGet(path, params = {}) {
+  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
+  const url = new URL(`${META_GRAPH_BASE}${path}`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  url.searchParams.set('access_token', META_ACCESS_TOKEN);
+  const res = await fetch(url.toString());
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const message = data?.error?.message || `Meta API HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+/** System User Access Token에 연결된(자산 할당된) 광고 계정 목록을 가져옵니다. */
+async function metaListAdAccounts() {
+  const data = await metaGraphGet('/me/adaccounts', {
+    fields: 'id,account_id,name,account_status,currency,timezone_name',
+    limit: '200',
+  });
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+/**
+ * 광고 계정의 특정 기간 인사이트(노출/클릭/광고비/전환)를 가져옵니다.
+ * accountId는 'act_XXXXXXXXX' 형식이어야 합니다.
+ */
+async function metaFetchInsights(accountId, since, until) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const data = await metaGraphGet(`/${id}/insights`, {
+    time_range: JSON.stringify({ since, until }),
+    fields: 'impressions,clicks,spend,actions,date_start,date_stop',
+    time_increment: '1', // 날짜별로 쪼개서 반환
+    level: 'account',
+  });
+  const rows = Array.isArray(data.data) ? data.data : [];
+  return rows.map(row => ({
+    date: row.date_start,
+    impressions: Number(row.impressions || 0),
+    clicks: Number(row.clicks || 0),
+    spend: Number(row.spend || 0),
+    // actions 배열 안에서 리드/전환에 해당하는 action_type만 골라 합산합니다.
+    // 브랜드마다 어떤 action_type을 "전환"으로 볼지 다를 수 있어 대표적인 것만 기본 포함합니다.
+    dbCount: (row.actions || [])
+      .filter(a => ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'].includes(a.action_type))
+      .reduce((sum, a) => sum + Number(a.value || 0), 0),
+  }));
+}
+
+/* ========================================================================
    블로그 원고 작성 — 외부 AI API 연동
    -----------------------------------------------------------------------
    - BLOG_AI_PROVIDER 가 설정되어 있지 않으면(기본값) 규칙 기반 초안으로 동작합니다.
@@ -455,6 +519,7 @@ async function handleApi(req, res, pathname) {
         website: cleanText(body.website || '', 500),
         phone: cleanText(body.phone || '', 100),
         address: cleanText(body.address || '', 300),
+        meta_account_id: cleanText(body.meta_account_id || '', 60),
         accounts: Array.isArray(body.accounts) ? body.accounts : [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -480,6 +545,34 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === 'GET' && pathname === '/api/logs') return sendJson(res, 200, readDb().logs);
+
+    // ---- Meta 광고 API 연동 ----
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/status') {
+      return sendJson(res, 200, { configured: metaConfigured() });
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/accounts') {
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      try {
+        const accounts = await metaListAdAccounts();
+        return sendJson(res, 200, { accounts });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+      }
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/insights') {
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const accountId = query.get('accountId');
+      const since = query.get('since');
+      const until = query.get('until');
+      if (!accountId || !since || !until) return sendJson(res, 400, { error: 'accountId, since, until 파라미터가 모두 필요합니다.' });
+      try {
+        const rows = await metaFetchInsights(accountId, since, until);
+        return sendJson(res, 200, { rows });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+      }
+    }
 
     if (req.method === 'GET' && pathname === '/api/blog/projects') return sendJson(res, 200, readDb().blogProjects);
     if (req.method === 'POST' && pathname === '/api/blog/projects') {
