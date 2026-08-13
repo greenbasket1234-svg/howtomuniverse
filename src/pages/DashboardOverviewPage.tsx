@@ -87,7 +87,7 @@ export function DashboardOverviewPage(){
     if(selectedId!=='all')return BRAND_REPORTS.filter(r=>r.config.brandId===selectedId);
     if(filterValue.trim())return BRAND_REPORTS.filter(r=>matchesAdvertiserFilter(r.config.brandName,filterValue));
     return BRAND_REPORTS;
-  },[selectedId,filterValue]);
+  },[selectedId,filterValue,BRAND_REPORTS]);
   const allDates=useMemo(()=>Array.from(new Set(selectedReports.flatMap(r=>datesOf(r.data)))).sort(),[selectedReports]);
   const maxDate=(allDates.length?allDates[allDates.length-1]:new Date().toISOString().slice(0,10));
   const [preset,setPreset]=useState<Preset>('7d');

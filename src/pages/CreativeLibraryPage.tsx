@@ -27,6 +27,7 @@ export function CreativeLibraryPage(){
   const [advertisers]=useAdvertisers();
   const [creativeMetrics,setCreativeMetrics]=useState<CreativeMetricRow[]>([]);
   const [selectedMetric,setSelectedMetric]=useState<CreativeMetricRow|null>(null);
+  const [mediaFilter,setMediaFilter]=useState<'전체'|'이미지'|'영상'>('전체');
   useEffect(()=>{apiFetch<{rows:CreativeMetricRow[]}>('/creative-metrics').then(r=>setCreativeMetrics(r.rows||[])).catch(()=>setCreativeMetrics([]));},[]);
   const advertiserName=(id:string)=>advertisers.find(a=>a.id===id)?.name??id;
   const rows=useMemo(()=>{
@@ -90,14 +91,17 @@ export function CreativeLibraryPage(){
         <section className="card" style={{ padding: 16, marginBottom: 16 }}>
           <h3 style={{ margin: '0 0 4px' }}>매체 연동 실제 소재 성과</h3>
           <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 광고 단위 데이터입니다. 썸네일을 누르면 크게 볼 수 있습니다.</p>
+          <div className="media-type-toggle">
+            {(['전체','이미지','영상'] as const).map(t=><button key={t} className={mediaFilter===t?'active':''} onClick={()=>setMediaFilter(t)}>{t} {t!=='전체'&&`(${creativeMetrics.filter(m=>t==='이미지'?m.mediaType!=='video':m.mediaType==='video').length})`}</button>)}
+          </div>
           <div className="library-grid">
-            {creativeMetrics.map(m => (
+            {creativeMetrics.filter(m=>mediaFilter==='전체'||(mediaFilter==='이미지'?m.mediaType!=='video':m.mediaType==='video')).map(m => (
               <article className="library-card" key={`${m.channel}-${m.adId}`} onClick={()=>setSelectedMetric(m)} style={{cursor:'pointer'}}>
-                <div className="library-thumb" style={{position:'relative',overflow:'hidden',background:'#0f172a'}}>
+                <div className="library-thumb-square">
                   {m.thumbnailUrl
                     ? <img src={m.thumbnailUrl} alt={m.adName} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
                     : <span style={{fontSize:28}}>🖼️</span>}
-                  {m.mediaType==='video' && <span style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,.6)',color:'#fff',fontSize:11,padding:'2px 7px',borderRadius:999}}>▶ 영상</span>}
+                  <span style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,.6)',color:'#fff',fontSize:11,padding:'2px 7px',borderRadius:999}}>{m.mediaType==='video'?'▶ 영상':'🖼 이미지'}</span>
                 </div>
                 <div className="library-body">
                   <div className="library-meta"><span>● {advertiserName(m.advertiserId)}</span></div>
@@ -120,7 +124,7 @@ export function CreativeLibraryPage(){
               <button className="icon-btn" onClick={()=>setSelectedMetric(null)}><X/></button>
             </div>
             <div className="creative-detail-preview-lib">
-              <div className="large-thumb" style={{background:'#0f172a',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
+              <div className="library-thumb-square" style={{width:240}}>
                 {selectedMetric.thumbnailUrl ? <img src={selectedMetric.thumbnailUrl} alt={selectedMetric.adName} style={{width:'100%',height:'100%',objectFit:'contain'}}/> : '🖼️'}
               </div>
               <div>

@@ -104,7 +104,7 @@ export function ConversionFunnelPage(){
   }),[rows,sortKey,sortDir]);
   const toggleSort=(key:SortKey)=>{if(sortKey===key)setSortDir(sortDir==='desc'?'asc':'desc');else{setSortKey(key);setSortDir('desc')}};
   const sortArrow=(key:SortKey)=>sortKey===key?(sortDir==='desc'?' ▼':' ▲'):'';
-  const total=useMemo(()=>rows.reduce((acc,row)=>({spend:acc.spend+row.spend,clicks:acc.clicks+row.clicks,db:acc.db+row.db,validDb:acc.validDb+row.validDb,contracts:acc.contracts+row.contracts,itemViews:acc.itemViews+row.itemViews,carts:acc.carts+row.carts,checkouts:acc.checkouts+row.checkouts,purchases:acc.purchases+row.purchases,revenue:acc.revenue+row.revenue}),{spend:0,clicks:0,db:0,validDb:0,contracts:0,itemViews:0,carts:0,checkouts:0,purchases:0,revenue:0}),[]);
+  const total=useMemo(()=>rows.reduce((acc,row)=>({spend:acc.spend+row.spend,clicks:acc.clicks+row.clicks,db:acc.db+row.db,validDb:acc.validDb+row.validDb,contracts:acc.contracts+row.contracts,itemViews:acc.itemViews+row.itemViews,carts:acc.carts+row.carts,checkouts:acc.checkouts+row.checkouts,purchases:acc.purchases+row.purchases,revenue:acc.revenue+row.revenue}),{spend:0,clicks:0,db:0,validDb:0,contracts:0,itemViews:0,carts:0,checkouts:0,purchases:0,revenue:0}),[rows]);
   const columns=['광고비','클릭','DB','유효 DB','계약','상품 조회','장바구니','결제 시작','구매','CPA','매출','ROAS'];
   const leadFunnels=(hasActualDb||hasPerformanceOnly) ? [...new Set([...actualDb.map(row=>row.advertiser),...performanceRows.map(row=>row.advertiser)])].map((name,index)=>{
     const color=funnelColors[index%funnelColors.length]; const dbPart=actualDb.filter(row=>row.advertiser===name); const perfPart=performanceRows.filter(row=>row.advertiser===name);

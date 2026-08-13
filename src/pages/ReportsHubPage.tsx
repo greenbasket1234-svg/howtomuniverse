@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Download, CalendarDays } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
@@ -7,8 +7,29 @@ import { Badge } from '../components/Badge';
 import { BrandReportGrid, PeriodSelector } from '../components/BrandReportGrid';
 import { DateRangePicker, DateRange } from '../components/DateRangePicker';
 import { MetricPicker } from '../components/MetricPicker';
-import { BRAND_REPORTS } from '../data/brandReports';
-import { PeriodType, enumerateDates } from '../types/brandReport';
+import { PeriodType, enumerateDates, type BrandReportConfig, type BrandDailyData } from '../types/brandReport';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
+
+type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
+type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
+const CHANNEL_LABELS: Record<string, string> = { meta: '메타', naver: '네이버', google: '구글', daangn: '당근', tiktok: '틱톡', kakao: '카카오' };
+/** 다른 화면(통합 홈·전체 대시보드)과 동일한 방식으로, 실제 연동 데이터를 브랜드 보고서 형태로 변환합니다. */
+function buildLiveBrandReports(advertisers: { id: string; name: string; monthlyBudget: number }[], rows: DailyMetricRow[]): { config: BrandReportConfig; data: BrandDailyData }[] {
+  return advertisers.map(adv => {
+    const advRows = rows.filter(r => r.advertiserId === adv.id);
+    const channels = Array.from(new Set(advRows.map(r => r.channel)));
+    const tracksRevenue = advRows.some(r => (r.revenue ?? 0) > 0);
+    const data: BrandDailyData = {};
+    for (const ch of channels) {
+      data[ch] = {};
+      for (const row of advRows.filter(r => r.channel === ch)) {
+        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, ...(tracksRevenue ? { revenue: row.revenue ?? 0 } : {}) };
+      }
+    }
+    return { config: { brandId: adv.id, brandName: adv.name, hasRealData: true, lineItems: channels.map(ch => ({ key: ch, label: CHANNEL_LABELS[ch] ?? ch })), rowGroups: [], monthlyBudget: adv.monthlyBudget }, data };
+  });
+}
 
 type ReportRange = 'yesterday' | 'today' | 'daily' | 'weekly' | 'monthly' | 'custom';
 type ReportTab = 'period' | 'daily';
@@ -26,10 +47,6 @@ const zeroSnapshot=(label:string):Snapshot=>({label,spend:0,impressions:0,clicks
 const SNAPSHOTS: Record<ReportRange, Snapshot> = {
   yesterday:zeroSnapshot('어제'),today:zeroSnapshot('오늘'),daily:zeroSnapshot('일간'),weekly:zeroSnapshot('주간'),monthly:zeroSnapshot('월간'),custom:zeroSnapshot('직접 선택'),
 };
-
-const brandChannelData: { brand: string; color: string; meta: number; naver: number; google: number; other: number }[] = [];
-
-const campaignRows: { campaign: string; brand: string; media: string; spend: number; impressions: number; clicks: number; cpm: number; ctr: number; conversions: number; revenue: number }[] = [];
 
 function won(value: number) {
   return `₩${Math.round(value).toLocaleString()}`;
@@ -86,7 +103,32 @@ function ReportOverview() {
   const [weeklyAnchor, setWeeklyAnchor] = useState(()=>new Date().toISOString().slice(0,10));
   const [monthlyValue, setMonthlyValue] = useState(()=>new Date().toISOString().slice(0,7));
   const weekRange = getWeekRange(weeklyAnchor);
-  const snapshotBase = SNAPSHOTS[range];
+
+  // 매체 계정 연동에서 동기화된 실제 데이터를 가져옵니다.
+  const [advertisers] = useAdvertisers();
+  const [metricRows, setMetricRows] = useState<DailyMetricRow[]>([]);
+  const [creativeRows, setCreativeRows] = useState<CreativeMetricRow[]>([]);
+  useEffect(() => {
+    apiFetch<{ rows: DailyMetricRow[] }>('/daily-metrics').then(r => setMetricRows(r.rows || [])).catch(() => setMetricRows([]));
+    apiFetch<{ rows: CreativeMetricRow[] }>('/creative-metrics').then(r => setCreativeRows(r.rows || [])).catch(() => setCreativeRows([]));
+  }, []);
+
+  // 현재 선택된 기간(어제/오늘/일간/주간/월간/직접선택)에 맞는 날짜 범위를 계산합니다.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const yesterdayIso = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })();
+  const activeRangeIso = (() => {
+    if (range === 'today') return { from: todayIso, to: todayIso };
+    if (range === 'yesterday') return { from: yesterdayIso, to: yesterdayIso };
+    if (range === 'daily') return { from: dailyDate, to: dailyDate };
+    if (range === 'weekly') return weekRange;
+    if (range === 'monthly') { const [y, m] = monthlyValue.split('-').map(Number); const last = new Date(y, m, 0).getDate(); return { from: `${monthlyValue}-01`, to: `${monthlyValue}-${String(last).padStart(2,'0')}` }; }
+    return customRange;
+  })();
+  const filteredRows = useMemo(
+    () => metricRows.filter(r => r.date >= activeRangeIso.from && r.date <= activeRangeIso.to),
+    [metricRows, activeRangeIso.from, activeRangeIso.to],
+  );
+
   const dynamicLabel = range === 'custom'
     ? `${formatDateKo(customRange.from)} ~ ${formatDateKo(customRange.to)} · 직접 선택`
     : range === 'daily'
@@ -95,12 +137,33 @@ function ReportOverview() {
         ? `${formatDateKo(weekRange.from)} ~ ${formatDateKo(weekRange.to)} · 주간`
         : range === 'monthly'
           ? `${monthlyValue.replace('-', '년 ')}월 · 월간`
-          : snapshotBase.label;
-  const snapshot = { ...snapshotBase, label: dynamicLabel };
+          : SNAPSHOTS[range].label;
+  const snapshot: Snapshot = {
+    label: dynamicLabel,
+    spend: filteredRows.reduce((s, r) => s + r.spend, 0),
+    impressions: filteredRows.reduce((s, r) => s + r.impressions, 0),
+    clicks: filteredRows.reduce((s, r) => s + r.clicks, 0),
+    conversions: filteredRows.reduce((s, r) => s + r.dbCount, 0),
+    revenue: filteredRows.reduce((s, r) => s + (r.revenue || 0), 0),
+  };
 
   const roas = snapshot.spend > 0 ? (snapshot.revenue / snapshot.spend) * 100 : 0;
   const dateLabel = snapshot.label;
 
+  const advertiserName = (id: string) => advertisers.find(a => a.id === id)?.name ?? id;
+  const CHANNEL_COLUMN: Record<string, 'meta'|'naver'|'google'|'other'> = { meta: 'meta', naver: 'naver', google: 'google' };
+  // 브랜드(광고주) × 매체별 광고비 표
+  const brandChannelData = useMemo(() => {
+    const byAdvertiser = new Map<string, { brand: string; color: string; meta: number; naver: number; google: number; other: number }>();
+    filteredRows.forEach(r => {
+      const key = r.advertiserId;
+      const row = byAdvertiser.get(key) ?? { brand: advertiserName(key), color: advertisers.find(a=>a.id===key)?.color ?? '#2563eb', meta: 0, naver: 0, google: 0, other: 0 };
+      const col = CHANNEL_COLUMN[r.channel] ?? 'other';
+      row[col] += r.spend;
+      byAdvertiser.set(key, row);
+    });
+    return Array.from(byAdvertiser.values());
+  }, [filteredRows, advertisers]);
   const totals = useMemo(() => {
     return brandChannelData.reduce(
       (acc, row) => ({
@@ -111,7 +174,31 @@ function ReportOverview() {
       }),
       { meta: 0, naver: 0, google: 0, other: 0 },
     );
-  }, []);
+  }, [brandChannelData]);
+
+  // 브랜드별 요약 표(현재 기간 기준)
+  const brandSummaryRows = useMemo(() => {
+    const byAdvertiser = new Map<string, { advertiserId: string; brand: string; spend: number; impressions: number; clicks: number; conversions: number; revenue: number }>();
+    filteredRows.forEach(r => {
+      const row = byAdvertiser.get(r.advertiserId) ?? { advertiserId: r.advertiserId, brand: advertiserName(r.advertiserId), spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
+      row.spend += r.spend; row.impressions += r.impressions; row.clicks += r.clicks; row.conversions += r.dbCount; row.revenue += r.revenue || 0;
+      byAdvertiser.set(r.advertiserId, row);
+    });
+    return Array.from(byAdvertiser.values());
+  }, [filteredRows, advertisers]);
+
+  // 캠페인별 표는 매체 계정 연동 시 동기화된 소재(광고) 데이터를 캠페인명 기준으로 묶어서 보여줍니다.
+  // (일 단위가 아니라, 가장 최근 동기화 시점 기준 누적치입니다.)
+  const campaignRows = useMemo(() => {
+    const byCampaign = new Map<string, { campaign: string; brand: string; media: string; spend: number; impressions: number; clicks: number; cpm: number; ctr: number; conversions: number; revenue: number }>();
+    creativeRows.forEach(r => {
+      const key = `${r.advertiserId}|${r.campaignName || '(캠페인명 없음)'}`;
+      const row = byCampaign.get(key) ?? { campaign: r.campaignName || '(캠페인명 없음)', brand: advertiserName(r.advertiserId), media: CHANNEL_LABELS[r.channel] ?? r.channel, spend: 0, impressions: 0, clicks: 0, cpm: 0, ctr: 0, conversions: 0, revenue: 0 };
+      row.spend += r.spend; row.impressions += r.impressions; row.clicks += r.clicks; row.conversions += r.dbCount; row.revenue += r.revenue || 0;
+      byCampaign.set(key, row);
+    });
+    return Array.from(byCampaign.values()).map(r => ({ ...r, cpm: r.impressions ? r.spend / r.impressions * 1000 : 0, ctr: r.impressions ? r.clicks / r.impressions * 100 : 0 }));
+  }, [creativeRows, advertisers]);
 
   const selectPeriodRange = (next: ReportRange) => {
     setRange(next);
@@ -213,8 +300,17 @@ function ReportOverview() {
           <table className="ops-table report-table">
             <thead><tr><th>브랜드</th><th>광고비</th><th>노출</th><th>클릭</th><th>CTR</th><th>전환/예약</th><th>전환매출</th><th>ROAS</th></tr></thead>
             <tbody>
-              
-              
+              {brandSummaryRows.map(row => {
+                const ctr = row.impressions ? row.clicks / row.impressions * 100 : 0;
+                const rowRoas = row.spend > 0 ? row.revenue / row.spend * 100 : 0;
+                return <tr key={row.advertiserId}>
+                  <td><Link className="brand-name-link" to={`/report-center/${row.advertiserId}`}>{row.brand}</Link></td>
+                  <td>{won(row.spend)}</td><td>{row.impressions.toLocaleString()}</td><td>{row.clicks.toLocaleString()}</td>
+                  <td>{percent(ctr)}</td><td>{row.conversions.toLocaleString()}</td>
+                  <td>{row.revenue ? won(row.revenue) : '-'}</td><td>{row.revenue ? percent(rowRoas) : '-'}</td>
+                </tr>;
+              })}
+              {!brandSummaryRows.length && <tr><td colSpan={8} style={{textAlign:'center',color:'var(--text-muted)',padding:'20px 0'}}>이 기간에 집계된 데이터가 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -244,7 +340,11 @@ export function ReportsHubPage() {
   const { brandId } = useParams();
   const [period, setPeriod] = useState<PeriodType>('daily');
   const [range, setRange] = useState<DateRange>(()=>{const d=new Date().toISOString().slice(0,10);return {from:d,to:d}});
-  const report = BRAND_REPORTS.find((r) => r.config.brandId === brandId);
+  const [advertisers] = useAdvertisers();
+  const [metricRows, setMetricRows] = useState<DailyMetricRow[]>([]);
+  useEffect(() => { apiFetch<{ rows: DailyMetricRow[] }>('/daily-metrics').then(r => setMetricRows(r.rows || [])).catch(() => setMetricRows([])); }, []);
+  const liveReports = useMemo(() => buildLiveBrandReports(advertisers, metricRows), [advertisers, metricRows]);
+  const report = liveReports.find((r) => r.config.brandId === brandId);
   const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set());
 
   if (!brandId) return <ReportOverview />;
@@ -259,17 +359,25 @@ export function ReportsHubPage() {
   }
 
   if (selectedGroups.size === 0) {
-    report.config.rowGroups.forEach((_, i) => selectedGroups.add(i));
+    report.config.lineItems.forEach((_, i) => selectedGroups.add(i));
   }
 
-  const filteredConfig = { ...report.config, rowGroups: report.config.rowGroups.filter((_, i) => selectedGroups.has(i)) };
+  // 노출/클릭/광고비/DB(+매출 추적 시 매출·ROAS)를 지표별로 한 그룹씩 구성합니다 - 연동된 실제 채널 전체 기준.
+  const tracksRevenue = Object.values(report.data).some(byDate => Object.values(byDate).some(f => f.revenue !== undefined));
+  const channelKeys = report.config.lineItems.map(i => i.key);
+  const metricDefs: { metric: 'impressions'|'clicks'|'ad_spend'|'db_count'|'revenue'|'roas'; label: string }[] = [
+    { metric: 'impressions', label: '노출' }, { metric: 'clicks', label: '클릭' }, { metric: 'ad_spend', label: '광고비' }, { metric: 'db_count', label: 'DB/리드' },
+    ...(tracksRevenue ? [{ metric: 'revenue' as const, label: '매출' }, { metric: 'roas' as const, label: 'ROAS' }] : []),
+  ];
+  const rowGroups = metricDefs.map(m => ({ metric: m.metric, label: m.label, totalLabel: '합계', items: channelKeys }));
+  const filteredConfig = { ...report.config, rowGroups: rowGroups.filter((_, i) => selectedGroups.has(i)) };
   const dates = enumerateDates(range.from, range.to);
-  const metricOptions = report.config.rowGroups.map((g, i) => ({ key: i, label: g.label }));
+  const metricOptions = rowGroups.map((g, i) => ({ key: i, label: g.label }));
 
   return (
     <div>
       <Link to="/reports" className="breadcrumb-back">← 통합 보고서로</Link>
-      <PageHeader title={`${report.config.brandName} 보고서`} description="브랜드 통합 보고서입니다. 채널·지표 구성은 광고주 설정을 따릅니다." action={<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><DateRangePicker value={range} onChange={setRange}/><PeriodSelector value={period} onChange={setPeriod}/><MetricPicker options={metricOptions} selected={selectedGroups} onChange={setSelectedGroups}/></div>} />
+      <PageHeader title={`${report.config.brandName} 보고서`} description="브랜드 통합 보고서입니다. 매체 계정 연동으로 실제 수집된 데이터를 표시합니다." action={<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><DateRangePicker value={range} onChange={setRange}/><PeriodSelector value={period} onChange={setPeriod}/><MetricPicker options={metricOptions} selected={selectedGroups} onChange={setSelectedGroups}/></div>} />
       <div className="card"><div className="card-title">통합 보고서</div>{filteredConfig.rowGroups.length===0?<EmptyState title="표시할 지표를 선택해주세요." description="상단의 지표 선택에서 최소 1개 이상 켜주세요."/>:<BrandReportGrid config={filteredConfig} data={report.data} dates={dates} period={period}/>}</div>
     </div>
   );
