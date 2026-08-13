@@ -1,10 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { Search, Grid3X3, List, X, Copy, Download } from 'lucide-react';
 import { CREATIVE_LIBRARY, type Creative } from '../data/creativeLibrary';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
+
+type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
 
 type GroupBy = 'brand' | 'type' | 'objective';
 const GROUP_LABEL: Record<GroupBy, string> = { brand: '광고주별', type: '소재 종류별', objective: '광고 목표별' };
@@ -20,6 +24,10 @@ export function CreativeLibraryPage(){
   const [selectedValue,setSelectedValue]=useState<Record<GroupBy,string>>({ brand: '전체', type: '전체', objective: '전체' });
   const { filterValue } = useAdvertiserFilter();
   const navigate = useNavigate();
+  const [advertisers]=useAdvertisers();
+  const [creativeMetrics,setCreativeMetrics]=useState<CreativeMetricRow[]>([]);
+  useEffect(()=>{apiFetch<{rows:CreativeMetricRow[]}>('/creative-metrics').then(r=>setCreativeMetrics(r.rows||[])).catch(()=>setCreativeMetrics([]));},[]);
+  const advertiserName=(id:string)=>advertisers.find(a=>a.id===id)?.name??id;
   const rows=useMemo(()=>{
     const nq = normalize(q);
     return CREATIVE_LIBRARY.filter(x=>
@@ -77,6 +85,31 @@ export function CreativeLibraryPage(){
           <button className={view==='list'?'icon-btn active':''} onClick={()=>setView('list')}><List/></button>
         </div>
       }/>
+      {!!creativeMetrics.length && (
+        <section className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <h3 style={{ margin: '0 0 4px' }}>매체 연동 실제 소재 성과</h3>
+          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 광고 단위 데이터입니다.</p>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead><tr><th>광고주</th><th>소재(광고)명</th><th>캠페인</th><th className="num">노출</th><th className="num">클릭</th><th className="num">광고비</th><th className="num">전환</th><th className="num">매출</th></tr></thead>
+              <tbody>
+                {creativeMetrics.map(m => (
+                  <tr key={`${m.channel}-${m.adId}`}>
+                    <td>{advertiserName(m.advertiserId)}</td>
+                    <td>{m.adName}</td>
+                    <td>{m.campaignName || '-'}</td>
+                    <td className="num">{m.impressions.toLocaleString()}</td>
+                    <td className="num">{m.clicks.toLocaleString()}</td>
+                    <td className="num">₩{Math.round(m.spend).toLocaleString()}</td>
+                    <td className="num">{m.dbCount.toLocaleString()}</td>
+                    <td className="num">{m.revenue ? `₩${Math.round(m.revenue).toLocaleString()}` : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
       <div className="library-group-toggle">
         <span>보기 기준</span>
         {(['brand','type','objective'] as GroupBy[]).map(g => (

@@ -184,6 +184,19 @@ function metaCampaignStatus(effectiveStatus) {
   return 'scheduled';
 }
 
+// Meta는 구매/리드 하나를 omni_purchase, purchase, offsite_conversion.fb_pixel_purchase 등
+// 여러 action_type으로 "중복"해서 돌려줍니다. 전부 더하면 실제보다 부풀려집니다(광고 관리자
+// 화면 값과 안 맞음). 반드시 우선순위상 "하나만" 골라 씁니다 — 절대 합산하지 않습니다.
+const PURCHASE_ACTION_PRIORITY = ['omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
+const LEAD_ACTION_PRIORITY = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
+function pickAction(list, priorityTypes) {
+  for (const type of priorityTypes) {
+    const match = (list || []).find(a => a.action_type === type);
+    if (match) return Number(match.value || 0);
+  }
+  return 0;
+}
+
 async function metaFetchInsights(accountId, since, until) {
   const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
   const data = await metaGraphGet(`/${id}/insights`, {
@@ -192,23 +205,16 @@ async function metaFetchInsights(accountId, since, until) {
     time_increment: '1', // 날짜별로 쪼개서 반환
     level: 'account',
   });
-  const LEAD_ACTION_TYPES = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
-  const PURCHASE_ACTION_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
-  const sumByType = (list, types) => (list || [])
-    .filter(a => types.includes(a.action_type))
-    .reduce((sum, a) => sum + Number(a.value || 0), 0);
   const rows = Array.isArray(data.data) ? data.data : [];
   return rows.map(row => ({
     date: row.date_start,
     impressions: Number(row.impressions || 0),
     clicks: Number(row.clicks || 0),
     spend: Number(row.spend || 0),
-    // actions 배열 안에서 리드/전환에 해당하는 action_type만 골라 합산합니다.
-    // 브랜드마다 어떤 action_type을 "전환"으로 볼지 다를 수 있어 대표적인 것만 기본 포함합니다.
-    dbCount: sumByType(row.actions, LEAD_ACTION_TYPES),
-    // 구매 건수는 actions(횟수), 구매 전환값(매출)은 action_values(금액)에서 각각 가져옵니다.
-    purchases: sumByType(row.actions, PURCHASE_ACTION_TYPES),
-    revenue: sumByType(row.action_values, PURCHASE_ACTION_TYPES),
+    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY),
+    // 구매 건수는 actions(횟수), 구매 전환값(매출)은 action_values(금액)에서 가져옵니다.
+    purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
+    revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
   }));
 }
 
@@ -221,14 +227,11 @@ async function metaFetchAdInsights(accountId, since, until) {
     level: 'ad',
     limit: '500',
   });
-  const LEAD_ACTION_TYPES = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
-  const PURCHASE_ACTION_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
-  const sumByType = (list, types) => (list || []).filter(a => types.includes(a.action_type)).reduce((sum, a) => sum + Number(a.value || 0), 0);
   const rows = Array.isArray(data.data) ? data.data : [];
   return rows.map(row => ({
     adId: row.ad_id, adName: row.ad_name || '(이름 없음)', campaignName: row.campaign_name || '',
     impressions: Number(row.impressions || 0), clicks: Number(row.clicks || 0), spend: Number(row.spend || 0),
-    dbCount: sumByType(row.actions, LEAD_ACTION_TYPES), revenue: sumByType(row.action_values, PURCHASE_ACTION_TYPES),
+    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY), revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
   }));
 }
 

@@ -1,13 +1,15 @@
+import { useEffect, useState } from 'react';
 import { Bot, CheckCircle2, Database, FileText, Megaphone, MousePointerClick, Search, Sparkles, Target, TrendingUp, WalletCards } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { BRAND_REPORTS } from '../data/brandReports';
-import { computeMetric, sumFields } from '../types/brandReport';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useAuth } from '../context/AuthContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
 
 function toNumber(value: number | undefined) { return value ?? 0; }
 function money(value: number) { return `₩${Math.round(value).toLocaleString()}`; }
+
+type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; purchases?: number };
 
 export function UniverseHomePage() {
   const { filterValue, setFilter } = useAdvertiserFilter();
@@ -16,18 +18,23 @@ export function UniverseHomePage() {
   const greetingName = isAdmin ? '관리자' : (user?.nickname?.trim() || user?.name?.trim() || user?.advertiser_name?.trim() || '사용자');
   const advertiserNames = advertisers.map(a => a.name);
   const selectedAdvertiser = advertiserNames.includes(filterValue) ? filterValue : '';
-  const visibleReports = selectedAdvertiser ? BRAND_REPORTS.filter(report => report.config.brandName === selectedAdvertiser) : BRAND_REPORTS;
-  const totals = visibleReports.map(report => sumFields(Object.values(report.data).flatMap(dates => Object.values(dates))));
-  const total = sumFields(totals);
+
+  // 매체 계정 연동(설정 > 매체 계정 연동)에서 연결·동기화된 실제 데이터를 읽어옵니다.
+  const [metricRows, setMetricRows] = useState<DailyMetricRow[]>([]);
+  useEffect(() => {
+    apiFetch<{ rows: DailyMetricRow[] }>('/daily-metrics').then(r => setMetricRows(r.rows || [])).catch(() => setMetricRows([]));
+  }, []);
+  const selectedId = selectedAdvertiser ? advertisers.find(a => a.name === selectedAdvertiser)?.id : undefined;
+  const visibleRows = selectedId ? metricRows.filter(r => r.advertiserId === selectedId) : metricRows;
   const overview = {
-    spend: toNumber(total.spend),
-    clicks: toNumber(total.clicks),
-    dbCount: toNumber(total.dbCount),
-    conversions: toNumber(total.dbCount),
-    revenue: toNumber(total.revenue),
-    roas: computeMetric('roas', total) ?? 0,
+    spend: toNumber(visibleRows.reduce((sum, r) => sum + r.spend, 0)),
+    clicks: toNumber(visibleRows.reduce((sum, r) => sum + r.clicks, 0)),
+    dbCount: toNumber(visibleRows.reduce((sum, r) => sum + r.dbCount, 0)),
+    conversions: toNumber(visibleRows.reduce((sum, r) => sum + r.dbCount, 0)),
+    revenue: toNumber(visibleRows.reduce((sum, r) => sum + (r.revenue || 0), 0)),
   };
-  const hasPerformance = visibleReports.length > 0;
+  const roas = overview.spend > 0 ? (overview.revenue / overview.spend) * 100 : 0;
+  const hasPerformance = visibleRows.length > 0;
 
   return (
     <div className="universe-home-page universe-home-dashboard home-dashboard-v14">
@@ -50,14 +57,14 @@ export function UniverseHomePage() {
         <Link to="/reports" className="home-dashboard-kpi"><span className="home-kpi-label"><MousePointerClick size={15}/><span>클릭</span></span><strong>{overview.clicks.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
         <Link to="/db-management" className="home-dashboard-kpi"><span className="home-kpi-label"><Database size={15}/><span>DB</span></span><strong>{overview.dbCount.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
         <Link to="/conversion-funnel" className="home-dashboard-kpi"><span className="home-kpi-label"><Target size={15}/><span>전환</span></span><strong>{overview.conversions.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
-        <Link to="/report-center" className="home-dashboard-kpi"><span className="home-kpi-label"><TrendingUp size={15}/><span>ROAS</span></span><strong>{overview.roas.toFixed(0)}%</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
+        <Link to="/report-center" className="home-dashboard-kpi"><span className="home-kpi-label"><TrendingUp size={15}/><span>ROAS</span></span><strong>{roas.toFixed(0)}%</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
         <Link to="/approval-queue" className="home-dashboard-kpi approval"><span className="home-kpi-label"><CheckCircle2 size={15}/><span>승인 대기</span></span><strong>0<small>건</small></strong><em><small>요청 없음</small></em></Link>
       </section>
 
       {!advertisers.length ? <section className="home-dashboard-card" style={{padding:32,textAlign:'center'}}><Sparkles size={34} style={{margin:'0 auto 10px'}}/><h2>HOWTOM 유니버스를 처음 시작합니다.</h2><p style={{color:'#64748b'}}>현재 광고주·광고성과·소재·키워드·보고서 샘플 데이터는 모두 제거된 Zero State입니다.</p><Link className="btn primary" to="/advertisers">첫 광고주 등록</Link></section> : null}
 
       <section className="home-dashboard-main-row home-dashboard-main-row-v14">
-        <article className="home-dashboard-card performance-card"><div className="home-card-head home-card-head-compact"><div><h2>광고 성과 요약</h2></div></div><div className="home-empty-data"><TrendingUp size={28}/><b>{hasPerformance ? '연결된 광고 데이터를 집계합니다.' : '광고 성과 데이터가 없습니다.'}</b><span>{hasPerformance ? '실제 수집 데이터가 이 영역에 표시됩니다.' : '광고 API 또는 데이터 수집을 연결하면 성과 그래프가 표시됩니다.'}</span></div></article>
+        <article className="home-dashboard-card performance-card"><div className="home-card-head home-card-head-compact"><div><h2>광고 성과 요약</h2></div></div>{hasPerformance ? <div className="home-summary-numbers" style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:12,padding:'4px 4px 16px'}}><div><small style={{color:'#64748b'}}>광고비</small><div style={{fontSize:20,fontWeight:700}}>{money(overview.spend)}</div></div><div><small style={{color:'#64748b'}}>매출(구매전환값)</small><div style={{fontSize:20,fontWeight:700}}>{money(overview.revenue)}</div></div><div><small style={{color:'#64748b'}}>클릭수</small><div style={{fontSize:20,fontWeight:700}}>{overview.clicks.toLocaleString()}</div></div><div><small style={{color:'#64748b'}}>DB/리드</small><div style={{fontSize:20,fontWeight:700}}>{overview.dbCount.toLocaleString()}</div></div></div> : <div className="home-empty-data"><TrendingUp size={28}/><b>광고 성과 데이터가 없습니다.</b><span>설정 &gt; 매체 계정 연동에서 광고 계정을 연결하면 이 영역에 실제 데이터가 표시됩니다.</span></div>}</article>
         <article className="home-dashboard-card notice-card"><div className="home-card-head home-card-head-compact"><div><h2>최근 알림</h2></div></div><div className="home-empty-data"><CheckCircle2 size={26}/><b>알림이 없습니다.</b><span>실제 자동화·예산·데이터 수집 이벤트가 발생하면 표시됩니다.</span></div></article>
         <article className="home-dashboard-card insight-card"><div className="home-card-head home-card-head-compact"><div><h2>AI 추천 인사이트</h2></div></div><div className="home-empty-data"><Bot size={26}/><b>분석할 데이터가 없습니다.</b><span>실제 성과 데이터가 쌓이면 추천 인사이트를 생성할 수 있습니다.</span></div></article>
       </section>

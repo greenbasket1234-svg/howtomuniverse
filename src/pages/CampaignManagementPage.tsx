@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
@@ -8,6 +8,7 @@ import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey } 
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { AutomationEditor } from './SearchAdManagementPages';
+import { apiFetch } from '../hooks/useApi';
 
 const statusLabel: Record<CampaignStatus,string> = {on:'운영 중',off:'중지',scheduled:'예약 대기',review:'심사 중',error:'오류',unsupported:'지원 불가'};
 const statusTone: Record<CampaignStatus,'success'|'warning'|'danger'|'neutral'|'accent'> = {on:'success',off:'neutral',scheduled:'accent',review:'warning',error:'danger',unsupported:'neutral'};
@@ -24,6 +25,18 @@ function loadCampaignRows(): Campaign[] {
 
 export function CampaignManagementPage() {
   const [rows,setRows] = useState<Campaign[]>(loadCampaignRows);
+  // 설정 > 매체 계정 연동에서 연결된 실제 Meta 캠페인을 불러와, 기존(업로드로 추가된) 목록과 합칩니다.
+  useEffect(() => {
+    apiFetch<Campaign[]>('/campaigns').then(live => {
+      if (!live.length) return;
+      setRows(prev => {
+        const existingIds = new Set(prev.map(c => c.id));
+        const merged = [...prev, ...live.filter(c => !existingIds.has(c.id))];
+        // 이미 같은 id로 있던 캠페인은 최신 상태(예산·상태)로 갱신합니다.
+        return merged.map(c => live.find(l => l.id === c.id) ?? c);
+      });
+    }).catch(() => { /* 연결된 계정이 없으면 조용히 무시합니다. */ });
+  }, []);
   // 상단 전역 광고주 검색과 연결합니다 (화면마다 따로 있던 광고주 선택 드롭다운을 없애고 하나로 통일).
   const { filterValue } = useAdvertiserFilter();
   const matchedAdvertiser = ADVERTISERS.find(a => matchesAdvertiserFilter(a.name, filterValue));

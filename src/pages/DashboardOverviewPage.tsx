@@ -2,11 +2,34 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, CalendarDays, Check, ChevronDown, RefreshCw, Search, ShieldCheck, X, ArrowUpRight, AlertTriangle, Sparkles } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
-import { BRAND_REPORTS } from '../data/brandReports';
-import { computeMetric, enumerateDates, sumFields, type RawFields } from '../types/brandReport';
+import { computeMetric, enumerateDates, sumFields, type RawFields, type BrandReportConfig, type BrandDailyData } from '../types/brandReport';
 import { getBudgetStatus } from '../types/common';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
+
+// 매체 계정 연동에서 실제로 동기화된 dailyMetrics를, 이 화면이 원래 쓰던 BRAND_REPORTS와
+// 같은 모양({config, data})으로 변환합니다. 아래 로직은 전부 그대로 재사용합니다.
+type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
+const CHANNEL_LABELS: Record<string, string> = { meta: '메타', naver: '네이버', google: '구글', daangn: '당근', tiktok: '틱톡', kakao: '카카오' };
+function buildLiveBrandReports(advertisers: { id: string; name: string; monthlyBudget: number }[], rows: DailyMetricRow[]): { config: BrandReportConfig; data: BrandDailyData }[] {
+  return advertisers.map(adv => {
+    const advRows = rows.filter(r => r.advertiserId === adv.id);
+    const channels = Array.from(new Set(advRows.map(r => r.channel)));
+    const data: BrandDailyData = {};
+    for (const ch of channels) {
+      data[ch] = {};
+      for (const row of advRows.filter(r => r.channel === ch)) {
+        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, revenue: row.revenue ?? 0 };
+      }
+    }
+    return {
+      config: { brandId: adv.id, brandName: adv.name, hasRealData: true, lineItems: channels.map(ch => ({ key: ch, label: CHANNEL_LABELS[ch] ?? ch })), rowGroups: [], monthlyBudget: adv.monthlyBudget },
+      data,
+    };
+  });
+}
 
 import { PLATFORM_COLOR as MEDIA_COLORS } from '../utils/platformColors';
 import { TrendComboChart } from '../components/charts/TrendComboChart';
@@ -49,6 +72,10 @@ function Modal({title,children,onClose}:{title:string;children:React.ReactNode;o
 export function DashboardOverviewPage(){
   const {brandId}=useParams(); const navigate=useNavigate();
   const { filterValue } = useAdvertiserFilter();
+  const [advertisers]=useAdvertisers();
+  const [metricRows,setMetricRows]=useState<DailyMetricRow[]>([]);
+  useEffect(()=>{apiFetch<{rows:DailyMetricRow[]}>('/daily-metrics').then(r=>setMetricRows(r.rows||[])).catch(()=>setMetricRows([]));},[]);
+  const BRAND_REPORTS=useMemo(()=>buildLiveBrandReports(advertisers,metricRows),[advertisers,metricRows]);
   const selectedId=brandId&&BRAND_REPORTS.some(r=>r.config.brandId===brandId)?brandId:'all';
   // URL로 특정 브랜드가 지정된 경우엔 그 브랜드를 우선하고,
   // 그렇지 않으면(전체 대시보드) 상단 전역 검색 필터를 브랜드명 기준 부분 검색으로 적용합니다.

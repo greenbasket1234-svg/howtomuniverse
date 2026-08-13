@@ -1,14 +1,28 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
-import { MockNote } from '../components/MockNote';
-import { BRAND_REPORTS } from '../data/brandReports';
-import { getKeywordAnalysisRows, KEYWORD_PLATFORMS, type KeywordAnalysisGrade, type KeywordPlatform } from '../data/keywordAnalysisMock';
+import { KEYWORD_PLATFORMS, type KeywordAnalysisGrade, type KeywordPlatform } from '../data/keywordAnalysisMock';
 import { getPlatformColor } from '../utils/platformColors';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
 
 type KeywordPlatformFilter = '전체' | KeywordPlatform;
+type KeywordMetricRow = { advertiserId: string; channel: string; keyword: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number };
+const CHANNEL_TO_PLATFORM: Record<string, KeywordPlatform> = { naver: '네이버', google: '구글', kakao: '카카오', daangn: '당근' };
+const PLATFORM_TO_CHANNEL: Record<KeywordPlatform, string> = { 네이버: 'naver', 구글: 'google', 카카오: 'kakao', 당근: 'daangn' };
+
+/** 실제 성과로부터 간단한 운영 등급을 매깁니다 (가짜 데이터가 아니라 실제 노출·클릭·전환 기준). */
+function gradeOf(row: { impressions: number; clicks: number; spend: number; conversions: number }): KeywordAnalysisGrade {
+  if (row.spend > 0 && row.conversions === 0 && row.clicks >= 10) return 'waste';
+  if (row.impressions > 100 && row.clicks === 0) return 'exclude_candidate';
+  const cvr = row.clicks ? row.conversions / row.clicks : 0;
+  if (cvr >= 0.05 && row.conversions >= 2) return 'high_performance';
+  const ctr = row.impressions ? row.clicks / row.impressions : 0;
+  if (ctr >= 0.03 && row.clicks < 20) return 'expansion_candidate';
+  return 'stable';
+}
 
 const gradeLabel: Record<KeywordAnalysisGrade, string> = {
   high_performance: '고성과',
@@ -36,9 +50,12 @@ function currency(value: number): string {
 
 export function KeywordAnalysisBrandListPage() {
   const [query, setQuery] = useState('');
+  const [advertisers] = useAdvertisers();
+  const [metricRows, setMetricRows] = useState<KeywordMetricRow[]>([]);
+  useEffect(() => { apiFetch<{ rows: KeywordMetricRow[] }>('/keyword-metrics').then(r => setMetricRows(r.rows || [])).catch(() => setMetricRows([])); }, []);
   const rows = useMemo(
-    () => BRAND_REPORTS.filter(({ config }) => config.brandName.toLowerCase().includes(query.trim().toLowerCase())),
-    [query]
+    () => advertisers.filter(a => a.name.toLowerCase().includes(query.trim().toLowerCase())),
+    [advertisers, query]
   );
 
   return (
@@ -69,19 +86,19 @@ export function KeywordAnalysisBrandListPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ config }) => {
-              const count = getKeywordAnalysisRows(config.brandId, config.brandName).length;
+            {rows.map((advertiser) => {
+              const count = metricRows.filter(m => m.advertiserId === advertiser.id).length;
               return (
-                <tr key={config.brandId}>
+                <tr key={advertiser.id}>
                   <td className="brand-name-cell">
-                    <Link className="brand-name-link" to={`/keywords/${config.brandId}/analysis`}>
-                      {config.brandName}
+                    <Link className="brand-name-link" to={`/keywords/${advertiser.id}/analysis`}>
+                      {advertiser.name}
                     </Link>
                     </td>
                   <td>
                     <div className="keyword-platform-badges">
                       {KEYWORD_PLATFORMS.map(platform => (
-                        <Link key={platform} to={`/keywords/${config.brandId}/analysis?platform=${encodeURIComponent(platform)}`} className="keyword-platform-badge-link">
+                        <Link key={platform} to={`/keywords/${advertiser.id}/analysis?platform=${encodeURIComponent(platform)}`} className="keyword-platform-badge-link">
                           <Badge tone="accent" style={{ background: `${getPlatformColor(platform)}1a`, color: getPlatformColor(platform), border: `1px solid ${getPlatformColor(platform)}55` }}>{platform}</Badge>
                         </Link>
                       ))}
@@ -89,7 +106,7 @@ export function KeywordAnalysisBrandListPage() {
                   </td>
                   <td className="num">{count.toLocaleString()}개</td>
                   <td style={{ textAlign: 'right' }}>
-                    <Link className="btn btn-primary" to={`/keywords/${config.brandId}/analysis`}>분석 보기</Link>
+                    <Link className="btn btn-primary" to={`/keywords/${advertiser.id}/analysis`}>분석 보기</Link>
                   </td>
                 </tr>
               );
@@ -104,7 +121,6 @@ export function KeywordAnalysisBrandListPage() {
           </tbody>
         </table>
       </div>
-      <MockNote>현재 키워드 분석 데이터는 화면·GATE 검증용 mock 데이터입니다.</MockNote>
     </div>
   );
 }
@@ -117,10 +133,19 @@ export function KeywordAnalysisPage() {
   const initialPlatform = (() => {
     const requested = searchParams.get('platform');
     if (requested === '전체') return '전체';
-    return requested && (KEYWORD_PLATFORMS as string[]).includes(requested) ? requested as KeywordPlatform : '네이버';
+    return requested && (KEYWORD_PLATFORMS as string[]).includes(requested) ? requested as KeywordPlatform : '전체';
   })();
   const [platform, setPlatform] = useState<KeywordPlatformFilter>(initialPlatform);
-  const found = BRAND_REPORTS.find(({ config }) => config.brandId === brandId);
+  const [advertisers] = useAdvertisers();
+  const found = advertisers.find(a => a.id === brandId);
+  const [metricRows, setMetricRows] = useState<KeywordMetricRow[]>([]);
+  const [connectedChannels, setConnectedChannels] = useState<string[]>([]);
+  useEffect(() => {
+    if (!brandId) return;
+    apiFetch<{ rows: KeywordMetricRow[]; connectedKeywordChannels: string[] }>(`/keyword-metrics?advertiserId=${encodeURIComponent(brandId)}`)
+      .then(r => { setMetricRows(r.rows || []); setConnectedChannels(r.connectedKeywordChannels || []); })
+      .catch(() => { setMetricRows([]); setConnectedChannels([]); });
+  }, [brandId]);
 
   if (!found) {
     return (
@@ -131,10 +156,17 @@ export function KeywordAnalysisPage() {
     );
   }
 
-  const { config } = found;
-  const allRows = platform === '전체'
-    ? KEYWORD_PLATFORMS.flatMap((item) => getKeywordAnalysisRows(config.brandId, config.brandName, item))
-    : getKeywordAnalysisRows(config.brandId, config.brandName, platform);
+  const allRows = metricRows
+    .filter(m => platform === '전체' || CHANNEL_TO_PLATFORM[m.channel] === platform)
+    .map((m, i) => {
+      const platformLabel = CHANNEL_TO_PLATFORM[m.channel] ?? m.channel;
+      return {
+        id: `${m.channel}-${m.keyword}-${i}`, platform: platformLabel, keyword: m.keyword, campaign: m.campaignName || '-', adGroup: '-',
+        impressions: m.impressions, clicks: m.clicks, spend: m.spend, conversions: m.dbCount, status: 'active' as const,
+        grade: gradeOf({ impressions: m.impressions, clicks: m.clicks, spend: m.spend, conversions: m.dbCount }),
+        memo: undefined as string | undefined,
+      };
+    });
   const filteredRows = allRows.filter((row) => {
     const matchesQuery = row.keyword.toLowerCase().includes(query.trim().toLowerCase());
     const matchesGrade = grade === 'all' || row.grade === grade;
@@ -150,9 +182,17 @@ export function KeywordAnalysisPage() {
     <div>
       <Link className="breadcrumb-back" to="/keywords">← 광고주 목록으로</Link>
       <PageHeader
-        title={`${config.brandName} 키워드 분석`}
+        title={`${found.name} 키워드 분석`}
         description="네이버·당근·구글·카카오 키워드별 노출·클릭·광고비·전환 효율과 운영 후보를 분석합니다."
       />
+
+      {connectedChannels.length === 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 16, background: '#fffbeb', border: '1px solid #fde68a' }}>
+          <b>네이버·구글·카카오 검색광고 계정이 아직 연결되지 않았습니다.</b>
+          <p className="muted" style={{ margin: '6px 0 10px' }}>키워드는 검색광고 매체에서만 제공되는 개념이라, Meta 계정만으로는 데이터가 채워지지 않습니다. 설정 &gt; 매체 계정 연동에서 해당 매체를 연결하면 이 화면이 자동으로 채워집니다.</p>
+          <Link className="btn primary" to="/ad-accounts/connections">매체 계정 연동으로 이동</Link>
+        </div>
+      )}
 
       <div className="summary-grid">
         <div className="summary-card"><div className="summary-card-label">전체 키워드</div><div className="summary-card-value">{allRows.length}개</div></div>
@@ -201,7 +241,7 @@ export function KeywordAnalysisPage() {
                   <td className="num">{row.impressions.toLocaleString()}</td>
                   <td className="num">{row.clicks.toLocaleString()}</td>
                   <td className="num">{pct(row.clicks, row.impressions)}</td>
-                  <td className="num">{currency(row.spend / row.clicks)}</td>
+                  <td className="num">{row.clicks ? currency(row.spend / row.clicks) : '-'}</td>
                   <td className="num">{currency(row.spend)}</td>
                   <td className="num">{row.conversions.toLocaleString()}</td>
                   <td className="num">{pct(row.conversions, row.clicks)}</td>
@@ -220,15 +260,14 @@ export function KeywordAnalysisPage() {
 
       <div className="keyword-analysis-cards">
         <div className="card"><div className="card-title">고성과 키워드</div>{high.map((r) => <p key={r.id} className="analysis-item"><Badge tone="success">{r.keyword}</Badge> 전환율 {pct(r.conversions, r.clicks)}, CPA {r.conversions ? currency(r.spend / r.conversions) : '-'}</p>)}</div>
-        <div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map((r) => <p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> {r.memo}</p>)}</div>
-        <div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map((r) => <p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> {r.memo}</p>)}</div>
-        <div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map((r) => <p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> {r.memo}</p>)}</div>
+        <div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map((r) => <p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> 클릭 대비 전환 0건</p>)}</div>
+        <div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map((r) => <p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> 노출 대비 클릭 0건</p>)}</div>
+        <div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map((r) => <p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> CTR {pct(r.clicks, r.impressions)}로 양호</p>)}</div>
       </div>
 
       <div className="footnote" style={{ marginBottom: 12 }}>
         CPM·전환매출·ROAS는 검색광고 키워드 분석에서 활용도가 낮거나 키워드 단위 매출 귀속이 불확실해 기본 지표에서 제외했습니다.
       </div>
-      <MockNote>네이버·당근·구글·카카오 키워드 API 연결 전 화면 검증용 mock 데이터입니다.</MockNote>
     </div>
   );
 }
