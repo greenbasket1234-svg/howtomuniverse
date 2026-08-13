@@ -52,7 +52,7 @@ const types = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; char
    ======================================================================== */
 const DATA_DIR = process.env.HOWTOM_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(baseDir, '.data');
 const DB_FILE = path.join(DATA_DIR, 'howtom-db.json');
-const EMPTY_DB = Object.freeze({ advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [] });
+const EMPTY_DB = Object.freeze({ advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], creativeMetrics: [], keywordMetrics: [], scheduleSlots: [] });
 
 function ensureDbFile() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -68,9 +68,13 @@ function readDb() {
       blogStyles: Array.isArray(parsed.blogStyles) ? parsed.blogStyles : [],
       blogAssets: Array.isArray(parsed.blogAssets) ? parsed.blogAssets : [],
       logs: Array.isArray(parsed.logs) ? parsed.logs : [],
+      dailyMetrics: Array.isArray(parsed.dailyMetrics) ? parsed.dailyMetrics : [],
+      creativeMetrics: Array.isArray(parsed.creativeMetrics) ? parsed.creativeMetrics : [],
+      keywordMetrics: Array.isArray(parsed.keywordMetrics) ? parsed.keywordMetrics : [],
+      scheduleSlots: Array.isArray(parsed.scheduleSlots) ? parsed.scheduleSlots : [],
     };
   } catch {
-    return { advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [] };
+    return { advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], creativeMetrics: [], keywordMetrics: [], scheduleSlots: [] };
   }
 }
 function writeDb(next) {
@@ -162,14 +166,37 @@ async function metaListAdAccounts() {
  * 광고 계정의 특정 기간 인사이트(노출/클릭/광고비/전환)를 가져옵니다.
  * accountId는 'act_XXXXXXXXX' 형식이어야 합니다.
  */
+/** 광고 계정의 캠페인 목록(이름/상태/예산)을 가져옵니다. */
+async function metaListCampaigns(accountId) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const data = await metaGraphGet(`/${id}/campaigns`, {
+    fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time',
+    limit: '200',
+  });
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+function metaCampaignStatus(effectiveStatus) {
+  if (effectiveStatus === 'ACTIVE') return 'on';
+  if (effectiveStatus === 'PAUSED') return 'off';
+  if (effectiveStatus === 'IN_PROCESS' || effectiveStatus === 'PENDING_REVIEW') return 'review';
+  if (effectiveStatus === 'CAMPAIGN_PAUSED' || effectiveStatus === 'ADSET_PAUSED') return 'off';
+  return 'scheduled';
+}
+
 async function metaFetchInsights(accountId, since, until) {
   const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
   const data = await metaGraphGet(`/${id}/insights`, {
     time_range: JSON.stringify({ since, until }),
-    fields: 'impressions,clicks,spend,actions,date_start,date_stop',
+    fields: 'impressions,clicks,spend,actions,action_values,date_start,date_stop',
     time_increment: '1', // 날짜별로 쪼개서 반환
     level: 'account',
   });
+  const LEAD_ACTION_TYPES = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
+  const PURCHASE_ACTION_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
+  const sumByType = (list, types) => (list || [])
+    .filter(a => types.includes(a.action_type))
+    .reduce((sum, a) => sum + Number(a.value || 0), 0);
   const rows = Array.isArray(data.data) ? data.data : [];
   return rows.map(row => ({
     date: row.date_start,
@@ -178,11 +205,40 @@ async function metaFetchInsights(accountId, since, until) {
     spend: Number(row.spend || 0),
     // actions 배열 안에서 리드/전환에 해당하는 action_type만 골라 합산합니다.
     // 브랜드마다 어떤 action_type을 "전환"으로 볼지 다를 수 있어 대표적인 것만 기본 포함합니다.
-    dbCount: (row.actions || [])
-      .filter(a => ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'].includes(a.action_type))
-      .reduce((sum, a) => sum + Number(a.value || 0), 0),
+    dbCount: sumByType(row.actions, LEAD_ACTION_TYPES),
+    // 구매 건수는 actions(횟수), 구매 전환값(매출)은 action_values(금액)에서 각각 가져옵니다.
+    purchases: sumByType(row.actions, PURCHASE_ACTION_TYPES),
+    revenue: sumByType(row.action_values, PURCHASE_ACTION_TYPES),
   }));
 }
+
+/** 광고(소재) 단위 인사이트를 가져옵니다. 기간 전체 합산값 하나씩 돌려줍니다. */
+async function metaFetchAdInsights(accountId, since, until) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const data = await metaGraphGet(`/${id}/insights`, {
+    time_range: JSON.stringify({ since, until }),
+    fields: 'ad_id,ad_name,campaign_name,impressions,clicks,spend,actions,action_values',
+    level: 'ad',
+    limit: '500',
+  });
+  const LEAD_ACTION_TYPES = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
+  const PURCHASE_ACTION_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
+  const sumByType = (list, types) => (list || []).filter(a => types.includes(a.action_type)).reduce((sum, a) => sum + Number(a.value || 0), 0);
+  const rows = Array.isArray(data.data) ? data.data : [];
+  return rows.map(row => ({
+    adId: row.ad_id, adName: row.ad_name || '(이름 없음)', campaignName: row.campaign_name || '',
+    impressions: Number(row.impressions || 0), clicks: Number(row.clicks || 0), spend: Number(row.spend || 0),
+    dbCount: sumByType(row.actions, LEAD_ACTION_TYPES), revenue: sumByType(row.action_values, PURCHASE_ACTION_TYPES),
+  }));
+}
+
+/** 검색광고 키워드 단위 인사이트 — 지금은 구현된 매체가 없어 항상 빈 배열입니다.
+    네이버/구글/카카오 검색광고 커넥터가 추가되면 이 함수들이 실제 데이터를 반환하게 됩니다. */
+async function fetchKeywordMetrics(channel, _accountId, _since, _until) {
+  void channel;
+  return []; // TODO: naver/google/kakao 검색광고 API 연결 시 구현
+}
+const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao']; // Meta는 키워드 개념이 없어 제외
 
 /* ========================================================================
    블로그 원고 작성 — 외부 AI API 연동
@@ -576,7 +632,7 @@ async function handleApi(req, res, pathname) {
           if (since <= until) {
             const rows = await metaFetchInsights(metaAccount.account_id, since, until);
             const byDate = new Map(rows.map(r => [r.date, r]));
-            const impressions = [], clicks = [], spend = [], leads = [];
+            const impressions = [], clicks = [], spend = [], leads = [], revenue = [], payments = [];
             for (let day = 1; day <= daysInMonth; day++) {
               const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
               const row = byDate.get(iso);
@@ -584,8 +640,10 @@ async function handleApi(req, res, pathname) {
               clicks.push(row?.clicks || 0);
               spend.push(row?.spend || 0);
               leads.push(row?.dbCount || 0);
+              revenue.push(row?.revenue || 0);
+              payments.push(row?.purchases || 0);
             }
-            source['메타'] = { impressions, clicks, spend, leads };
+            source['메타'] = { impressions, clicks, spend, leads, revenue, payments };
           }
         } catch (error) {
           // Meta API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
@@ -616,6 +674,176 @@ async function handleApi(req, res, pathname) {
       } catch (error) {
         return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
       }
+    }
+
+    // ---- 중앙 성과 데이터 저장소(dailyMetrics / creativeMetrics / keywordMetrics) -------
+    // 매체 계정 연동(설정 > 매체 계정 연동 > 광고 매체 계정)에서 연결에 성공하면 이 저장소에
+    // 데이터를 채워 넣고, 보고서/통합 홈/캠페인 관리/소재 관리/키워드 관리 등 모든 화면이
+    // 이 한 곳만 읽습니다.
+    function upsertDailyMetrics(advertiserId, channel, rows) {
+      mutateDb(db => {
+        const kept = db.dailyMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.date === m.date)));
+        const added = rows.map(r => ({ advertiserId, channel, date: r.date, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, purchases: r.purchases || 0, revenue: r.revenue || 0, updatedAt: new Date().toISOString() }));
+        db.dailyMetrics = [...kept, ...added];
+      });
+    }
+    function upsertCreativeMetrics(advertiserId, channel, rows) {
+      mutateDb(db => {
+        const kept = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.adId === m.adId)));
+        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, updatedAt: new Date().toISOString() }));
+        db.creativeMetrics = [...kept, ...added];
+      });
+    }
+    function upsertKeywordMetrics(advertiserId, channel, rows) {
+      mutateDb(db => {
+        const kept = db.keywordMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.keyword === m.keyword)));
+        const added = rows.map(r => ({ advertiserId, channel, keyword: r.keyword, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, updatedAt: new Date().toISOString() }));
+        db.keywordMetrics = [...kept, ...added];
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/integrations/sync') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const channel = cleanText(body.channel || '', 40);
+      const days = Math.min(Math.max(Number(body.days || 90), 1), 180);
+      if (!advertiserId || !channel) return sendJson(res, 400, { error: 'advertiserId, channel이 필요합니다.' });
+
+      const advertiser = readDb().advertisers.find(a => String(a.id) === advertiserId);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      const account = advertiser.accounts?.find(a => a.channel === channel && a.status === 'connected');
+      if (!account?.account_id) return sendJson(res, 400, { error: `${channel} 계정이 연결되어 있지 않습니다.` });
+
+      if (channel === 'meta') {
+        if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+        try {
+          const until = new Date().toISOString().slice(0, 10);
+          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+          const since = sinceDate.toISOString().slice(0, 10);
+          const [dailyRows, adRows] = await Promise.all([
+            metaFetchInsights(account.account_id, since, until),
+            metaFetchAdInsights(account.account_id, since, until).catch(() => []), // 소재 데이터 실패는 전체 동기화를 막지 않습니다.
+          ]);
+          upsertDailyMetrics(advertiserId, channel, dailyRows);
+          if (adRows.length) upsertCreativeMetrics(advertiserId, channel, adRows);
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, creativeCount: adRows.length, since, until });
+        } catch (error) {
+          return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+        }
+      }
+
+      if (KEYWORD_CAPABLE_CHANNELS.includes(channel)) {
+        // 네이버/구글/카카오 검색광고 커넥터가 아직 없어서, 연결은 되어도 실제 값은 비어 있습니다.
+        const until = new Date().toISOString().slice(0, 10);
+        const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+        const since = sinceDate.toISOString().slice(0, 10);
+        const rows = await fetchKeywordMetrics(channel, account.account_id, since, until);
+        upsertKeywordMetrics(advertiserId, channel, rows);
+        return sendJson(res, 200, { ok: true, channel, count: rows.length, note: rows.length ? undefined : `${channel} 키워드 커넥터가 아직 구현되지 않아 0건입니다.` });
+      }
+
+      return sendJson(res, 400, { error: `${channel} 커넥터는 아직 구현되지 않았습니다.` });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/creative-metrics') {
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const advertiserId = query.get('advertiserId');
+      let rows = readDb().creativeMetrics;
+      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
+      return sendJson(res, 200, { rows: rows.sort((a, b) => b.spend - a.spend) });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const advertiserId = query.get('advertiserId');
+      let rows = readDb().keywordMetrics;
+      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
+      const db = readDb();
+      const connectedKeywordChannels = advertiserId
+        ? (db.advertisers.find(a => String(a.id) === advertiserId)?.accounts || []).filter(a => KEYWORD_CAPABLE_CHANNELS.includes(a.channel) && a.status === 'connected').map(a => a.channel)
+        : [];
+      return sendJson(res, 200, { rows: rows.sort((a, b) => b.spend - a.spend), connectedKeywordChannels, keywordCapableChannels: KEYWORD_CAPABLE_CHANNELS });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/daily-metrics') {
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const advertiserId = query.get('advertiserId');
+      const since = query.get('since');
+      const until = query.get('until');
+      let rows = readDb().dailyMetrics;
+      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
+      if (since) rows = rows.filter(m => m.date >= since);
+      if (until) rows = rows.filter(m => m.date <= until);
+      return sendJson(res, 200, { rows: rows.sort((a, b) => a.date.localeCompare(b.date)) });
+    }
+
+    // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
+    if (req.method === 'GET' && pathname === '/api/campaigns') {
+      const db = readDb();
+      const campaigns = [];
+      if (metaConfigured()) {
+        for (const adv of db.advertisers) {
+          const account = adv.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
+          if (!account?.account_id) continue;
+          try {
+            const rows = await metaListCampaigns(account.account_id);
+            for (const c of rows) {
+              campaigns.push({
+                id: c.id, advertiserId: adv.id, platform: 'meta', name: c.name,
+                accountName: `${adv.name} Meta`, budget: Number(c.daily_budget || c.lifetime_budget || 0),
+                budgetType: c.daily_budget ? 'daily' : 'total',
+                startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
+                status: metaCampaignStatus(c.effective_status || c.status),
+                lastSyncedAt: new Date().toISOString(),
+                capability: { upload: false, toggle: false, schedule: false }, // 읽기 전용 토큰(ads_read) 기준
+              });
+            }
+          } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
+        }
+      }
+      return sendJson(res, 200, campaigns);
+    }
+    if (req.method === 'PUT' && pathname === '/api/campaigns') {
+      // 캠페인 on/off 전환 등 실제 Meta 반영은 ads_management 권한이 필요합니다(현재 ads_read만 사용).
+      return sendJson(res, 200, { ok: true, note: '읽기 전용 토큰이라 실제 매체에는 반영되지 않았습니다.' });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/funnels/channels') {
+      const db = readDb();
+      const byChannel = new Map();
+      for (const m of db.dailyMetrics) {
+        const cur = byChannel.get(m.channel) || { spend: 0, impressions: 0, clicks: 0, leads: 0, purchases: 0, purchaseValue: 0 };
+        cur.spend += m.spend || 0; cur.impressions += m.impressions || 0; cur.clicks += m.clicks || 0;
+        cur.leads += m.dbCount || 0; cur.purchases += m.purchases || 0; cur.purchaseValue += m.revenue || 0;
+        byChannel.set(m.channel, cur);
+      }
+      const rows = Array.from(byChannel.entries()).map(([platform, v]) => ({
+        platform, status: 'connected',
+        values: { spend: v.spend, impressions: v.impressions, clicks: v.clicks, leads: v.leads, purchases: v.purchases, purchaseValue: v.purchaseValue },
+      }));
+      return sendJson(res, 200, rows);
+    }
+
+    // ---- 광고 캘린더 (schedule-slots) --------------------------------------------------
+    if (req.method === 'GET' && pathname === '/api/schedule-slots') {
+      return sendJson(res, 200, readDb().scheduleSlots);
+    }
+    const slotMatch = pathname.match(/^\/api\/schedule-slots\/([^/]+)$/);
+    if (slotMatch && req.method === 'PUT') {
+      const id = decodeURIComponent(slotMatch[1]);
+      const body = await readJson(req);
+      let saved = null;
+      mutateDb(db => {
+        const index = db.scheduleSlots.findIndex(s => String(s.id) === id);
+        saved = { ...body, id };
+        if (index < 0) db.scheduleSlots.push(saved); else db.scheduleSlots[index] = saved;
+      });
+      return sendJson(res, 200, saved);
+    }
+    if (slotMatch && req.method === 'DELETE') {
+      const id = decodeURIComponent(slotMatch[1]);
+      mutateDb(db => { db.scheduleSlots = db.scheduleSlots.filter(s => String(s.id) !== id); });
+      return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === 'GET' && pathname === '/api/blog/projects') return sendJson(res, 200, readDb().blogProjects);

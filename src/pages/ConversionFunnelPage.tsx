@@ -1,11 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, CheckCircle2, ChevronDown, Save, Settings2, TrendingDown, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
-import { loadPerformanceDataset } from '../analytics/integratedPerformance';
+import { loadPerformanceDataset, normalizeMedia, type PerformancePoint } from '../analytics/integratedPerformance';
 import { loadDbRows } from '../utils/dbDataStore';
 import { useDbDataRevision } from '../hooks/useDbDataRevision';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
+
+type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
 
 type FunnelMode = 'lead' | 'commerce';
 type FunnelStage = { label: string; value: number; color: string };
@@ -53,24 +57,38 @@ export function ConversionFunnelPage(){
   const dbRevision=useDbDataRevision();
   const performance=useMemo(()=>loadPerformanceDataset(),[dbRevision]);
   const dbRows=useMemo(()=>loadDbRows(),[dbRevision]);
-  const latestDates=[performance.latestDate,...dbRows.map(row=>row.date)].filter(Boolean).sort();
+  // 설정 > 매체 계정 연동에서 동기화된 실제 데이터(중앙 저장소)를 추가로 불러와 합칩니다.
+  const [advertisers]=useAdvertisers();
+  const [metaRows,setMetaRows]=useState<DailyMetricRow[]>([]);
+  useEffect(()=>{apiFetch<{rows:DailyMetricRow[]}>('/daily-metrics').then(r=>setMetaRows(r.rows||[])).catch(()=>setMetaRows([]));},[]);
+  const metaMedia:PerformancePoint[]=useMemo(()=>metaRows.map(r=>({
+    date:r.date, advertiser:advertisers.find(a=>a.id===r.advertiserId)?.name??r.advertiserId,
+    reportType:'lead' as const, media:normalizeMedia(r.channel),
+    spend:r.spend, impressions:r.impressions, clicks:r.clicks, leads:r.dbCount, revenue:r.revenue??0,
+  })),[metaRows,advertisers]);
+  const allMedia=useMemo(()=>[...performance.media,...metaMedia],[performance.media,metaMedia]);
+  const allAdvertiserNames=useMemo(()=>[...new Set([...performance.advertisers,...metaMedia.map(r=>r.advertiser)])],[performance.advertisers,metaMedia]);
+  const latestDates=[performance.latestDate,...dbRows.map(row=>row.date),...metaRows.map(row=>row.date)].filter(Boolean).sort();
   const latest=latestDates[latestDates.length-1]??'';
   const [rangeStart,rangeEnd]=funnelRange(period,latest);
   const actualDb=dbRows.filter(row=>(!rangeStart||row.date>=rangeStart)&&(!rangeEnd||row.date<=rangeEnd)&&matchesAdvertiserFilter(row.advertiser,filterValue));
-  const performanceRows=performance.media.filter(row=>(!rangeStart||row.date>=rangeStart)&&(!rangeEnd||row.date<=rangeEnd)&&matchesAdvertiserFilter(row.advertiser,filterValue));
+  const performanceRows=allMedia.filter(row=>(!rangeStart||row.date>=rangeStart)&&(!rangeEnd||row.date<=rangeEnd)&&matchesAdvertiserFilter(row.advertiser,filterValue));
   const hasActualDb=actualDb.length>0;
+  const hasPerformanceOnly=performanceRows.length>0;
   const dynamicRows:PlatformRow[]=useMemo(()=>{
-    if(!hasActualDb) return fallbackRows;
-    const mediaNames=[...new Set(actualDb.map(row=>row.media))];
+    if(!hasActualDb&&!hasPerformanceOnly) return fallbackRows;
+    const mediaNames=[...new Set([...actualDb.map(row=>row.media),...performanceRows.map(row=>row.media)])];
     return mediaNames.map(platform=>{
       const dbPart=actualDb.filter(row=>row.media===platform);
       const perfPart=performanceRows.filter(row=>row.media===platform);
-      const db=dbPart.reduce((a,r)=>a+r.db,0),validDb=dbPart.reduce((a,r)=>a+r.validDb,0),contracts=dbPart.reduce((a,r)=>a+r.contracts,0);
+      // CRM(Google Sheets) 연동이 없는 매체는 유효 DB·계약 단계는 아직 알 수 없어 0으로 둡니다(가짜 값 채우지 않음).
+      const db=dbPart.length?dbPart.reduce((a,r)=>a+r.db,0):perfPart.reduce((a,r)=>a+r.leads,0);
+      const validDb=dbPart.reduce((a,r)=>a+r.validDb,0),contracts=dbPart.reduce((a,r)=>a+r.contracts,0);
       const spend=perfPart.reduce((a,r)=>a+r.spend,0)||dbPart.reduce((a,r)=>a+(r.spend??0),0);
       const clicks=perfPart.reduce((a,r)=>a+r.clicks,0),revenue=perfPart.reduce((a,r)=>a+r.revenue,0)||dbPart.reduce((a,r)=>a+(r.revenue??0),0);
       return {platform,status:'연동 완료' as const,spend,clicks,db,validDb,contracts,itemViews:0,carts:0,checkouts:0,purchases:0,revenue};
     });
-  },[hasActualDb,actualDb,performanceRows]);
+  },[hasActualDb,hasPerformanceOnly,actualDb,performanceRows]);
   const rows=dynamicRows;
   const [settingsOpen,setSettingsOpen]=useState(false);
   const [saved,setSaved]=useState(false);
@@ -88,16 +106,18 @@ export function ConversionFunnelPage(){
   const sortArrow=(key:SortKey)=>sortKey===key?(sortDir==='desc'?' ▼':' ▲'):'';
   const total=useMemo(()=>rows.reduce((acc,row)=>({spend:acc.spend+row.spend,clicks:acc.clicks+row.clicks,db:acc.db+row.db,validDb:acc.validDb+row.validDb,contracts:acc.contracts+row.contracts,itemViews:acc.itemViews+row.itemViews,carts:acc.carts+row.carts,checkouts:acc.checkouts+row.checkouts,purchases:acc.purchases+row.purchases,revenue:acc.revenue+row.revenue}),{spend:0,clicks:0,db:0,validDb:0,contracts:0,itemViews:0,carts:0,checkouts:0,purchases:0,revenue:0}),[]);
   const columns=['광고비','클릭','DB','유효 DB','계약','상품 조회','장바구니','결제 시작','구매','CPA','매출','ROAS'];
-  const leadFunnels=hasActualDb ? [...new Set(actualDb.map(row=>row.advertiser))].map((name,index)=>{
+  const leadFunnels=(hasActualDb||hasPerformanceOnly) ? [...new Set([...actualDb.map(row=>row.advertiser),...performanceRows.map(row=>row.advertiser)])].map((name,index)=>{
     const color=funnelColors[index%funnelColors.length]; const dbPart=actualDb.filter(row=>row.advertiser===name); const perfPart=performanceRows.filter(row=>row.advertiser===name);
-    const clicks=perfPart.reduce((a,r)=>a+r.clicks,0),db=dbPart.reduce((a,r)=>a+r.db,0),valid=dbPart.reduce((a,r)=>a+r.validDb,0),contracts=dbPart.reduce((a,r)=>a+r.contracts,0);
+    const clicks=perfPart.reduce((a,r)=>a+r.clicks,0);
+    const db=dbPart.length?dbPart.reduce((a,r)=>a+r.db,0):perfPart.reduce((a,r)=>a+r.leads,0);
+    const valid=dbPart.reduce((a,r)=>a+r.validDb,0),contracts=dbPart.reduce((a,r)=>a+r.contracts,0);
     return {name,color,stages:[{label:'클릭',value:clicks,color},{label:'DB',value:db,color},{label:'유효 DB',value:valid,color},{label:'계약',value:contracts,color}]};
   }) : [];
   const commerceFunnels: {name:string;color:string;stages:FunnelStage[]}[]=[];
   const visibleFunnels=(mode==='lead'?leadFunnels:commerceFunnels).filter(f=>matchesAdvertiserFilter(f.name,filterValue));
   return <>
-    <PageHeader title="전환 퍼널 분석" description="온라인 결제형·오프라인 예약형·쇼핑몰형 퍼널을 정확한 이벤트 기준으로 분석합니다." action={<div className="action-row"><select className="select-control" value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option>전체 광고주</option>{[...new Set([...performance.advertisers,...dbRows.map(row=>row.advertiser)])].sort((a,b)=>a.localeCompare(b,'ko')).map(name=><option key={name}>{name}</option>)}</select><button className="btn secondary" onClick={()=>setSettingsOpen(true)}><Settings2 size={15}/> 퍼널 설정</button></div>}/>
-    <div className="funnel-warning"><AlertTriangle size={25}/><div><b>전환 이벤트 연동 상태를 확인하세요</b><p>DB 연동 데이터가 있으면 클릭→DB→유효 DB→계약 퍼널은 Google Sheets의 실제 집계값을 우선 사용합니다. 커머스 퍼널은 기존 전환 이벤트 데이터를 사용합니다.</p></div></div>
+    <PageHeader title="전환 퍼널 분석" description="온라인 결제형·오프라인 예약형·쇼핑몰형 퍼널을 정확한 이벤트 기준으로 분석합니다." action={<div className="action-row"><select className="select-control" value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option>전체 광고주</option>{[...new Set([...allAdvertiserNames,...dbRows.map(row=>row.advertiser)])].sort((a,b)=>a.localeCompare(b,'ko')).map(name=><option key={name}>{name}</option>)}</select><button className="btn secondary" onClick={()=>setSettingsOpen(true)}><Settings2 size={15}/> 퍼널 설정</button></div>}/>
+    <div className="funnel-warning"><AlertTriangle size={25}/><div><b>전환 이벤트 연동 상태를 확인하세요</b><p>매체 계정 연동으로 수집된 클릭·리드는 자동으로 반영됩니다. 유효 DB·계약 단계는 Google Sheets DB 연동이 있어야 채워집니다(없으면 0으로 표시).</p></div></div>
     <div className="funnel-toolbar"><div className="section-tabs compact-tabs"><button className={mode==='lead'?'active':''} onClick={()=>setMode('lead')}>예약 상담 퍼널</button><button className={mode==='commerce'?'active':''} onClick={()=>setMode('commerce')}>커머스 퍼널</button></div><div className="kpi-range-group">{['오늘','어제','7일','14일','30일','60일','90일'].map(p=><button key={p} className={`kpi-range-button ${period===p?'active':''}`} onClick={()=>setPeriod(p)}>{p}</button>)}</div></div>
     <div className="funnel-capture-grid">{visibleFunnels.length===0?<p className="muted">해당 광고주의 퍼널 데이터가 없습니다.</p>:visibleFunnels.map(f=><FunnelCard key={f.name} title={f.name} color={f.color} stages={f.stages}/>)}</div>
     <div className="funnel-note"><span>💡</span><p>현재 선택: <b>{advertiser}</b> · <b>{period}</b>. 단계별 이벤트는 환경설정의 퍼널 이벤트 매핑에서 수정할 수 있습니다.</p></div>

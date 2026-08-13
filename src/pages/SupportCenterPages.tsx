@@ -8,7 +8,7 @@ import {
   SUPPORT_STATUS_LABEL, type SupportDoc, type SupportDocStatus, type SupportDocAttachment,
   loadCredentials, saveCredentials, loadCredentialLogs, appendCredentialLog, type CredentialEntry,
 } from '../utils/supportCenterData';
-import { ADVERTISERS } from '../data/operationsMock';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { adControlRepository } from '../repositories';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { loadAllGeneratedReports } from '../features/reports/reportCore';
@@ -99,6 +99,7 @@ function DocumentBoard({
   showFollowUpField?: boolean;
 }) {
   const [docs, setDocs] = useState<SupportDoc[]>(() => loadSupportDocs());
+  const [advertisers] = useAdvertisers();
   const [activeCategory, setActiveCategory] = useState(categories[0]?.key ?? '');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -230,7 +231,7 @@ function DocumentBoard({
               <label className="field-label">상태<select value={editing.status} onChange={e => setEditing({ ...editing, status: e.target.value as SupportDocStatus })}>{STATUS_OPTIONS.map(s => <option key={s} value={s}>{SUPPORT_STATUS_LABEL[s]}</option>)}</select></label>
               <label className="field-label">담당자<input value={editing.owner} onChange={e => setEditing({ ...editing, owner: e.target.value })} /></label>
               <label className="field-label">태그(쉼표로 구분)<input value={editing.tags.join(', ')} onChange={e => setEditing({ ...editing, tags: e.target.value.split(',').map(t => t.trim()).filter(Boolean) })} /></label>
-              {showAdvertiserField && <label className="field-label">관련 광고주<input list="support-advertisers" value={editing.advertiserName ?? ''} onChange={e => setEditing({ ...editing, advertiserName: e.target.value })} /><datalist id="support-advertisers">{ADVERTISERS.map(a => <option key={a.id} value={a.name} />)}</datalist></label>}
+              {showAdvertiserField && <label className="field-label">관련 광고주<input list="support-advertisers" value={editing.advertiserName ?? ''} onChange={e => setEditing({ ...editing, advertiserName: e.target.value })} /><datalist id="support-advertisers">{advertisers.map(a => <option key={a.id} value={a.name} />)}</datalist></label>}
               {showFollowUpField && <label className="field-label">후속 조치 예정일<input type="date" value={editing.followUpAt ?? ''} onChange={e => setEditing({ ...editing, followUpAt: e.target.value })} /></label>}
             </div>
             {showQuoteFields && (
@@ -281,7 +282,7 @@ function HandoverLinkedData({ advertiserName }: { advertiserName: string }) {
       .then(rows => {
         if (!active) return;
         const matched = rows.filter(s => {
-          const adv = ADVERTISERS.find(a => a.id === s.advertiserId);
+          const adv = advertisers.find(a => a.id === s.advertiserId);
           return adv && matchesAdvertiserFilter(adv.name, advertiserName);
         }).slice(0, 5);
         setSchedules(matched);
@@ -400,7 +401,7 @@ export function SupportSecurityPage() {
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <div className="modal-head"><h3>계정 정보</h3><button className="icon-btn" onClick={() => setEditing(null)}><X size={18} /></button></div>
             <label className="field-label">서비스명<input value={editing.serviceName} onChange={e => setEditing({ ...editing, serviceName: e.target.value })} /></label>
-            {scope === 'advertiser' && <label className="field-label">광고주<input list="support-advertisers-2" value={editing.advertiserName ?? ''} onChange={e => setEditing({ ...editing, advertiserName: e.target.value })} /><datalist id="support-advertisers-2">{ADVERTISERS.map(a => <option key={a.id} value={a.name} />)}</datalist></label>}
+            {scope === 'advertiser' && <label className="field-label">광고주<input list="support-advertisers-2" value={editing.advertiserName ?? ''} onChange={e => setEditing({ ...editing, advertiserName: e.target.value })} /><datalist id="support-advertisers-2">{advertisers.map(a => <option key={a.id} value={a.name} />)}</datalist></label>}
             <label className="field-label">계정 ID<input value={editing.accountId} onChange={e => setEditing({ ...editing, accountId: e.target.value })} /></label>
             <label className="field-label">비밀번호 / API Secret<input value="" disabled placeholder="서버 보안 저장소 연결 후 사용 가능" /></label>
             <label className="field-label">최근 변경일<input type="date" value={editing.lastChangedAt} onChange={e => setEditing({ ...editing, lastChangedAt: e.target.value })} /></label>
