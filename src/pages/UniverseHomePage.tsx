@@ -1,13 +1,27 @@
-import { useEffect, useState } from 'react';
-import { Bot, CheckCircle2, Database, FileText, Megaphone, MousePointerClick, Search, Sparkles, Target, TrendingUp, WalletCards } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Bot, CalendarDays, CheckCircle2, Database, FileText, Megaphone, MousePointerClick, Search, Sparkles, Target, TrendingUp, WalletCards } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useAuth } from '../context/AuthContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
+import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
 
 function toNumber(value: number | undefined) { return value ?? 0; }
 function money(value: number) { return `₩${Math.round(value).toLocaleString()}`; }
+const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + n); return toISO(d); };
+const todayISO = () => toISO(new Date());
+
+type PeriodPreset = 'today' | 'yesterday' | '7d' | '30d' | '60d' | '90d' | 'custom';
+const PERIOD_PRESETS: { key: PeriodPreset; label: string; days: number }[] = [
+  { key: 'today', label: '오늘', days: 1 },
+  { key: 'yesterday', label: '어제', days: 1 },
+  { key: '7d', label: '최근 7일', days: 7 },
+  { key: '30d', label: '최근 30일', days: 30 },
+  { key: '60d', label: '최근 60일', days: 60 },
+  { key: '90d', label: '최근 90일', days: 90 },
+];
 
 type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; purchases?: number };
 
@@ -19,13 +33,27 @@ export function UniverseHomePage() {
   const advertiserNames = advertisers.map(a => a.name);
   const selectedAdvertiser = advertiserNames.includes(filterValue) ? filterValue : '';
 
+  // 기간 선택: 오늘/어제/최근 N일 프리셋 또는 달력으로 직접 선택한 기간.
+  const [preset, setPreset] = useState<PeriodPreset>('30d');
+  const [range, setRange] = useState<DateRange>({ from: addDays(todayISO(), -29), to: todayISO() });
+  const applyPreset = (p: typeof PERIOD_PRESETS[number]) => {
+    setPreset(p.key);
+    const end = todayISO();
+    if (p.key === 'today') setRange({ from: end, to: end });
+    else if (p.key === 'yesterday') { const y = addDays(end, -1); setRange({ from: y, to: y }); }
+    else setRange({ from: addDays(end, -(p.days - 1)), to: end });
+  };
+
   // 매체 계정 연동(설정 > 매체 계정 연동)에서 연결·동기화된 실제 데이터를 읽어옵니다.
   const [metricRows, setMetricRows] = useState<DailyMetricRow[]>([]);
   useEffect(() => {
     apiFetch<{ rows: DailyMetricRow[] }>('/daily-metrics').then(r => setMetricRows(r.rows || [])).catch(() => setMetricRows([]));
   }, []);
   const selectedId = selectedAdvertiser ? advertisers.find(a => a.name === selectedAdvertiser)?.id : undefined;
-  const visibleRows = selectedId ? metricRows.filter(r => r.advertiserId === selectedId) : metricRows;
+  const visibleRows = useMemo(
+    () => metricRows.filter(r => (!selectedId || r.advertiserId === selectedId) && r.date >= range.from && r.date <= range.to),
+    [metricRows, selectedId, range],
+  );
   const overview = {
     spend: toNumber(visibleRows.reduce((sum, r) => sum + r.spend, 0)),
     clicks: toNumber(visibleRows.reduce((sum, r) => sum + r.clicks, 0)),
@@ -35,6 +63,7 @@ export function UniverseHomePage() {
   };
   const roas = overview.spend > 0 ? (overview.revenue / overview.spend) * 100 : 0;
   const hasPerformance = visibleRows.length > 0;
+  const periodLabel = range.from === range.to ? range.from : `${range.from} ~ ${range.to}`;
 
   return (
     <div className="universe-home-page universe-home-dashboard home-dashboard-v14">
@@ -52,12 +81,18 @@ export function UniverseHomePage() {
         </label>
       </header>
 
+      <div className="home-period-bar" style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',margin:'2px 0 14px'}}>
+        <div className="preset-group">{PERIOD_PRESETS.map(p=><button key={p.key} className={preset===p.key?'active':''} onClick={()=>applyPreset(p)}>{p.label}</button>)}</div>
+        <div className="toolbar-range"><CalendarDays size={15}/><DateRangePicker value={range} onChange={r=>{setRange(r);setPreset('custom')}}/></div>
+        <span className="muted" style={{fontSize:13}}>기준 기간: <b>{periodLabel}</b>{hasPerformance?'':' (해당 기간 데이터 없음)'}</span>
+      </div>
+
       <section className="home-dashboard-kpis home-dashboard-kpis-v14" aria-label="통합 현황">
-        <Link to="/dashboard" className="home-dashboard-kpi home-kpi-featured"><span className="home-kpi-label"><WalletCards size={15}/><span>광고비</span></span><strong>{money(overview.spend)}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
-        <Link to="/reports" className="home-dashboard-kpi"><span className="home-kpi-label"><MousePointerClick size={15}/><span>클릭</span></span><strong>{overview.clicks.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
-        <Link to="/db-management" className="home-dashboard-kpi"><span className="home-kpi-label"><Database size={15}/><span>DB</span></span><strong>{overview.dbCount.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
-        <Link to="/conversion-funnel" className="home-dashboard-kpi"><span className="home-kpi-label"><Target size={15}/><span>전환</span></span><strong>{overview.conversions.toLocaleString()}</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
-        <Link to="/report-center" className="home-dashboard-kpi"><span className="home-kpi-label"><TrendingUp size={15}/><span>ROAS</span></span><strong>{roas.toFixed(0)}%</strong><em><small>{hasPerformance ? '연결 데이터 기준' : '데이터 없음'}</small></em></Link>
+        <Link to="/dashboard" className="home-dashboard-kpi home-kpi-featured"><span className="home-kpi-label"><WalletCards size={15}/><span>광고비</span></span><strong>{money(overview.spend)}</strong><em><small>{hasPerformance ? periodLabel : '데이터 없음'}</small></em></Link>
+        <Link to="/reports" className="home-dashboard-kpi"><span className="home-kpi-label"><MousePointerClick size={15}/><span>클릭</span></span><strong>{overview.clicks.toLocaleString()}</strong><em><small>{hasPerformance ? periodLabel : '데이터 없음'}</small></em></Link>
+        <Link to="/db-management" className="home-dashboard-kpi"><span className="home-kpi-label"><Database size={15}/><span>DB</span></span><strong>{overview.dbCount.toLocaleString()}</strong><em><small>{hasPerformance ? periodLabel : '데이터 없음'}</small></em></Link>
+        <Link to="/conversion-funnel" className="home-dashboard-kpi"><span className="home-kpi-label"><Target size={15}/><span>전환</span></span><strong>{overview.conversions.toLocaleString()}</strong><em><small>{hasPerformance ? periodLabel : '데이터 없음'}</small></em></Link>
+        <Link to="/report-center" className="home-dashboard-kpi"><span className="home-kpi-label"><TrendingUp size={15}/><span>ROAS</span></span><strong>{roas.toFixed(0)}%</strong><em><small>{hasPerformance ? periodLabel : '데이터 없음'}</small></em></Link>
         <Link to="/approval-queue" className="home-dashboard-kpi approval"><span className="home-kpi-label"><CheckCircle2 size={15}/><span>승인 대기</span></span><strong>0<small>건</small></strong><em><small>요청 없음</small></em></Link>
       </section>
 
