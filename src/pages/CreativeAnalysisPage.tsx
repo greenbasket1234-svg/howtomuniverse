@@ -12,6 +12,7 @@ import { loadCreativeAnalysisRows, creativeInsight, normalizeCreativeMedia, type
 import { calculateCreativeFatigue } from '../analytics/creativeFatigueAnalysis';
 import { analyzeCreativePatterns, type CreativePattern } from '../analytics/creativePatternAnalysis';
 import { saveCreativeBrief } from '../utils/creativeBriefStore';
+import { useLiveCreatives } from '../hooks/useLiveCreatives';
 
 const MEDIA_COLORS:Record<string,string>={'메타':'#4776ff','네이버':'#03c75a','구글 검색':'#6b7280','유튜브':'#ef4444','당근':'#ff6f0f','카카오':'#f5c400','틱톡':'#111827'};
 const periods=['최근 7일','최근 14일','최근 30일','이번 달','전체'];
@@ -48,7 +49,8 @@ export function CreativeAnalysisPage(){
   const [query,setQuery]=useState(''); const [sort,setSort]=useState<'score'|'spend'|'ctr'|'cpa'|'db'|'fatigue'>('score'); const [dir,setDir]=useState<'desc'|'asc'>('desc');
   const rawDb=loadDbRows(); const latestDb=(()=>{const dates=rawDb.map(row=>row.date).sort();return dates[dates.length-1]||''})(); const range=periodRange(period,latestDb);
   const scopedDb=rawDb.filter(row=>(!range.from||row.date>=range.from)&&(!range.to||row.date<=range.to));
-  const allRows=useMemo(()=>loadCreativeAnalysisRows(scopedDb),[JSON.stringify(scopedDb)]);
+  const liveCreatives=useLiveCreatives();
+  const allRows=useMemo(()=>loadCreativeAnalysisRows(scopedDb,liveCreatives),[JSON.stringify(scopedDb),liveCreatives]);
   const advertiser=params.get('advertiser')||''; const media=params.get('media')||''; const campaign=params.get('campaign')||''; const type=params.get('type')||''; const selectedId=params.get('creative')||'';
   const advertisers=[...new Set(allRows.map(r=>r.creative.brand))].sort((a,b)=>a.localeCompare(b,'ko'));
   const medias=[...new Set(allRows.filter(r=>!advertiser||r.creative.brand===advertiser).map(r=>normalizeCreativeMedia(r.creative.platform)))].sort((a,b)=>a.localeCompare(b,'ko'));

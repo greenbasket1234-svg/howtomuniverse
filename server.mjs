@@ -243,13 +243,17 @@ async function metaFetchAdCreativeThumbnails(adIds) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
     try {
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{thumbnail_url,image_url,video_id,object_type}' });
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url,video_id,object_type,title,body,call_to_action_type,object_story_spec}', thumbnail_width: '1080', thumbnail_height: '1080' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
         if (!creative) continue;
+        const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
         result[id] = {
-          thumbnailUrl: creative.thumbnail_url || creative.image_url || null,
+          thumbnailUrl: creative.image_url || creative.thumbnail_url || null,
           mediaType: creative.video_id ? 'video' : 'image',
+          title: creative.title || linkData.name || '',
+          body: creative.body || linkData.message || '',
+          cta: creative.call_to_action_type || linkData.call_to_action?.type || '',
         };
       }
     } catch { /* 썸네일 조회 실패는 조용히 넘어갑니다 - 성과 데이터 자체는 그대로 유지합니다. */ }
@@ -715,7 +719,7 @@ async function handleApi(req, res, pathname) {
     function upsertCreativeMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
         const kept = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.adId === m.adId)));
-        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, updatedAt: new Date().toISOString() }));
+        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, title: r.title || '', body: r.body || '', cta: r.cta || '', updatedAt: new Date().toISOString() }));
         db.creativeMetrics = [...kept, ...added];
       });
     }

@@ -148,9 +148,10 @@ function fatigueFrom(performance:CreativePerformanceSampleRow|undefined, creativ
   return {score:Math.round(score),lifecycle};
 }
 
-export function loadCreativeAnalysisRows(dbRowsOverride?:DbDataRow[]):CreativeAnalysisRow[]{
+export function loadCreativeAnalysisRows(dbRowsOverride?:DbDataRow[],creativesOverride?:Creative[]):CreativeAnalysisRow[]{
   const dbAll=dbRowsOverride ?? loadDbRows();
-  const base=CREATIVE_LIBRARY.map(creative=>{
+  const source=creativesOverride ?? CREATIVE_LIBRARY;
+  const base=source.map(creative=>{
     const performance=matchPerformance(creative);
     const dbRows=matchDbRows(creative,dbAll);
     const db=dbRows.reduce((a,row)=>a+(Number(row.db)||0),0);
