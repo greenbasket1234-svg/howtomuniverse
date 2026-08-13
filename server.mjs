@@ -235,6 +235,28 @@ async function metaFetchAdInsights(accountId, since, until) {
   }));
 }
 
+/** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
+async function metaFetchAdCreativeThumbnails(adIds) {
+  const result = {};
+  const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
+  for (let i = 0; i < adIds.length; i += chunkSize) {
+    const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
+    if (!chunk.length) continue;
+    try {
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{thumbnail_url,image_url,video_id,object_type}' });
+      for (const id of chunk) {
+        const creative = data?.[id]?.creative;
+        if (!creative) continue;
+        result[id] = {
+          thumbnailUrl: creative.thumbnail_url || creative.image_url || null,
+          mediaType: creative.video_id ? 'video' : 'image',
+        };
+      }
+    } catch { /* 썸네일 조회 실패는 조용히 넘어갑니다 - 성과 데이터 자체는 그대로 유지합니다. */ }
+  }
+  return result;
+}
+
 /** 검색광고 키워드 단위 인사이트 — 지금은 구현된 매체가 없어 항상 빈 배열입니다.
     네이버/구글/카카오 검색광고 커넥터가 추가되면 이 함수들이 실제 데이터를 반환하게 됩니다. */
 async function fetchKeywordMetrics(channel, _accountId, _since, _until) {
@@ -693,7 +715,7 @@ async function handleApi(req, res, pathname) {
     function upsertCreativeMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
         const kept = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.adId === m.adId)));
-        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, updatedAt: new Date().toISOString() }));
+        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, updatedAt: new Date().toISOString() }));
         db.creativeMetrics = [...kept, ...added];
       });
     }
@@ -728,7 +750,11 @@ async function handleApi(req, res, pathname) {
             metaFetchAdInsights(account.account_id, since, until).catch(() => []), // 소재 데이터 실패는 전체 동기화를 막지 않습니다.
           ]);
           upsertDailyMetrics(advertiserId, channel, dailyRows);
-          if (adRows.length) upsertCreativeMetrics(advertiserId, channel, adRows);
+          if (adRows.length) {
+            const thumbnails = await metaFetchAdCreativeThumbnails(adRows.map(r => r.adId)).catch(() => ({}));
+            const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
+            upsertCreativeMetrics(advertiserId, channel, enrichedAdRows);
+          }
           return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, creativeCount: adRows.length, since, until });
         } catch (error) {
           return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
@@ -773,6 +799,27 @@ async function handleApi(req, res, pathname) {
       const advertiserId = query.get('advertiserId');
       const since = query.get('since');
       const until = query.get('until');
+
+      // 오늘·어제처럼 최근 날짜는 마지막 동기화 이후 갱신이 안 되어 있을 수 있어서,
+      // 조회할 때마다 연결된 계정의 최근 3일치를 자동으로 다시 가져와 채워 넣습니다.
+      if (metaConfigured()) {
+        const db = readDb();
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const topUpSince = new Date(); topUpSince.setDate(topUpSince.getDate() - 3);
+        const topUpSinceIso = topUpSince.toISOString().slice(0, 10);
+        const targets = advertiserId ? db.advertisers.filter(a => String(a.id) === advertiserId) : db.advertisers;
+        await Promise.all(targets.map(async adv => {
+          const account = adv.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
+          if (!account?.account_id) return;
+          const alreadyFresh = db.dailyMetrics.some(m => m.advertiserId === String(adv.id) && m.channel === 'meta' && m.date === todayIso);
+          if (alreadyFresh) return; // 오늘 데이터가 이미 있으면 다시 부르지 않습니다(호출 최소화).
+          try {
+            const rows = await metaFetchInsights(account.account_id, topUpSinceIso, todayIso);
+            upsertDailyMetrics(String(adv.id), 'meta', rows);
+          } catch { /* 자동 보충 실패는 조용히 넘어가고, 기존 저장된 값을 그대로 보여줍니다. */ }
+        }));
+      }
+
       let rows = readDb().dailyMetrics;
       if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
       if (since) rows = rows.filter(m => m.date >= since);

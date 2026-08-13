@@ -17,11 +17,14 @@ function buildLiveBrandReports(advertisers: { id: string; name: string; monthlyB
   return advertisers.map(adv => {
     const advRows = rows.filter(r => r.advertiserId === adv.id);
     const channels = Array.from(new Set(advRows.map(r => r.channel)));
+    // 매출(구매전환값)이 단 하루도 안 잡히는 광고주는 애초에 구매 픽셀 추적이 없는 것으로 보고,
+    // revenue 필드 자체를 생략합니다. 값을 0으로 채우면 "ROAS 0%"로 오인되어 순위가 왜곡됩니다.
+    const tracksRevenue = advRows.some(r => (r.revenue ?? 0) > 0);
     const data: BrandDailyData = {};
     for (const ch of channels) {
       data[ch] = {};
       for (const row of advRows.filter(r => r.channel === ch)) {
-        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, revenue: row.revenue ?? 0 };
+        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, ...(tracksRevenue ? { revenue: row.revenue ?? 0 } : {}) };
       }
     }
     return {
@@ -194,10 +197,9 @@ export function DashboardOverviewPage(){
   const topPlatforms=useMemo(()=>rankedPlatforms.slice(0,5),[rankedPlatforms]);
   // WORST5: 같은 순위표의 꼴찌 쪽에서 뽑되, TOP5와 항목이 겹치면(전체가 5개 이하일 때) 제외합니다.
   const worstPlatforms=useMemo(()=>{
+    if(rankedPlatforms.length<=topPlatforms.length) return []; // 구분해서 보여줄 만큼 항목이 충분치 않으면 TOP5를 그대로 복제해 보여주지 않습니다.
     const topNames=new Set(topPlatforms.map(p=>p.name));
-    const nonOverlap=[...rankedPlatforms].reverse().filter(p=>!topNames.has(p.name)).slice(0,5);
-    // 전체가 5개 이하면 TOP5와 안 겹치는 항목이 아예 없을 수 있습니다. 이때는 그냥 꼴찌부터 그대로 보여줍니다.
-    return nonOverlap.length>=5 ? nonOverlap : [...rankedPlatforms].reverse().slice(0,5);
+    return [...rankedPlatforms].reverse().filter(p=>!topNames.has(p.name)).slice(0,5);
   },[rankedPlatforms,topPlatforms]);
   // TOP5/WORST5 광고주 순위: 같은 기준으로, 광고주(브랜드) 단위 합계를 정렬합니다.
   const rankedAdvertisers=useMemo(()=>{
@@ -209,9 +211,9 @@ export function DashboardOverviewPage(){
   },[brandSummaries,rankMetric]);
   const topAdvertisers=useMemo(()=>rankedAdvertisers.slice(0,5),[rankedAdvertisers]);
   const worstAdvertisers=useMemo(()=>{
+    if(rankedAdvertisers.length<=topAdvertisers.length) return [];
     const topNames=new Set(topAdvertisers.map(a=>a.name));
-    const nonOverlap=[...rankedAdvertisers].reverse().filter(a=>!topNames.has(a.name)).slice(0,5);
-    return nonOverlap.length>=5 ? nonOverlap : [...rankedAdvertisers].reverse().slice(0,5);
+    return [...rankedAdvertisers].reverse().filter(a=>!topNames.has(a.name)).slice(0,5);
   },[rankedAdvertisers,topAdvertisers]);
   // 분석/문제점/대응방안: 지금 선택된 기간·광고주 범위의 실제 숫자를 근거로 생성합니다.
   const dashboardInsights=useMemo(()=>{

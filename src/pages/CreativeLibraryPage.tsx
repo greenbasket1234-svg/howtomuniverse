@@ -8,7 +8,7 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 
-type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
+type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; thumbnailUrl?: string|null; mediaType?: 'image'|'video'|null };
 
 type GroupBy = 'brand' | 'type' | 'objective';
 const GROUP_LABEL: Record<GroupBy, string> = { brand: '광고주별', type: '소재 종류별', objective: '광고 목표별' };
@@ -26,6 +26,7 @@ export function CreativeLibraryPage(){
   const navigate = useNavigate();
   const [advertisers]=useAdvertisers();
   const [creativeMetrics,setCreativeMetrics]=useState<CreativeMetricRow[]>([]);
+  const [selectedMetric,setSelectedMetric]=useState<CreativeMetricRow|null>(null);
   useEffect(()=>{apiFetch<{rows:CreativeMetricRow[]}>('/creative-metrics').then(r=>setCreativeMetrics(r.rows||[])).catch(()=>setCreativeMetrics([]));},[]);
   const advertiserName=(id:string)=>advertisers.find(a=>a.id===id)?.name??id;
   const rows=useMemo(()=>{
@@ -88,27 +89,53 @@ export function CreativeLibraryPage(){
       {!!creativeMetrics.length && (
         <section className="card" style={{ padding: 16, marginBottom: 16 }}>
           <h3 style={{ margin: '0 0 4px' }}>매체 연동 실제 소재 성과</h3>
-          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 광고 단위 데이터입니다.</p>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead><tr><th>광고주</th><th>소재(광고)명</th><th>캠페인</th><th className="num">노출</th><th className="num">클릭</th><th className="num">광고비</th><th className="num">전환</th><th className="num">매출</th></tr></thead>
-              <tbody>
-                {creativeMetrics.map(m => (
-                  <tr key={`${m.channel}-${m.adId}`}>
-                    <td>{advertiserName(m.advertiserId)}</td>
-                    <td>{m.adName}</td>
-                    <td>{m.campaignName || '-'}</td>
-                    <td className="num">{m.impressions.toLocaleString()}</td>
-                    <td className="num">{m.clicks.toLocaleString()}</td>
-                    <td className="num">₩{Math.round(m.spend).toLocaleString()}</td>
-                    <td className="num">{m.dbCount.toLocaleString()}</td>
-                    <td className="num">{m.revenue ? `₩${Math.round(m.revenue).toLocaleString()}` : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 광고 단위 데이터입니다. 썸네일을 누르면 크게 볼 수 있습니다.</p>
+          <div className="library-grid">
+            {creativeMetrics.map(m => (
+              <article className="library-card" key={`${m.channel}-${m.adId}`} onClick={()=>setSelectedMetric(m)} style={{cursor:'pointer'}}>
+                <div className="library-thumb" style={{position:'relative',overflow:'hidden',background:'#0f172a'}}>
+                  {m.thumbnailUrl
+                    ? <img src={m.thumbnailUrl} alt={m.adName} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                    : <span style={{fontSize:28}}>🖼️</span>}
+                  {m.mediaType==='video' && <span style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,.6)',color:'#fff',fontSize:11,padding:'2px 7px',borderRadius:999}}>▶ 영상</span>}
+                </div>
+                <div className="library-body">
+                  <div className="library-meta"><span>● {advertiserName(m.advertiserId)}</span></div>
+                  <h3 style={{fontSize:14}}>{m.adName}</h3>
+                  <p style={{fontSize:12,color:'#64748b'}}>{m.campaignName || '캠페인 정보 없음'}</p><hr/>
+                  <small>노출 {m.impressions.toLocaleString()} · 클릭 {m.clicks.toLocaleString()}</small>
+                  <small>광고비 ₩{Math.round(m.spend).toLocaleString()} · 전환 {m.dbCount.toLocaleString()}</small>
+                  {!!m.revenue && <small>매출 ₩{Math.round(m.revenue).toLocaleString()}</small>}
+                </div>
+              </article>
+            ))}
           </div>
         </section>
+      )}
+      {selectedMetric && (
+        <div className="modal-backdrop" onClick={()=>setSelectedMetric(null)}>
+          <div className="modal-card wide creative-detail-modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head">
+              <div><h3>{selectedMetric.adName}</h3><p>{advertiserName(selectedMetric.advertiserId)} · {selectedMetric.campaignName || '캠페인 정보 없음'}</p></div>
+              <button className="icon-btn" onClick={()=>setSelectedMetric(null)}><X/></button>
+            </div>
+            <div className="creative-detail-preview-lib">
+              <div className="large-thumb" style={{background:'#0f172a',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
+                {selectedMetric.thumbnailUrl ? <img src={selectedMetric.thumbnailUrl} alt={selectedMetric.adName} style={{width:'100%',height:'100%',objectFit:'contain'}}/> : '🖼️'}
+              </div>
+              <div>
+                <div className="detail-grid">
+                  <div>노출수<strong>{selectedMetric.impressions.toLocaleString()}</strong></div>
+                  <div>클릭수<strong>{selectedMetric.clicks.toLocaleString()}</strong></div>
+                  <div>광고비<strong>₩{Math.round(selectedMetric.spend).toLocaleString()}</strong></div>
+                  <div>전환(DB)<strong>{selectedMetric.dbCount.toLocaleString()}</strong></div>
+                  <div>매출<strong>{selectedMetric.revenue?`₩${Math.round(selectedMetric.revenue).toLocaleString()}`:'-'}</strong></div>
+                  <div>매체<strong>{selectedMetric.channel==='meta'?'Meta':selectedMetric.channel}</strong></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
       <div className="library-group-toggle">
         <span>보기 기준</span>
