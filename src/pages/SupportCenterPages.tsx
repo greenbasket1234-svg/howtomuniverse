@@ -272,6 +272,7 @@ function DocumentBoard({
 // 자동으로 모아서 보여줍니다. 인수인계자가 여기저기 흩어진 자료를 따로 찾아다니지 않도록
 // 하는 것이 목적입니다.
 function HandoverLinkedData({ advertiserName }: { advertiserName: string }) {
+  const [advertisers] = useAdvertisers();
   const reports = loadAllGeneratedReports().filter(r => r.advertiserName === advertiserName).slice(0, 5);
   const [schedules, setSchedules] = useState<{ id: string; title: string }[] | null>(null);
   useEffect(() => {
@@ -347,6 +348,7 @@ export function SupportNewsPage() {
 // 계정 보안: 프론트엔드 단계에서는 서비스명·계정 ID·담당자·변경 주기만 관리합니다.
 // 실제 비밀번호/API Secret은 localStorage에 저장하지 않습니다.
 export function SupportSecurityPage() {
+  const [advertisers] = useAdvertisers();
   const [items, setItems] = useState<CredentialEntry[]>(() => loadCredentials());
   const [scope, setScope] = useState<'company' | 'advertiser'>('company');
   const [editing, setEditing] = useState<CredentialEntry | null>(null);
