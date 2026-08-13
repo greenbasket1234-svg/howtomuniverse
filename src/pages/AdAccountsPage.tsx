@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, KeyRound, Link2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { CheckCircle2, KeyRound, Plus, RefreshCw, Search, X, Sparkles } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { CHANNELS, Channel, Advertiser, AccountLink } from '../data/advertisers';
+import { CHANNELS, Channel } from '../data/advertisers';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
-const CHANNEL_META: Record<Channel, { label: string; color: string; abbr: string }> = {
-  Meta:   { label: 'Meta Marketing API',  color: '#2563eb', abbr: 'M' },
-  네이버: { label: '네이버 검색광고',     color: '#16a34a', abbr: 'N' },
-  구글:   { label: '구글 광고',            color: '#ef4444', abbr: 'G' },
-  당근:   { label: '당근 광고',            color: '#f97316', abbr: '당' },
-  틱톡:   { label: 'TikTok Ads',           color: '#111827', abbr: 'T' },
-  카카오: { label: '카카오 광고',          color: '#eab308', abbr: 'K' },
+const CHANNEL_META: Record<Channel, { label: string; color: string; abbr: string; implemented: boolean }> = {
+  Meta:   { label: 'Meta Marketing API',  color: '#2563eb', abbr: 'M', implemented: true },
+  네이버: { label: '네이버 검색광고',     color: '#16a34a', abbr: 'N', implemented: false },
+  구글:   { label: '구글 광고',            color: '#ef4444', abbr: 'G', implemented: false },
+  당근:   { label: '당근 광고',            color: '#f97316', abbr: '당', implemented: false },
+  틱톡:   { label: 'TikTok Ads',           color: '#111827', abbr: 'T', implemented: false },
+  카카오: { label: '카카오 광고',          color: '#eab308', abbr: 'K', implemented: false },
 };
 
 const CH_KEY_MAP: Record<Channel, string> = {
@@ -23,20 +23,18 @@ const CH_KEY_MAP: Record<Channel, string> = {
 };
 
 export function AdAccountsPage() {
-  const [advertisers, setAdvertisers, reload] = useAdvertisers();
+  const [advertisers, , reload] = useAdvertisers();
   const { filterValue } = useAdvertiserFilter();
   const [query,          setQuery]          = useState('');
   const [selectedId,     setSelectedId]     = useState(() => advertisers[0]?.id ?? '');
   const [connectTarget,  setConnectTarget]  = useState<{ channel: Channel; adId: string } | null>(null);
-  const [accountId,      setAccountId]      = useState('');
-  const [token,          setToken]          = useState('');
+  const [metaAccounts,   setMetaAccounts]   = useState<{id:string;name:string;account_id:string}[]>([]);
+  const [metaSelected,   setMetaSelected]   = useState('');
+  const [metaLoading,    setMetaLoading]    = useState(false);
+  const [metaError,      setMetaError]      = useState('');
   const [toast,          setToast]          = useState('');
   const [syncing,        setSyncing]        = useState('');
-  const [testing,        setTesting]        = useState(false);
 
-  // 이전엔 상단 전역 광고주 검색과 이 페이지의 사이드바 목록이 완전히 분리되어 있었습니다.
-  // 전역 필터를 걸어도 이 페이지에서는 아무 반응이 없었기 때문에, 사이드바 목록에도
-  // 전역 필터를 함께 적용하고, 필터에 일치하는 광고주가 있으면 자동으로 선택합니다.
   const filtered = useMemo(
     () => advertisers.filter(a => a.name.includes(query.trim()) && matchesAdvertiserFilter(a.name, filterValue)),
     [advertisers, query, filterValue],
@@ -50,89 +48,65 @@ export function AdAccountsPage() {
 
   const selected = advertisers.find(a => a.id === selectedId) ?? advertisers[0];
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(''), 2400);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 2600); };
+
+  const openConnect = (channel: Channel, adId: string) => {
+    setConnectTarget({ channel, adId }); setMetaAccounts([]); setMetaSelected(''); setMetaError('');
   };
 
-  const updateLink = (adId: string, channel: Channel, patch: Partial<AccountLink>) =>
-    setAdvertisers(prev =>
-      prev.map(a =>
-        a.id === adId
-          ? { ...a, links: a.links.map(l => l.channel === channel ? { ...l, ...patch } : l) }
-          : a,
-      ),
-    );
-
-  /** API 연동 테스트 후 상태 저장 */
-  const connect = async () => {
-    if (!connectTarget || !token.trim()) return;
-    setTesting(true);
-
-    const channel      = connectTarget.channel;
-    const channelKey   = CH_KEY_MAP[channel];
-    const advertiserId = connectTarget.adId;
-
-    const credentials: Record<string, string> = {};
-    if (accountId.trim()) credentials.accountId = accountId.trim();
-    credentials.accessToken = token.trim();
-
+  const loadMetaAccounts = async () => {
+    setMetaLoading(true); setMetaError('');
     try {
-      // 1. 자격증명 저장
-      await apiFetch(`/advertisers/${advertiserId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ accounts: [{ channel: channelKey, credentials }] }),
-      });
+      const result = await apiFetch<{ accounts: { id: string; name: string; account_id: string }[] }>('/integrations/meta/accounts');
+      setMetaAccounts(result.accounts || []);
+    } catch (error) { setMetaError(error instanceof Error ? error.message : 'Meta 계정 목록을 불러오지 못했습니다.'); }
+    setMetaLoading(false);
+  };
 
-      // 2. 연동 테스트
-      const result = await apiFetch<{ ok: boolean; message: string }>(
-        `/advertisers/${advertiserId}/channels/${channelKey}/test`,
-        { method: 'POST', body: JSON.stringify({ credentials }) },
-      );
-
-      if (result.ok) {
-        updateLink(advertiserId, channel, {
-          status: '연결됨', keyRegistered: true,
-          accountId: accountId || `${channelKey}-${Date.now().toString().slice(-6)}`,
-          accountName: `${selected?.name ?? ''} ${CHANNEL_META[channel].label}`,
-          lastSync: '방금 전',
-        });
-        showToast(`${channel} 광고계정 연동 완료: ${result.message}`);
-      } else {
-        showToast(`연동 실패: ${result.message}`);
-      }
-    } catch (err: unknown) {
-      updateLink(advertiserId, channel, {
-        status: '연결됨', keyRegistered: true,
-        accountId: accountId || `demo-${channelKey}-${Date.now().toString().slice(-6)}`,
-        accountName: `${selected?.name ?? ''} ${CHANNEL_META[channel].label} 데모 계정`,
-        lastSync: '방금 전',
+  /** 계정을 선택해 실제로 저장하고, 곧바로 최근 데이터를 동기화합니다. */
+  const connect = async () => {
+    if (!connectTarget || !metaSelected) return;
+    const { channel, adId } = connectTarget;
+    const channelKey = CH_KEY_MAP[channel];
+    const picked = metaAccounts.find(a => a.account_id === metaSelected);
+    try {
+      await apiFetch(`/advertisers/${encodeURIComponent(adId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ accounts: [{ channel: channelKey, status: 'connected', account_id: metaSelected }] }),
       });
-      showToast(`데모 모드로 ${channel} 광고계정이 연결 처리되었습니다. 실제 API 연결은 마지막 단계에서 활성화합니다.`);
+      await apiFetch(`/integrations/sync`, { method: 'POST', body: JSON.stringify({ advertiserId: adId, channel: channelKey }) });
+      await reload();
+      showToast(`${picked?.name ?? metaSelected} 계정이 연결되고 최근 데이터가 동기화되었습니다.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '연동에 실패했습니다.');
     } finally {
-      setTesting(false);
       setConnectTarget(null);
-      setToken('');
-      setAccountId('');
-      reload();
     }
   };
 
-  const sync = (channel: Channel) => {
+  const sync = async (channel: Channel) => {
+    if (!selected) return;
     setSyncing(channel);
-    setTimeout(() => {
-      updateLink(selected!.id, channel, { lastSync: '방금 전' });
-      setSyncing('');
-      showToast(`${channel} 동기화 완료`);
-    }, 650);
+    try {
+      const result = await apiFetch<{ ok: boolean; count: number }>('/integrations/sync', {
+        method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel] }),
+      });
+      showToast(`${channel} 동기화 완료 · ${result.count}일치 데이터`);
+      await reload();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '동기화에 실패했습니다.');
+    }
+    setSyncing('');
   };
 
-  const disconnect = (channel: Channel) => {
+  const disconnect = async (channel: Channel) => {
+    if (!selected) return;
     if (!confirm('연결을 해제할까요?')) return;
-    updateLink(selected!.id, channel, {
-      status: '미연동', keyRegistered: false,
-      accountId: undefined, accountName: undefined, lastSync: undefined,
-    });
+    const remaining = selected.links.filter(l => l.channel !== channel && l.status === '연결됨').map(l => ({ channel: CH_KEY_MAP[l.channel], status: 'connected', account_id: l.accountId }));
+    try {
+      await apiFetch(`/advertisers/${encodeURIComponent(selected.id)}`, { method: 'PATCH', body: JSON.stringify({ accounts: remaining }) });
+      await reload();
+    } catch (error) { showToast(error instanceof Error ? error.message : '연결 해제에 실패했습니다.'); }
   };
 
   return (
@@ -217,13 +191,16 @@ export function AdAccountsPage() {
                   </div>
                 ) : (
                   <div className="account-empty-connect">
-                    <p>API 키 또는 OAuth 연결을 등록하면 데이터 수집과 캠페인 제어 기능이 활성화됩니다.</p>
-                    <button
-                      className="btn primary"
-                      onClick={() => setConnectTarget({ channel, adId: selected.id })}
-                    >
-                      <KeyRound size={15} /> 연결 설정
-                    </button>
+                    {meta.implemented ? (
+                      <>
+                        <p>Meta 계정을 선택해 연결하면 즉시 최근 데이터가 동기화됩니다.</p>
+                        <button className="btn primary" onClick={() => openConnect(channel, selected.id)}>
+                          <KeyRound size={15} /> 연결 설정
+                        </button>
+                      </>
+                    ) : (
+                      <p className="muted">이 매체 커넥터는 아직 준비 중입니다. (Meta부터 순서대로 연결됩니다)</p>
+                    )}
                   </div>
                 )}
               </section>
@@ -239,25 +216,30 @@ export function AdAccountsPage() {
             <div className="modal-head">
               <div>
                 <h3>{CHANNEL_META[connectTarget.channel].label} 연결</h3>
-                <p>광고계정 ID와 액세스 토큰을 입력합니다.</p>
+                <p>연결된 광고계정 목록을 불러와 선택합니다.</p>
               </div>
               <button className="icon-btn" onClick={() => setConnectTarget(null)}><X size={18} /></button>
             </div>
-            <label className="field-label">
-              광고계정 ID (선택)
-              <input value={accountId} onChange={e => setAccountId(e.target.value)} placeholder="예: act_123456789" />
-            </label>
-            <label className="field-label">
-              API 키 또는 액세스 토큰
-              <input value={token} onChange={e => setToken(e.target.value)} placeholder="토큰 입력" type="password" />
-            </label>
+            <button type="button" className="btn secondary" onClick={loadMetaAccounts} disabled={metaLoading}>
+              <Sparkles size={14} /> {metaLoading ? '불러오는 중...' : '연결된 계정 불러오기'}
+            </button>
+            {metaError && <div className="final-form-meta-error">{metaError}</div>}
+            {!!metaAccounts.length && (
+              <label className="field-label" style={{ marginTop: 12 }}>
+                광고계정 선택
+                <select value={metaSelected} onChange={e => setMetaSelected(e.target.value)}>
+                  <option value="">선택 안 함</option>
+                  {metaAccounts.map(a => <option key={a.id} value={a.account_id}>{a.name} ({a.id})</option>)}
+                </select>
+              </label>
+            )}
             <div className="api-help">
-              <Link2 size={15} /> 현재는 데모 모드입니다. 입력값은 연결 테스트 UI 확인용이며, 실제 암호화 저장은 로그인과 백엔드 연동 단계에서 활성화됩니다.
+              System User Access Token은 서버 환경변수(META_ACCESS_TOKEN)로만 보관됩니다. 계정을 연결하면 즉시 최근 90일 데이터를 자동으로 가져옵니다.
             </div>
             <div className="modal-actions">
               <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
-              <button className="btn primary" onClick={connect} disabled={testing}>
-                {testing ? '테스트 중...' : '등록 및 테스트'}
+              <button className="btn primary" onClick={connect} disabled={!metaSelected}>
+                연결 및 데이터 동기화
               </button>
             </div>
           </div>
