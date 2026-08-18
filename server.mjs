@@ -792,6 +792,7 @@ async function handleApi(req, res, pathname) {
           const next = [...mergedAccounts];
           for (const incoming of body.accounts) {
             const idx = next.findIndex(a => a.channel === incoming.channel);
+            if (incoming._remove) { if (idx >= 0) next.splice(idx, 1); continue; } // 명시적 연결 해제 신호
             if (idx >= 0) next[idx] = { ...next[idx], ...incoming };
             else next.push(incoming);
           }

@@ -128,10 +128,11 @@ export function AdAccountsPage() {
   const disconnect = async (channel: Channel) => {
     if (!selected) return;
     if (!confirm('연결을 해제할까요?')) return;
-    const remaining = selected.links.filter(l => l.channel !== channel && l.status === '연결됨').map(l => ({ channel: CH_KEY_MAP[l.channel], status: 'connected', account_id: l.accountId }));
+    const channelKey = CH_KEY_MAP[channel];
     try {
-      await apiFetch(`/advertisers/${encodeURIComponent(selected.id)}`, { method: 'PATCH', body: JSON.stringify({ accounts: remaining }) });
+      await apiFetch(`/advertisers/${encodeURIComponent(selected.id)}`, { method: 'PATCH', body: JSON.stringify({ accounts: [{ channel: channelKey, _remove: true }] }) });
       await reload();
+      showToast(`${channel} 연결이 해제되었습니다.`);
     } catch (error) { showToast(error instanceof Error ? error.message : '연결 해제에 실패했습니다.'); }
   };
 
