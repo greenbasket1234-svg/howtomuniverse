@@ -225,7 +225,8 @@ export function DashboardOverviewPage(){
   const rankedAdvertisers=useMemo(()=>{
     const items = brandSummaries.map(b=>{
       const r=computeMetric('roas',b.total); const c=computeMetric('cost_per_db',b.total); const cc=computeMetric('cpc',b.total);
-      return { name:b.report.config.brandName, spend:b.total.spend??0, roas:r, cpa:c, cpc:cc };
+      const channels=b.report.config.lineItems.map(i=>({key:i.key,label:i.label,color:CHANNEL_COLORS[i.key]??'#9ca3af'}));
+      return { name:b.report.config.brandName, spend:b.total.spend??0, roas:r, cpa:c, cpc:cc, channels };
     }).filter(b=>b.spend>0);
     return rankByEfficiency(items);
   },[brandSummaries,rankMetric]);
@@ -305,7 +306,8 @@ export function DashboardOverviewPage(){
   };
   const budgetRows=brandSummaries.map(({report,total})=>{
     const spend=total.spend??0,budget=report.config.monthlyBudget??0,pct=budget?spend/budget*100:0;
-    return {name:report.config.brandName,spend,budget,pct,status:getBudgetStatus({monthlyBudget:budget,currentSpend:spend})};
+    const channels=report.config.lineItems.map(i=>({key:i.key,label:i.label,color:CHANNEL_COLORS[i.key]??'#9ca3af'}));
+    return {name:report.config.brandName,spend,budget,pct,status:getBudgetStatus({monthlyBudget:budget,currentSpend:spend}),channels};
   });
 
   const applyPreset=(p:typeof PRESETS[number])=>{setPreset(p.key);const end=maxDate;if(p.key==='today')setRange({from:end,to:end});else if(p.key==='yesterday'){const y=dateOffset(end,-1);setRange({from:y,to:y})}else setRange({from:dateOffset(end,-(p.days-1)),to:end})};
@@ -391,7 +393,7 @@ export function DashboardOverviewPage(){
     </section>
 
     <div className="dashboard-bottom-grid">
-      <section className="card"><div className="card-title-row"><div><span className="section-kicker">BUDGET</span><h2>브랜드 예산 소진율</h2></div></div><div className="budget-list-v2">{budgetRows.slice(0,6).map(b=><button key={b.name} onClick={()=>open(`${b.name} 예산`,<p>{money(b.spend)} / {money(b.budget)} · {b.pct.toFixed(1)}% 소진</p>)}><div><span>{b.name}</span><b>{b.pct.toFixed(1)}%</b></div><small>{money(b.spend)} / {money(b.budget)}</small><div className="budget-track"><i style={{width:`${Math.min(100,b.pct)}%`}}/></div></button>)}</div></section>
+      <section className="card"><div className="card-title-row"><div><span className="section-kicker">BUDGET</span><h2>브랜드 예산 소진율</h2></div></div><div className="budget-list-v2">{budgetRows.slice(0,6).map(b=>{const barColor=b.channels[0]?.color??'#2563eb';return <button key={b.name} onClick={()=>open(`${b.name} 예산`,<p>{money(b.spend)} / {money(b.budget)} · {b.pct.toFixed(1)}% 소진</p>)}><div><span style={{display:'inline-flex',alignItems:'center',gap:6}}>{b.channels.map(c=><i key={c.key} title={c.label} style={{width:7,height:7,borderRadius:'50%',background:c.color,display:'inline-block'}}/>)}{b.name}</span><b>{b.pct.toFixed(1)}%</b></div><small>{money(b.spend)} / {money(b.budget)}</small><div className="budget-track"><i style={{width:`${Math.min(100,b.pct)}%`,background:barColor}}/></div></button>})}</div></section>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">ACTION</span><h2>추천 조치</h2></div><span className={`status-chip ${dashboardInsights.actions.length?'warning':'neutral'}`}>{dashboardInsights.actions.length}건</span></div>{dashboardInsights.actions.length?(<ul className="dashboard-action-list">{dashboardInsights.actions.map((a,i)=><li key={i}>{a}</li>)}</ul>):(<div className="dashboard-empty"><Check size={24}/><strong>현재 긴급 조치가 없습니다.</strong><p>성과 변화가 감지되면 자동으로 추천합니다.</p></div>)}</section>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">RISK</span><h2>위험 소재</h2></div></div><div className="dashboard-empty"><AlertTriangle size={24}/><strong>위험 소재 없음</strong><p>피로도 기준을 초과한 소재가 없습니다.</p></div></section>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">TOP ADS</span><h2>우수 광고</h2></div></div><div className="top-ads-v2">{rankedPlatforms.slice(0,3).map((rp,i)=>{const p=platformMap.find(m=>m.name===rp.name);if(!p)return null;const top=topBrandForChannel(p.name);const item=top?topItemForChannel(p.name,top.brandName):null;const fallback=TOP_ITEM_BY_CHANNEL[p.name]??TOP_ITEM_BY_CHANNEL.기타;const criterionLabel=rankMetric==='roas'?'ROAS 높은':rankMetric==='cpa'?'CPA 낮은':rankMetric==='cpc'?'CPC 낮은':'ROAS 높은(매출 데이터가 없으면 CPA 낮은)';return <button key={p.name} onClick={()=>open(`${p.name} 우수 광고 상세`,<div className="top-ad-detail"><div className="top-ad-detail-row"><span>광고주</span><b>{top?top.brandName:'데이터 없음'}</b></div><div className="top-ad-detail-row"><span>{item?item.itemType:fallback.itemType}</span><b>{item?item.itemName:'연동된 소재/키워드 데이터 없음'}</b></div><div className="top-ad-detail-row"><span>CTR</span><b>{top?top.ctr.toFixed(2):'-'}%</b></div><div className="top-ad-detail-row"><span>CPC</span><b>{top?.cpc!=null?money(top.cpc):'-'}</b></div><p className="footnote">이 매체 안에서 {criterionLabel} 순으로 뽑은 광고주입니다(대시보드 상단 "순위 기준"과 연동됩니다). {item?'광고비 기준 1위 항목의 실제 이름입니다.':'설정 > 매체 계정 연동에서 소재·키워드 데이터가 동기화되면 실제 이름이 표시됩니다.'}</p></div>)}><b>{String(i+1).padStart(2,'0')}</b><span><i style={{background:p.color}}/>{p.name} 고성과 광고</span><em>상세</em></button>})}</div></section>
@@ -439,6 +441,7 @@ export function DashboardOverviewPage(){
             <div className="top5-row advertiser" key={b.name}>
               <b className={`top5-rank r${i+1}`}>{i+1}</b>
               <span className="top5-name">{b.name}</span>
+              <span style={{display:'flex',gap:4,marginRight:6}}>{b.channels.map(c=><span key={c.key} title={c.label} style={{width:8,height:8,borderRadius:'50%',background:c.color,display:'inline-block'}}/>)}</span>
               <span className="top5-metric">{rankLabel(b.roas,b.cpa,b.cpc)}</span>
               <span className="top5-spend">{money(b.spend)}</span>
             </div>
@@ -464,6 +467,7 @@ export function DashboardOverviewPage(){
             <div className="top5-row advertiser worst" key={b.name}>
               <b className="top5-rank worst-rank">{i+1}</b>
               <span className="top5-name">{b.name}</span>
+              <span style={{display:'flex',gap:4,marginRight:6}}>{b.channels.map(c=><span key={c.key} title={c.label} style={{width:8,height:8,borderRadius:'50%',background:c.color,display:'inline-block'}}/>)}</span>
               <span className="top5-metric worst-metric">{rankLabel(b.roas,b.cpa,b.cpc)}</span>
               <span className="top5-spend">{money(b.spend)}</span>
             </div>
