@@ -460,43 +460,43 @@ async function naverFetchDailyMetrics(credentials, since, until) {
   // 전체 필드로 먼저 시도하고 실패하면 기본 필드(노출/클릭/광고비)만으로 다시 시도합니다.
   const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
   const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
-  let fields = FULL_FIELDS;
 
+  // ids(복수)로 여러 캠페인을 한 번에 묶어 보내는 방식이 계정/버전에 따라 형식 오류(11001)를
+  // 일으키는 경우가 있어서, 캠페인 하나당 단수 id로 개별 요청합니다 (형식이 명확해 더 안전합니다).
   const byDate = new Map();
   for (const range of splitIntoChunks(since, until, 90)) {
-    let data;
-    try {
-      data = await naverApiRequest('GET', '/stats', {
-        ids: campaignIds,
-        fields: JSON.stringify(fields),
-        timeRange: JSON.stringify({ since: range.since, until: range.until }),
-        timeIncrement: '1',
-      }, credentials);
-    } catch (error) {
-      if (fields === FULL_FIELDS) {
-        // 매출/전환 필드가 이 계정에서 지원되지 않는 것으로 보고, 기본 필드로 다시 시도합니다.
-        fields = BASIC_FIELDS;
+    for (const campaignId of campaignIds) {
+      let fields = FULL_FIELDS;
+      let data;
+      try {
         data = await naverApiRequest('GET', '/stats', {
-          ids: campaignIds,
+          id: campaignId,
           fields: JSON.stringify(fields),
           timeRange: JSON.stringify({ since: range.since, until: range.until }),
           timeIncrement: '1',
         }, credentials);
-      } else {
-        throw error;
+      } catch (error) {
+        fields = BASIC_FIELDS;
+        data = await naverApiRequest('GET', '/stats', {
+          id: campaignId,
+          fields: JSON.stringify(fields),
+          timeRange: JSON.stringify({ since: range.since, until: range.until }),
+          timeIncrement: '1',
+        }, credentials).catch(() => null);
       }
-    }
-    const rows = Array.isArray(data?.data) ? data.data : [];
-    for (const row of rows) {
-      const date = row.dateStart || row.date;
-      if (!date) continue;
-      const cur = byDate.get(date) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0 };
-      cur.impressions += Number(row.impCnt || 0);
-      cur.clicks += Number(row.clkCnt || 0);
-      cur.spend += Number(row.salesAmt || 0);
-      cur.dbCount += Number(row.ccnt || 0);
-      cur.revenue += Number(row.convAmt || 0);
-      byDate.set(date, cur);
+      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      for (const row of rows) {
+        const date = row.dateStart || row.date;
+        if (!date) continue;
+        const cur = byDate.get(date) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0 };
+        cur.impressions += Number(row.impCnt || 0);
+        cur.clicks += Number(row.clkCnt || 0);
+        cur.spend += Number(row.salesAmt || 0);
+        cur.dbCount += Number(row.ccnt || 0);
+        cur.revenue += Number(row.convAmt || 0);
+        byDate.set(date, cur);
+      }
+      await new Promise(r => setTimeout(r, 500)); // 네이버 API 호출 간 간격을 둡니다.
     }
     await new Promise(r => setTimeout(r, 500)); // 네이버 API 호출 간 간격을 둡니다.
   }
