@@ -303,11 +303,19 @@ async function naverFetchKeywordMetrics(credentials, since, until) {
   for (const range of splitIntoChunks(since, until, 90)) {
     for (let i = 0; i < keywordIds.length; i += 100) {
       const chunk = keywordIds.slice(i, i + 100);
-      const data = await naverApiRequest('GET', '/stats', {
+      let data = await naverApiRequest('GET', '/stats', {
         ids: JSON.stringify(chunk),
         fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt']),
         timeRange: JSON.stringify({ since: range.since, until: range.until }),
       }, credentials).catch(() => null);
+      if (!data) {
+        // ccnt(전환) 필드가 이 계정에서 지원되지 않을 수 있어, 기본 필드로 한 번 더 시도합니다.
+        data = await naverApiRequest('GET', '/stats', {
+          ids: JSON.stringify(chunk),
+          fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
+          timeRange: JSON.stringify({ since: range.since, until: range.until }),
+        }, credentials).catch(() => null);
+      }
       const rows = Array.isArray(data?.data) ? data.data : [];
       for (const row of rows) {
         const kid = row.id;
@@ -401,14 +409,36 @@ async function naverFetchDailyMetrics(credentials, since, until) {
   const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
   if (!campaignIds.length) return [];
 
+  // 전환 추적(구매 매출)이 설정 안 된 계정은 convAmt/ccnt 필드 요청 자체를 거부하는 경우가 있어서,
+  // 전체 필드로 먼저 시도하고 실패하면 기본 필드(노출/클릭/광고비)만으로 다시 시도합니다.
+  const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
+  const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
+  let fields = FULL_FIELDS;
+
   const byDate = new Map();
   for (const range of splitIntoChunks(since, until, 90)) {
-    const data = await naverApiRequest('GET', '/stats', {
-      ids: JSON.stringify(campaignIds),
-      fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt']),
-      timeRange: JSON.stringify({ since: range.since, until: range.until }),
-      timeIncrement: '1',
-    }, credentials);
+    let data;
+    try {
+      data = await naverApiRequest('GET', '/stats', {
+        ids: JSON.stringify(campaignIds),
+        fields: JSON.stringify(fields),
+        timeRange: JSON.stringify({ since: range.since, until: range.until }),
+        timeIncrement: '1',
+      }, credentials);
+    } catch (error) {
+      if (fields === FULL_FIELDS) {
+        // 매출/전환 필드가 이 계정에서 지원되지 않는 것으로 보고, 기본 필드로 다시 시도합니다.
+        fields = BASIC_FIELDS;
+        data = await naverApiRequest('GET', '/stats', {
+          ids: JSON.stringify(campaignIds),
+          fields: JSON.stringify(fields),
+          timeRange: JSON.stringify({ since: range.since, until: range.until }),
+          timeIncrement: '1',
+        }, credentials);
+      } else {
+        throw error;
+      }
+    }
     const rows = Array.isArray(data?.data) ? data.data : [];
     for (const row of rows) {
       const date = row.dateStart || row.date;
