@@ -930,6 +930,7 @@ async function handleApi(req, res, pathname) {
     const advertiserMatch = pathname.match(/^\/api\/advertisers\/([^/]+)$/);
     if (advertiserMatch && (req.method === 'PUT' || req.method === 'PATCH')) {
       const id = decodeURIComponent(advertiserMatch[1]); const body = await readJson(req); let updated = null;
+      const connectEvents = []; // { channel, type: 'connect'|'disconnect' }
       mutateDb(db => {
         const index = db.advertisers.findIndex(x => String(x.id) === id);
         if (index < 0) return;
@@ -943,15 +944,24 @@ async function handleApi(req, res, pathname) {
           const next = [...mergedAccounts];
           for (const incoming of body.accounts) {
             const idx = next.findIndex(a => a.channel === incoming.channel);
-            if (incoming._remove) { if (idx >= 0) next.splice(idx, 1); continue; } // 명시적 연결 해제 신호
+            if (incoming._remove) {
+              if (idx >= 0) { next.splice(idx, 1); connectEvents.push({ channel: incoming.channel, type: 'disconnect' }); }
+              continue; // 명시적 연결 해제 신호
+            }
+            const wasConnected = idx >= 0 && next[idx].status === 'connected';
             if (idx >= 0) next[idx] = { ...next[idx], ...incoming };
             else next.push(incoming);
+            if (incoming.status === 'connected' && !wasConnected) connectEvents.push({ channel: incoming.channel, type: 'connect' });
           }
           mergedAccounts = next;
         }
         updated = { ...existing, ...body, accounts: mergedAccounts, id: existing.id, updated_at: new Date().toISOString() };
         db.advertisers[index] = updated;
       });
+      // '접속·보안 기록' 화면에서 연결/해제 이력도 누적해서 볼 수 있도록 남깁니다.
+      for (const ev of connectEvents) {
+        addLog({ action: ev.type === 'connect' ? 'channel_connected' : 'channel_disconnected', advertiserId: id, advertiserName: updated?.name || id, channel: ev.channel });
+      }
       return updated ? sendJson(res, 200, redactAdvertiser(updated)) : sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
     }
     if (advertiserMatch && req.method === 'DELETE') {
@@ -1091,14 +1101,18 @@ async function handleApi(req, res, pathname) {
 
 /** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
 function recordSyncResult(advertiserId, channel, { ok, count, error }) {
+  let advertiserName = advertiserId;
   mutateDb(db => {
     const adv = db.advertisers.find(a => String(a.id) === advertiserId);
+    advertiserName = adv?.name || advertiserId;
     const acc = adv?.accounts?.find(a => a.channel === channel);
     if (!acc) return;
     acc.last_synced_at = new Date().toISOString();
     if (ok) { acc.last_row_count = count ?? 0; acc.last_sync_error = null; }
     else { acc.last_sync_error = error || '알 수 없는 오류'; }
   });
+  // '접속·보안 기록' 화면에서 과거~현재 전체 이력을 볼 수 있도록, 성공/실패 모두 누적 로그에 남깁니다.
+  addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류') });
 }
 
     if (req.method === 'POST' && pathname === '/api/integrations/sync') {
