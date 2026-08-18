@@ -787,8 +787,15 @@ async function handleApi(req, res, pathname) {
         const existing = db.advertisers[index];
         let mergedAccounts = existing.accounts || [];
         if (Array.isArray(body.accounts)) {
-          const incomingChannels = new Set(body.accounts.map(a => a.channel));
-          mergedAccounts = [...mergedAccounts.filter(a => !incomingChannels.has(a.channel)), ...body.accounts];
+          // 채널 전체를 통째로 교체하지 않고, 채널 안의 필드끼리 병합합니다.
+          // (다른 화면이 api_key/secret_key를 모른 채로 저장해도 조용히 지워지지 않도록)
+          const next = [...mergedAccounts];
+          for (const incoming of body.accounts) {
+            const idx = next.findIndex(a => a.channel === incoming.channel);
+            if (idx >= 0) next[idx] = { ...next[idx], ...incoming };
+            else next.push(incoming);
+          }
+          mergedAccounts = next;
         }
         updated = { ...existing, ...body, accounts: mergedAccounts, id: existing.id, updated_at: new Date().toISOString() };
         db.advertisers[index] = updated;
