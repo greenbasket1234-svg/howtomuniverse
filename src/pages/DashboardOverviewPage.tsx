@@ -207,11 +207,13 @@ export function DashboardOverviewPage(){
     if (rankMetric === 'roas') return roas!=null?`ROAS ${roas.toFixed(0)}%`:'-';
     return roas!=null?`ROAS ${roas.toFixed(0)}%`:cpa!=null?`CPA ${money(cpa)}`:'-';
   };
+  // 0원/0%는 "효율이 나쁘다"가 아니라 사실상 데이터가 없는 경우라, null(데이터 없음)과 동일하게 취급해 순위에서 뺍니다.
+  const nz = (v: number | null | undefined): number | null => (v == null || v === 0) ? null : v;
   const rankedPlatforms=useMemo(()=>{
     const items = platformMap.map(p=>{
-      const r=computeMetric('roas',p.raw); const c=computeMetric('cost_per_db',p.raw); const cc=computeMetric('cpc',p.raw);
+      const r=nz(computeMetric('roas',p.raw)); const c=nz(computeMetric('cost_per_db',p.raw)); const cc=nz(computeMetric('cpc',p.raw));
       return { name:p.name, color:p.color, spend:p.raw.spend??0, roas:r, cpa:c, cpc:cc };
-    }).filter(p=>p.spend>0);
+    }).filter(p=>p.spend>0 && (rankMetric==='roas'?p.roas!=null:rankMetric==='cpa'?p.cpa!=null:rankMetric==='cpc'?p.cpc!=null:(p.roas!=null||p.cpa!=null)));
     return rankByEfficiency(items);
   },[platformMap,rankMetric]);
   const topPlatforms=useMemo(()=>rankedPlatforms.slice(0,5),[rankedPlatforms]);
@@ -224,10 +226,10 @@ export function DashboardOverviewPage(){
   // TOP5/WORST5 광고주 순위: 같은 기준으로, 광고주(브랜드) 단위 합계를 정렬합니다.
   const rankedAdvertisers=useMemo(()=>{
     const items = brandSummaries.map(b=>{
-      const r=computeMetric('roas',b.total); const c=computeMetric('cost_per_db',b.total); const cc=computeMetric('cpc',b.total);
+      const r=nz(computeMetric('roas',b.total)); const c=nz(computeMetric('cost_per_db',b.total)); const cc=nz(computeMetric('cpc',b.total));
       const channels=b.report.config.lineItems.map(i=>({key:i.key,label:i.label,color:CHANNEL_COLORS[i.key]??'#9ca3af'}));
       return { name:b.report.config.brandName, spend:b.total.spend??0, roas:r, cpa:c, cpc:cc, channels };
-    }).filter(b=>b.spend>0);
+    }).filter(b=>b.spend>0 && (rankMetric==='roas'?b.roas!=null:rankMetric==='cpa'?b.cpa!=null:rankMetric==='cpc'?b.cpc!=null:(b.roas!=null||b.cpa!=null)));
     return rankByEfficiency(items);
   },[brandSummaries,rankMetric]);
   const topAdvertisers=useMemo(()=>rankedAdvertisers.slice(0,5),[rankedAdvertisers]);
