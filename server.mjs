@@ -377,8 +377,15 @@ async function naverApiRequest(method, uri, params, credentials) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
+    // 비밀키는 로그에 남기지 않고, 진단에 필요한 나머지 정보만 서버 콘솔에 남깁니다.
+    console.error('[naver-api-error]', {
+      uri, status: res.status, serverTime: timestamp, customerId,
+      apiKeyPrefix: apiKey ? apiKey.slice(0, 8) : null,
+      naverResponse: data,
+    });
     const message = data?.title || data?.message || `Naver API HTTP ${res.status}`;
-    throw new Error(message);
+    const detail = data?.code ? ` (code: ${data.code})` : '';
+    throw new Error(`${message}${detail} · status ${res.status}`);
   }
   return data;
 }
