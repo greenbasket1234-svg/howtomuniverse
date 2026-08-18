@@ -225,11 +225,19 @@ export function DashboardOverviewPage(){
   },[rankedPlatforms,topPlatforms]);
   // TOP5/WORST5 광고주 순위: 같은 기준으로, 광고주(브랜드) 단위 합계를 정렬합니다.
   const rankedAdvertisers=useMemo(()=>{
-    const items = brandSummaries.map(b=>{
-      const r=nz(computeMetric('roas',b.total)); const c=nz(computeMetric('cost_per_db',b.total)); const cc=nz(computeMetric('cpc',b.total));
-      const channels=b.report.config.lineItems.map(i=>({key:i.key,label:i.label,color:CHANNEL_COLORS[i.key]??'#9ca3af'}));
-      return { name:b.report.config.brandName, spend:b.total.spend??0, roas:r, cpa:c, cpc:cc, channels };
-    }).filter(b=>b.spend>0 && (rankMetric==='roas'?b.roas!=null:rankMetric==='cpa'?b.cpa!=null:rankMetric==='cpc'?b.cpc!=null:(b.roas!=null||b.cpa!=null)));
+    // 광고주가 매체를 2개 이상 연동했어도, 합산(평균)이 아니라 그중 성과가 가장 좋은 매체 "하나"만
+    // 이 광고주의 대표값으로 순위에 반영합니다 (예: 메타 ROAS 300% + 네이버 ROAS 50%를 섞지 않고, 메타만 사용).
+    const items = brandSummaries.flatMap(b=>{
+      const perChannel = b.report.config.lineItems.map((li,idx)=>{
+        const raw=b.raws[idx];
+        const r=nz(computeMetric('roas',raw)); const c=nz(computeMetric('cost_per_db',raw)); const cc=nz(computeMetric('cpc',raw));
+        return { channelKey:li.key, channelLabel:li.label, spend:raw.spend??0, roas:r, cpa:c, cpc:cc };
+      }).filter(p=>p.spend>0 && (rankMetric==='roas'?p.roas!=null:rankMetric==='cpa'?p.cpa!=null:rankMetric==='cpc'?p.cpc!=null:(p.roas!=null||p.cpa!=null)));
+      if(!perChannel.length) return [];
+      const best = rankByEfficiency(perChannel)[0]; // 이 광고주의 채널 중 가장 좋은 성과 하나만 선택
+      const channels=[{key:best.channelKey,label:best.channelLabel,color:CHANNEL_COLORS[best.channelKey]??'#9ca3af'}];
+      return [{ name:b.report.config.brandName, spend:best.spend, roas:best.roas, cpa:best.cpa, cpc:best.cpc, channels }];
+    });
     return rankByEfficiency(items);
   },[brandSummaries,rankMetric]);
   const topAdvertisers=useMemo(()=>rankedAdvertisers.slice(0,5),[rankedAdvertisers]);
