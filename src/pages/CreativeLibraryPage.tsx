@@ -8,7 +8,9 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 
-type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; thumbnailUrl?: string|null; mediaType?: 'image'|'video'|null };
+type CreativeMetricRow = { advertiserId: string; channel: string; adId: string; adName: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; thumbnailUrl?: string|null; mediaType?: 'image'|'video'|null; title?: string; body?: string; description?: string; cta?: string };
+type KeywordMetricRow = { advertiserId: string; channel: string; keyword: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number };
+type UnifiedItem = { key: string; kind: '이미지'|'영상'|'키워드'; advertiserId: string; channel: string; name: string; campaignName?: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; thumbnailUrl?: string|null; title?: string; body?: string; description?: string; cta?: string };
 
 type GroupBy = 'brand' | 'type' | 'objective';
 const GROUP_LABEL: Record<GroupBy, string> = { brand: '광고주별', type: '소재 종류별', objective: '광고 목표별' };
@@ -26,9 +28,17 @@ export function CreativeLibraryPage(){
   const navigate = useNavigate();
   const [advertisers]=useAdvertisers();
   const [creativeMetrics,setCreativeMetrics]=useState<CreativeMetricRow[]>([]);
-  const [selectedMetric,setSelectedMetric]=useState<CreativeMetricRow|null>(null);
-  const [mediaFilter,setMediaFilter]=useState<'전체'|'이미지'|'영상'>('전체');
-  useEffect(()=>{apiFetch<{rows:CreativeMetricRow[]}>('/creative-metrics').then(r=>setCreativeMetrics(r.rows||[])).catch(()=>setCreativeMetrics([]));},[]);
+  const [keywordMetrics,setKeywordMetrics]=useState<KeywordMetricRow[]>([]);
+  const [selectedItem,setSelectedItem]=useState<UnifiedItem|null>(null);
+  const [mediaFilter,setMediaFilter]=useState<'전체'|'이미지'|'영상'|'키워드'>('전체');
+  useEffect(()=>{
+    apiFetch<{rows:CreativeMetricRow[]}>('/creative-metrics').then(r=>setCreativeMetrics(r.rows||[])).catch(()=>setCreativeMetrics([]));
+    apiFetch<{rows:KeywordMetricRow[]}>('/keyword-metrics').then(r=>setKeywordMetrics(r.rows||[])).catch(()=>setKeywordMetrics([]));
+  },[]);
+  const unifiedItems:UnifiedItem[]=useMemo(()=>[
+    ...creativeMetrics.map(m=>({key:`${m.channel}-${m.adId}`,kind:(m.mediaType==='video'?'영상':'이미지') as '이미지'|'영상',advertiserId:m.advertiserId,channel:m.channel,name:m.adName,campaignName:m.campaignName,impressions:m.impressions,clicks:m.clicks,spend:m.spend,dbCount:m.dbCount,revenue:m.revenue,thumbnailUrl:m.thumbnailUrl,title:m.title,body:m.body,description:m.description,cta:m.cta})),
+    ...keywordMetrics.map(k=>({key:`${k.channel}-kw-${k.keyword}`,kind:'키워드' as const,advertiserId:k.advertiserId,channel:k.channel,name:k.keyword,campaignName:k.campaignName,impressions:k.impressions,clicks:k.clicks,spend:k.spend,dbCount:k.dbCount})),
+  ],[creativeMetrics,keywordMetrics]);
   const advertiserName=(id:string)=>advertisers.find(a=>a.id===id)?.name??id;
   const rows=useMemo(()=>{
     const nq = normalize(q);
@@ -87,54 +97,61 @@ export function CreativeLibraryPage(){
           <button className={view==='list'?'icon-btn active':''} onClick={()=>setView('list')}><List/></button>
         </div>
       }/>
-      {!!creativeMetrics.length && (
+      {!!unifiedItems.length && (
         <section className="card" style={{ padding: 16, marginBottom: 16 }}>
           <h3 style={{ margin: '0 0 4px' }}>매체 연동 실제 소재 성과</h3>
-          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 광고 단위 데이터입니다. 썸네일을 누르면 크게 볼 수 있습니다.</p>
+          <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>설정 &gt; 매체 계정 연동으로 연결된 계정에서 자동으로 가져온 실제 소재·키워드 데이터입니다. 카드를 누르면 자세히 볼 수 있습니다.</p>
           <div className="media-type-toggle">
-            {(['전체','이미지','영상'] as const).map(t=><button key={t} className={mediaFilter===t?'active':''} onClick={()=>setMediaFilter(t)}>{t} {t!=='전체'&&`(${creativeMetrics.filter(m=>t==='이미지'?m.mediaType!=='video':m.mediaType==='video').length})`}</button>)}
+            {(['전체','이미지','영상','키워드'] as const).map(t=><button key={t} className={mediaFilter===t?'active':''} onClick={()=>setMediaFilter(t)}>{t} {t!=='전체'&&`(${unifiedItems.filter(m=>m.kind===t).length})`}</button>)}
           </div>
-          <div className="library-grid">
-            {creativeMetrics.filter(m=>mediaFilter==='전체'||(mediaFilter==='이미지'?m.mediaType!=='video':m.mediaType==='video')).map(m => (
-              <article className="library-card" key={`${m.channel}-${m.adId}`} onClick={()=>setSelectedMetric(m)} style={{cursor:'pointer'}}>
+          <div className="library-grid-compact">
+            {unifiedItems.filter(m=>mediaFilter==='전체'||m.kind===mediaFilter).map(m => (
+              <article className="library-card" key={m.key} onClick={()=>setSelectedItem(m)} style={{cursor:'pointer'}}>
                 <div className="library-thumb-square">
-                  {m.thumbnailUrl
-                    ? <img src={m.thumbnailUrl} alt={m.adName} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-                    : <span style={{fontSize:28}}>🖼️</span>}
-                  <span style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,.6)',color:'#fff',fontSize:11,padding:'2px 7px',borderRadius:999}}>{m.mediaType==='video'?'▶ 영상':'🖼 이미지'}</span>
+                  {m.kind==='키워드'
+                    ? <span style={{fontSize:20}}>🔑</span>
+                    : m.thumbnailUrl ? <img src={m.thumbnailUrl} alt={m.name} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:20}}>🖼️</span>}
+                  <span style={{position:'absolute',top:5,right:5,background:'rgba(0,0,0,.6)',color:'#fff',fontSize:9,padding:'1px 5px',borderRadius:999}}>{m.kind==='영상'?'▶':m.kind==='키워드'?'KW':'IMG'}</span>
                 </div>
                 <div className="library-body">
                   <div className="library-meta"><span>● {advertiserName(m.advertiserId)}</span></div>
-                  <h3 style={{fontSize:14}}>{m.adName}</h3>
-                  <p style={{fontSize:12,color:'#64748b'}}>{m.campaignName || '캠페인 정보 없음'}</p><hr/>
+                  <h3>{m.name}</h3>
+                  <p>{m.campaignName || '캠페인 정보 없음'}</p><hr/>
                   <small>노출 {m.impressions.toLocaleString()} · 클릭 {m.clicks.toLocaleString()}</small>
                   <small>광고비 ₩{Math.round(m.spend).toLocaleString()} · 전환 {m.dbCount.toLocaleString()}</small>
-                  {!!m.revenue && <small>매출 ₩{Math.round(m.revenue).toLocaleString()}</small>}
                 </div>
               </article>
             ))}
           </div>
         </section>
       )}
-      {selectedMetric && (
-        <div className="modal-backdrop" onClick={()=>setSelectedMetric(null)}>
+      {selectedItem && (
+        <div className="modal-backdrop" onClick={()=>setSelectedItem(null)}>
           <div className="modal-card wide creative-detail-modal" onClick={e=>e.stopPropagation()}>
             <div className="modal-head">
-              <div><h3>{selectedMetric.adName}</h3><p>{advertiserName(selectedMetric.advertiserId)} · {selectedMetric.campaignName || '캠페인 정보 없음'}</p></div>
-              <button className="icon-btn" onClick={()=>setSelectedMetric(null)}><X/></button>
+              <div><h3>{selectedItem.name}</h3><p>{advertiserName(selectedItem.advertiserId)} · {selectedItem.campaignName || '캠페인 정보 없음'}</p></div>
+              <button className="icon-btn" onClick={()=>setSelectedItem(null)}><X/></button>
             </div>
             <div className="creative-detail-preview-lib">
               <div className="library-thumb-square" style={{width:240}}>
-                {selectedMetric.thumbnailUrl ? <img src={selectedMetric.thumbnailUrl} alt={selectedMetric.adName} style={{width:'100%',height:'100%',objectFit:'contain'}}/> : '🖼️'}
+                {selectedItem.kind==='키워드' ? '🔑' : selectedItem.thumbnailUrl ? <img src={selectedItem.thumbnailUrl} alt={selectedItem.name} style={{width:'100%',height:'100%',objectFit:'contain'}}/> : '🖼️'}
               </div>
               <div>
+                {selectedItem.kind!=='키워드' && (selectedItem.title||selectedItem.body||selectedItem.description) && (
+                  <div style={{marginBottom:14,padding:12,background:'#f8fafc',borderRadius:10}}>
+                    {selectedItem.title && <div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{selectedItem.title}</div></div>}
+                    {selectedItem.body && <div style={{marginBottom:6}}><small className="muted">설명란(캡션)</small><div style={{whiteSpace:'pre-wrap'}}>{selectedItem.body}</div></div>}
+                    {selectedItem.description && <div><small className="muted">보조 설명</small><div style={{whiteSpace:'pre-wrap'}}>{selectedItem.description}</div></div>}
+                    {selectedItem.cta && <div style={{marginTop:6}}><small className="muted">CTA</small> <b>{selectedItem.cta}</b></div>}
+                  </div>
+                )}
                 <div className="detail-grid">
-                  <div>노출수<strong>{selectedMetric.impressions.toLocaleString()}</strong></div>
-                  <div>클릭수<strong>{selectedMetric.clicks.toLocaleString()}</strong></div>
-                  <div>광고비<strong>₩{Math.round(selectedMetric.spend).toLocaleString()}</strong></div>
-                  <div>전환(DB)<strong>{selectedMetric.dbCount.toLocaleString()}</strong></div>
-                  <div>매출<strong>{selectedMetric.revenue?`₩${Math.round(selectedMetric.revenue).toLocaleString()}`:'-'}</strong></div>
-                  <div>매체<strong>{selectedMetric.channel==='meta'?'Meta':selectedMetric.channel}</strong></div>
+                  <div>노출수<strong>{selectedItem.impressions.toLocaleString()}</strong></div>
+                  <div>클릭수<strong>{selectedItem.clicks.toLocaleString()}</strong></div>
+                  <div>광고비<strong>₩{Math.round(selectedItem.spend).toLocaleString()}</strong></div>
+                  <div>전환(DB)<strong>{selectedItem.dbCount.toLocaleString()}</strong></div>
+                  <div>매출<strong>{selectedItem.revenue?`₩${Math.round(selectedItem.revenue).toLocaleString()}`:'-'}</strong></div>
+                  <div>매체<strong>{selectedItem.channel==='meta'?'Meta':selectedItem.channel==='naver'?'네이버':selectedItem.channel}</strong></div>
                 </div>
               </div>
             </div>

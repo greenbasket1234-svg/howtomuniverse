@@ -272,10 +272,12 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         if (!creative) continue;
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
         result[id] = {
-          thumbnailUrl: creative.image_url || creative.thumbnail_url || null,
+          // image_url(원본) > link_data.picture(연결된 원본 이미지) > thumbnail_url(저화질 미리보기) 순으로 고화질을 우선합니다.
+          thumbnailUrl: creative.image_url || linkData.picture || creative.thumbnail_url || null,
           mediaType: creative.video_id ? 'video' : 'image',
           title: creative.title || linkData.name || '',
-          body: creative.body || linkData.message || '',
+          body: creative.body || linkData.message || '', // 설명란(인스타그램 캡션에 해당하는 본문 텍스트)
+          description: linkData.description || '', // 링크 하단 보조 설명
           cta: creative.call_to_action_type || linkData.call_to_action?.type || '',
         };
       }
@@ -1113,7 +1115,7 @@ async function handleApi(req, res, pathname) {
     function upsertCreativeMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
         const kept = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.adId === m.adId)));
-        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, title: r.title || '', body: r.body || '', cta: r.cta || '', updatedAt: new Date().toISOString() }));
+        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, title: r.title || '', body: r.body || '', description: r.description || '', cta: r.cta || '', updatedAt: new Date().toISOString() }));
         db.creativeMetrics = [...kept, ...added];
       });
     }
