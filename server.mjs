@@ -273,11 +273,158 @@ async function metaFetchAdCreativeThumbnails(adIds) {
 
 /** 검색광고 키워드 단위 인사이트 — 지금은 구현된 매체가 없어 항상 빈 배열입니다.
     네이버/구글/카카오 검색광고 커넥터가 추가되면 이 함수들이 실제 데이터를 반환하게 됩니다. */
+async function naverFetchKeywordMetrics(credentials, since, until) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
+  if (!campaignIds.length) return [];
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+
+  // 캠페인 → 광고그룹 → 키워드 순으로 마스터 데이터를 모읍니다.
+  const adgroups = [];
+  for (const cid of campaignIds) {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: cid }, credentials).catch(() => []);
+    if (Array.isArray(rows)) adgroups.push(...rows);
+    await new Promise(r => setTimeout(r, 300));
+  }
+  const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
+
+  const keywords = [];
+  for (const agid of adgroups.map(a => a.nccAdgroupId).filter(Boolean)) {
+    const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(() => []);
+    if (Array.isArray(rows)) keywords.push(...rows);
+    await new Promise(r => setTimeout(r, 300));
+  }
+  const keywordIds = keywords.map(k => k.nccKeywordId).filter(Boolean).slice(0, 300); // 한 계정에서 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
+  if (!keywordIds.length) return [];
+  const keywordNameMap = new Map(keywords.map(k => [k.nccKeywordId, k.keyword]));
+  const keywordAdgroupMap = new Map(keywords.map(k => [k.nccKeywordId, k.nccAdgroupId]));
+
+  const byKeyword = new Map();
+  for (const range of splitIntoChunks(since, until, 90)) {
+    for (let i = 0; i < keywordIds.length; i += 100) {
+      const chunk = keywordIds.slice(i, i + 100);
+      const data = await naverApiRequest('GET', '/stats', {
+        ids: JSON.stringify(chunk),
+        fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt']),
+        timeRange: JSON.stringify({ since: range.since, until: range.until }),
+      }, credentials).catch(() => null);
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      for (const row of rows) {
+        const kid = row.id;
+        const cur = byKeyword.get(kid) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0 };
+        cur.impressions += Number(row.impCnt || 0);
+        cur.clicks += Number(row.clkCnt || 0);
+        cur.spend += Number(row.salesAmt || 0);
+        cur.dbCount += Number(row.ccnt || 0);
+        byKeyword.set(kid, cur);
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return Array.from(byKeyword.entries()).map(([kid, v]) => {
+    const agid = keywordAdgroupMap.get(kid);
+    const cid = adgroupCampaignMap.get(agid);
+    return { keyword: keywordNameMap.get(kid) || kid, campaignName: campaignNameMap.get(cid) || '', ...v };
+  });
+}
+/** 구글/카카오처럼 아직 커넥터가 없는 매체는 항상 빈 배열입니다. */
 async function fetchKeywordMetrics(channel, _accountId, _since, _until) {
   void channel;
-  return []; // TODO: naver/google/kakao 검색광고 API 연결 시 구현
+  return [];
 }
 const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao']; // Meta는 키워드 개념이 없어 제외
+
+/* ========================================================================
+   네이버 검색광고 API 연동
+   -----------------------------------------------------------------------
+   Meta와 달리, 네이버는 광고주마다 CUSTOMER_ID/API Key/Secret Key가 전부 다릅니다
+   (대행사 계정 하나로 여러 광고주를 조회하는 구조가 아님). 그래서 이 값들은
+   Railway 환경변수가 아니라 광고주별로 DB(advertisers[].accounts[])에 저장합니다.
+   인증은 OAuth 토큰이 아니라 매 요청마다 HMAC-SHA256 서명을 직접 만들어 보냅니다.
+   ======================================================================== */
+const NAVER_API_BASE = 'https://api.searchad.naver.com';
+
+function naverSignature(timestamp, method, uri, secretKey) {
+  const message = `${timestamp}.${method}.${uri}`;
+  return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
+}
+
+async function naverApiRequest(method, uri, params, credentials) {
+  const { customerId, apiKey, secretKey } = credentials;
+  const timestamp = String(Date.now());
+  const signature = naverSignature(timestamp, method, uri, secretKey);
+  const url = new URL(`${NAVER_API_BASE}${uri}`);
+  if (method === 'GET') {
+    for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, value);
+  }
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      'X-Timestamp': timestamp,
+      'X-API-KEY': apiKey,
+      'X-Customer': String(customerId),
+      'X-Signature': signature,
+      'Content-Type': 'application/json; charset=UTF-8',
+    },
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = data?.title || data?.message || `Naver API HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+async function naverFetchCampaigns(credentials) {
+  const data = await naverApiRequest('GET', '/ncc/campaigns', {}, credentials);
+  return Array.isArray(data) ? data : [];
+}
+
+/** 92일 제한이 있어 기간을 나눠서 요청합니다. */
+function splitIntoChunks(since, until, maxDays) {
+  const chunks = [];
+  let start = new Date(`${since}T00:00:00`);
+  const end = new Date(`${until}T00:00:00`);
+  while (start <= end) {
+    const chunkEnd = new Date(start);
+    chunkEnd.setDate(chunkEnd.getDate() + maxDays - 1);
+    const actualEnd = chunkEnd > end ? end : chunkEnd;
+    chunks.push({ since: start.toISOString().slice(0, 10), until: actualEnd.toISOString().slice(0, 10) });
+    start = new Date(actualEnd); start.setDate(start.getDate() + 1);
+  }
+  return chunks;
+}
+
+/** 계정(고객) 전체의 일별 성과를 캠페인 단위로 조회해 날짜별로 합산합니다. */
+async function naverFetchDailyMetrics(credentials, since, until) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
+  if (!campaignIds.length) return [];
+
+  const byDate = new Map();
+  for (const range of splitIntoChunks(since, until, 90)) {
+    const data = await naverApiRequest('GET', '/stats', {
+      ids: JSON.stringify(campaignIds),
+      fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt']),
+      timeRange: JSON.stringify({ since: range.since, until: range.until }),
+      timeIncrement: '1',
+    }, credentials);
+    const rows = Array.isArray(data?.data) ? data.data : [];
+    for (const row of rows) {
+      const date = row.dateStart || row.date;
+      if (!date) continue;
+      const cur = byDate.get(date) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0 };
+      cur.impressions += Number(row.impCnt || 0);
+      cur.clicks += Number(row.clkCnt || 0);
+      cur.spend += Number(row.salesAmt || 0);
+      cur.dbCount += Number(row.ccnt || 0);
+      cur.revenue += Number(row.convAmt || 0);
+      byDate.set(date, cur);
+    }
+    await new Promise(r => setTimeout(r, 500)); // 네이버 API 호출 간 간격을 둡니다.
+  }
+  return Array.from(byDate.entries()).map(([date, v]) => ({ date, ...v }));
+}
 
 /* ========================================================================
    블로그 원고 작성 — 외부 AI API 연동
@@ -600,8 +747,14 @@ async function handleApi(req, res, pathname) {
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
     if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
 
+    // 네이버 등 매체별 비밀키는 절대 브라우저로 보내지 않습니다 - accounts[].secret_key/api_key는 항상 가려서 응답합니다.
+    function redactAdvertiser(adv) {
+      if (!adv?.accounts) return adv;
+      return { ...adv, accounts: adv.accounts.map(a => ({ ...a, secret_key: a.secret_key ? '••••••••' : undefined, api_key: a.api_key ? `${String(a.api_key).slice(0, 6)}••••` : undefined })) };
+    }
+
     if (req.method === 'GET' && pathname === '/api/advertisers') {
-      return sendJson(res, 200, readDb().advertisers);
+      return sendJson(res, 200, readDb().advertisers.map(redactAdvertiser));
     }
     if (req.method === 'POST' && pathname === '/api/advertisers') {
       const body = await readJson(req);
@@ -621,7 +774,7 @@ async function handleApi(req, res, pathname) {
       };
       if (!row.name) return sendJson(res, 400, { error: '광고주명을 입력하세요.' });
       mutateDb(db => { if (db.advertisers.some(x => x.id === row.id)) throw new Error('이미 존재하는 광고주 ID입니다.'); db.advertisers.unshift(row); });
-      return sendJson(res, 201, row);
+      return sendJson(res, 201, redactAdvertiser(row));
     }
     const advertiserMatch = pathname.match(/^\/api\/advertisers\/([^/]+)$/);
     if (advertiserMatch && (req.method === 'PUT' || req.method === 'PATCH')) {
@@ -629,10 +782,18 @@ async function handleApi(req, res, pathname) {
       mutateDb(db => {
         const index = db.advertisers.findIndex(x => String(x.id) === id);
         if (index < 0) return;
-        updated = { ...db.advertisers[index], ...body, id: db.advertisers[index].id, updated_at: new Date().toISOString() };
+        // accounts 배열은 통째로 덮어쓰지 않고 채널별로 병합합니다 - 그래야 네이버 키를 등록해도
+        // 이미 저장돼 있던 Meta 연결 정보가 함께 사라지지 않습니다.
+        const existing = db.advertisers[index];
+        let mergedAccounts = existing.accounts || [];
+        if (Array.isArray(body.accounts)) {
+          const incomingChannels = new Set(body.accounts.map(a => a.channel));
+          mergedAccounts = [...mergedAccounts.filter(a => !incomingChannels.has(a.channel)), ...body.accounts];
+        }
+        updated = { ...existing, ...body, accounts: mergedAccounts, id: existing.id, updated_at: new Date().toISOString() };
         db.advertisers[index] = updated;
       });
-      return updated ? sendJson(res, 200, updated) : sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      return updated ? sendJson(res, 200, redactAdvertiser(updated)) : sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
     }
     if (advertiserMatch && req.method === 'DELETE') {
       const id = decodeURIComponent(advertiserMatch[1]);
@@ -775,8 +936,25 @@ async function handleApi(req, res, pathname) {
         }
       }
 
+      if (channel === 'naver') {
+        if (!account.api_key || !account.secret_key) return sendJson(res, 400, { error: '네이버 API Key/Secret Key가 저장되어 있지 않습니다.' });
+        try {
+          const until = new Date().toISOString().slice(0, 10);
+          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+          const since = sinceDate.toISOString().slice(0, 10);
+          const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+          const dailyRows = await naverFetchDailyMetrics(credentials, since, until);
+          upsertDailyMetrics(advertiserId, channel, dailyRows);
+          const keywordRows = await naverFetchKeywordMetrics(credentials, since, until).catch(() => []); // 실패해도 일별 데이터는 저장된 채로 유지합니다.
+          if (keywordRows.length) upsertKeywordMetrics(advertiserId, channel, keywordRows);
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, since, until });
+        } catch (error) {
+          return sendJson(res, 502, { error: error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.' });
+        }
+      }
+
       if (KEYWORD_CAPABLE_CHANNELS.includes(channel)) {
-        // 네이버/구글/카카오 검색광고 커넥터가 아직 없어서, 연결은 되어도 실제 값은 비어 있습니다.
+        // 구글/카카오 검색광고 커넥터가 아직 없어서, 연결은 되어도 실제 값은 비어 있습니다.
         const until = new Date().toISOString().slice(0, 10);
         const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
         const since = sinceDate.toISOString().slice(0, 10);

@@ -10,7 +10,7 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 const CHANNEL_META: Record<Channel, { label: string; color: string; abbr: string; implemented: boolean }> = {
   Meta:   { label: 'Meta Marketing API',  color: '#2563eb', abbr: 'M', implemented: true },
-  네이버: { label: '네이버 검색광고',     color: '#16a34a', abbr: 'N', implemented: false },
+  네이버: { label: '네이버 검색광고',     color: '#16a34a', abbr: 'N', implemented: true },
   구글:   { label: '구글 광고',            color: '#ef4444', abbr: 'G', implemented: false },
   당근:   { label: '당근 광고',            color: '#f97316', abbr: '당', implemented: false },
   틱톡:   { label: 'TikTok Ads',           color: '#111827', abbr: 'T', implemented: false },
@@ -32,6 +32,8 @@ export function AdAccountsPage() {
   const [metaSelected,   setMetaSelected]   = useState('');
   const [metaLoading,    setMetaLoading]    = useState(false);
   const [metaError,      setMetaError]      = useState('');
+  const [naverForm,      setNaverForm]      = useState({ customerId: '', apiKey: '', secretKey: '' });
+  const [naverSaving,    setNaverSaving]    = useState(false);
   const [toast,          setToast]          = useState('');
   const [syncing,        setSyncing]        = useState('');
 
@@ -52,6 +54,7 @@ export function AdAccountsPage() {
 
   const openConnect = (channel: Channel, adId: string) => {
     setConnectTarget({ channel, adId }); setMetaAccounts([]); setMetaSelected(''); setMetaError('');
+    setNaverForm({ customerId: '', apiKey: '', secretKey: '' });
   };
 
   const loadMetaAccounts = async () => {
@@ -81,6 +84,29 @@ export function AdAccountsPage() {
       showToast(error instanceof Error ? error.message : '연동에 실패했습니다.');
     } finally {
       setConnectTarget(null);
+    }
+  };
+
+  /** 네이버는 광고주마다 CUSTOMER_ID/API Key/Secret Key가 전부 다르므로, 직접 입력받아 저장합니다. */
+  const connectNaver = async () => {
+    if (!connectTarget) return;
+    const { adId } = connectTarget;
+    const { customerId, apiKey, secretKey } = naverForm;
+    if (!customerId.trim() || !apiKey.trim() || !secretKey.trim()) { showToast('CUSTOMER_ID, API Key, Secret Key를 모두 입력해주세요.'); return; }
+    setNaverSaving(true);
+    try {
+      await apiFetch(`/advertisers/${encodeURIComponent(adId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ accounts: [{ channel: 'naver', status: 'connected', account_id: customerId.trim(), api_key: apiKey.trim(), secret_key: secretKey.trim() }] }),
+      });
+      await apiFetch(`/integrations/sync`, { method: 'POST', body: JSON.stringify({ advertiserId: adId, channel: 'naver' }) });
+      await reload();
+      showToast('네이버 계정이 연결되고 최근 데이터가 동기화되었습니다.');
+      setConnectTarget(null);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '네이버 연동에 실패했습니다.');
+    } finally {
+      setNaverSaving(false);
     }
   };
 
@@ -216,32 +242,46 @@ export function AdAccountsPage() {
             <div className="modal-head">
               <div>
                 <h3>{CHANNEL_META[connectTarget.channel].label} 연결</h3>
-                <p>연결된 광고계정 목록을 불러와 선택합니다.</p>
+                <p>{connectTarget.channel === '네이버' ? '광고주에게 전달받은 CUSTOMER_ID / API Key / Secret Key를 입력합니다.' : '연결된 광고계정 목록을 불러와 선택합니다.'}</p>
               </div>
               <button className="icon-btn" onClick={() => setConnectTarget(null)}><X size={18} /></button>
             </div>
-            <button type="button" className="btn secondary" onClick={loadMetaAccounts} disabled={metaLoading}>
-              <Sparkles size={14} /> {metaLoading ? '불러오는 중...' : '연결된 계정 불러오기'}
-            </button>
-            {metaError && <div className="final-form-meta-error">{metaError}</div>}
-            {!!metaAccounts.length && (
-              <label className="field-label" style={{ marginTop: 12 }}>
-                광고계정 선택
-                <select value={metaSelected} onChange={e => setMetaSelected(e.target.value)}>
-                  <option value="">선택 안 함</option>
-                  {metaAccounts.map(a => <option key={a.id} value={a.account_id}>{a.name} ({a.id})</option>)}
-                </select>
-              </label>
+
+            {connectTarget.channel === '네이버' ? (
+              <>
+                <label className="field-label">CUSTOMER_ID<input value={naverForm.customerId} onChange={e => setNaverForm({ ...naverForm, customerId: e.target.value })} placeholder="예: 123456" /></label>
+                <label className="field-label" style={{ marginTop: 10 }}>액세스라이선스 (API Key)<input value={naverForm.apiKey} onChange={e => setNaverForm({ ...naverForm, apiKey: e.target.value })} placeholder="0100000000..." /></label>
+                <label className="field-label" style={{ marginTop: 10 }}>비밀키 (Secret Key)<input type="password" value={naverForm.secretKey} onChange={e => setNaverForm({ ...naverForm, secretKey: e.target.value })} placeholder="비밀키 입력" /></label>
+                <div className="api-help">이 값들은 이 광고주 계정에만 저장되고, 화면에는 다시 표시되지 않습니다. 연결하면 즉시 최근 90일 데이터를 자동으로 가져옵니다.</div>
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
+                  <button className="btn primary" onClick={connectNaver} disabled={naverSaving}>{naverSaving ? '연결 중...' : '연결 및 데이터 동기화'}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn secondary" onClick={loadMetaAccounts} disabled={metaLoading}>
+                  <Sparkles size={14} /> {metaLoading ? '불러오는 중...' : '연결된 계정 불러오기'}
+                </button>
+                {metaError && <div className="final-form-meta-error">{metaError}</div>}
+                {!!metaAccounts.length && (
+                  <label className="field-label" style={{ marginTop: 12 }}>
+                    광고계정 선택
+                    <select value={metaSelected} onChange={e => setMetaSelected(e.target.value)}>
+                      <option value="">선택 안 함</option>
+                      {metaAccounts.map(a => <option key={a.id} value={a.account_id}>{a.name} ({a.id})</option>)}
+                    </select>
+                  </label>
+                )}
+                <div className="api-help">
+                  System User Access Token은 서버 환경변수(META_ACCESS_TOKEN)로만 보관됩니다. 계정을 연결하면 즉시 최근 90일 데이터를 자동으로 가져옵니다.
+                </div>
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
+                  <button className="btn primary" onClick={connect} disabled={!metaSelected}>연결 및 데이터 동기화</button>
+                </div>
+              </>
             )}
-            <div className="api-help">
-              System User Access Token은 서버 환경변수(META_ACCESS_TOKEN)로만 보관됩니다. 계정을 연결하면 즉시 최근 90일 데이터를 자동으로 가져옵니다.
-            </div>
-            <div className="modal-actions">
-              <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
-              <button className="btn primary" onClick={connect} disabled={!metaSelected}>
-                연결 및 데이터 동기화
-              </button>
-            </div>
           </div>
         </div>
       )}
