@@ -204,9 +204,6 @@ export function AdAccountsPage() {
                       </p>
                     </div>
                     <div className="account-sync-actions">
-                      <button className="btn secondary" onClick={() => alert(`${channel} 캠페인 미리보기`)}>
-                        캠페인 키워드 미리보기
-                      </button>
                       <button className="btn secondary" onClick={() => sync(channel)}>
                         <RefreshCw size={14} className={syncing === channel ? 'is-spinning' : ''} />
                         {syncing === channel ? '동기화 중' : '동기화'}

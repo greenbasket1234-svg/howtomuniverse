@@ -992,6 +992,18 @@ async function handleApi(req, res, pathname) {
       });
     }
 
+/** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
+function recordSyncResult(advertiserId, channel, { ok, count, error }) {
+  mutateDb(db => {
+    const adv = db.advertisers.find(a => String(a.id) === advertiserId);
+    const acc = adv?.accounts?.find(a => a.channel === channel);
+    if (!acc) return;
+    acc.last_synced_at = new Date().toISOString();
+    if (ok) { acc.last_row_count = count ?? 0; acc.last_sync_error = null; }
+    else { acc.last_sync_error = error || '알 수 없는 오류'; }
+  });
+}
+
     if (req.method === 'POST' && pathname === '/api/integrations/sync') {
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
@@ -1020,9 +1032,12 @@ async function handleApi(req, res, pathname) {
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
             upsertCreativeMetrics(advertiserId, channel, enrichedAdRows);
           }
+          recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
           return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, creativeCount: adRows.length, since, until });
         } catch (error) {
-          return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+          const msg = error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.';
+          recordSyncResult(advertiserId, channel, { ok: false, error: msg });
+          return sendJson(res, 502, { error: msg });
         }
       }
 
@@ -1037,9 +1052,12 @@ async function handleApi(req, res, pathname) {
           upsertDailyMetrics(advertiserId, channel, dailyRows);
           const keywordRows = await naverFetchKeywordMetrics(credentials, since, until).catch(() => []); // 실패해도 일별 데이터는 저장된 채로 유지합니다.
           if (keywordRows.length) upsertKeywordMetrics(advertiserId, channel, keywordRows);
+          recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
           return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, since, until });
         } catch (error) {
-          return sendJson(res, 502, { error: error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.' });
+          const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
+          recordSyncResult(advertiserId, channel, { ok: false, error: msg });
+          return sendJson(res, 502, { error: msg });
         }
       }
 
@@ -1176,6 +1194,24 @@ async function handleApi(req, res, pathname) {
       const id = decodeURIComponent(slotMatch[1]);
       mutateDb(db => { db.scheduleSlots = db.scheduleSlots.filter(s => String(s.id) !== id); });
       return sendJson(res, 200, { ok: true });
+    }
+
+    // ---- 데이터 수집 현황 -----------------------------------------------------------
+    if (req.method === 'GET' && pathname === '/api/integrations/status') {
+      const db = readDb();
+      const rows = [];
+      for (const adv of db.advertisers) {
+        for (const acc of adv.accounts || []) {
+          if (acc.status !== 'connected') continue;
+          rows.push({
+            advertiserId: adv.id, advertiserName: adv.name, channel: acc.channel,
+            lastSyncedAt: acc.last_synced_at || null,
+            rowCount: acc.last_row_count || 0,
+            error: acc.last_sync_error || null,
+          });
+        }
+      }
+      return sendJson(res, 200, { rows });
     }
 
     if (req.method === 'GET' && pathname === '/api/blog/projects') return sendJson(res, 200, readDb().blogProjects);
