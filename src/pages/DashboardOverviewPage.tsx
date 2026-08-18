@@ -47,6 +47,7 @@ const TOP_ITEM_BY_CHANNEL: Record<string, { itemType: '소재' | '키워드'; it
   카카오: { itemType: '소재', itemName: '카카오톡 채널 친구 추가 배너' },
   기타: { itemType: '소재', itemName: '대표 이미지 소재' },
 };
+const CHANNEL_KEY_MAP: Record<string, string> = { 메타: 'meta', 네이버: 'naver', 구글: 'google', 당근: 'daangn', 틱톡: 'tiktok', 카카오: 'kakao' };
 const CHANNEL_COLORS: Record<string,string> = {
   meta:MEDIA_COLORS.메타,facebook:MEDIA_COLORS.메타,naver:MEDIA_COLORS.네이버,gfa:MEDIA_COLORS.네이버,
   google:MEDIA_COLORS.구글,google_sa:MEDIA_COLORS.구글,youtube:MEDIA_COLORS.구글,danggeun:MEDIA_COLORS.당근,
@@ -79,6 +80,25 @@ export function DashboardOverviewPage(){
   const [metricRows,setMetricRows]=useState<DailyMetricRow[]>([]);
   useEffect(()=>{apiFetch<{rows:DailyMetricRow[]}>('/daily-metrics').then(r=>setMetricRows(r.rows||[])).catch(()=>setMetricRows([]));},[]);
   const BRAND_REPORTS=useMemo(()=>buildLiveBrandReports(advertisers,metricRows),[advertisers,metricRows]);
+  // '우수 광고' 카드에 실제 소재명·키워드명을 보여주기 위해 함께 불러옵니다.
+  const [creativeRows,setCreativeRows]=useState<{advertiserId:string;channel:string;adId:string;adName:string;spend:number}[]>([]);
+  const [keywordRows,setKeywordRows]=useState<{advertiserId:string;channel:string;keyword:string;spend:number}[]>([]);
+  useEffect(()=>{
+    apiFetch<{rows:typeof creativeRows}>('/creative-metrics').then(r=>setCreativeRows(r.rows||[])).catch(()=>setCreativeRows([]));
+    apiFetch<{rows:typeof keywordRows}>('/keyword-metrics').then(r=>setKeywordRows(r.rows||[])).catch(()=>setKeywordRows([]));
+  },[]);
+  const topItemForChannel=(channelName:string,advertiserName:string):{itemType:'소재'|'키워드';itemName:string}|null=>{
+    const channelKey=CHANNEL_KEY_MAP[channelName];
+    const advertiserId=advertisers.find(a=>a.name===advertiserName)?.id;
+    if(!channelKey||!advertiserId)return null;
+    const isKeywordChannel=TOP_ITEM_BY_CHANNEL[channelName]?.itemType==='키워드';
+    if(isKeywordChannel){
+      const best=keywordRows.filter(r=>r.channel===channelKey&&r.advertiserId===advertiserId).sort((a,b)=>b.spend-a.spend)[0];
+      return best?{itemType:'키워드',itemName:best.keyword}:null;
+    }
+    const best=creativeRows.filter(r=>r.channel===channelKey&&r.advertiserId===advertiserId).sort((a,b)=>b.spend-a.spend)[0];
+    return best?{itemType:'소재',itemName:best.adName}:null;
+  };
   const selectedId=brandId&&BRAND_REPORTS.some(r=>r.config.brandId===brandId)?brandId:'all';
   // URL로 특정 브랜드가 지정된 경우엔 그 브랜드를 우선하고,
   // 그렇지 않으면(전체 대시보드) 상단 전역 검색 필터를 브랜드명 기준 부분 검색으로 적용합니다.
@@ -374,7 +394,7 @@ export function DashboardOverviewPage(){
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">BUDGET</span><h2>브랜드 예산 소진율</h2></div></div><div className="budget-list-v2">{budgetRows.slice(0,6).map(b=><button key={b.name} onClick={()=>open(`${b.name} 예산`,<p>{money(b.spend)} / {money(b.budget)} · {b.pct.toFixed(1)}% 소진</p>)}><div><span>{b.name}</span><b>{b.pct.toFixed(1)}%</b></div><small>{money(b.spend)} / {money(b.budget)}</small><div className="budget-track"><i style={{width:`${Math.min(100,b.pct)}%`}}/></div></button>)}</div></section>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">ACTION</span><h2>추천 조치</h2></div><span className={`status-chip ${dashboardInsights.actions.length?'warning':'neutral'}`}>{dashboardInsights.actions.length}건</span></div>{dashboardInsights.actions.length?(<ul className="dashboard-action-list">{dashboardInsights.actions.map((a,i)=><li key={i}>{a}</li>)}</ul>):(<div className="dashboard-empty"><Check size={24}/><strong>현재 긴급 조치가 없습니다.</strong><p>성과 변화가 감지되면 자동으로 추천합니다.</p></div>)}</section>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">RISK</span><h2>위험 소재</h2></div></div><div className="dashboard-empty"><AlertTriangle size={24}/><strong>위험 소재 없음</strong><p>피로도 기준을 초과한 소재가 없습니다.</p></div></section>
-      <section className="card"><div className="card-title-row"><div><span className="section-kicker">TOP ADS</span><h2>우수 광고</h2></div></div><div className="top-ads-v2">{rankedPlatforms.slice(0,3).map((rp,i)=>{const p=platformMap.find(m=>m.name===rp.name);if(!p)return null;const top=topBrandForChannel(p.name);const item=TOP_ITEM_BY_CHANNEL[p.name]??TOP_ITEM_BY_CHANNEL.기타;const criterionLabel=rankMetric==='roas'?'ROAS 높은':rankMetric==='cpa'?'CPA 낮은':rankMetric==='cpc'?'CPC 낮은':'ROAS 높은(매출 데이터가 없으면 CPA 낮은)';return <button key={p.name} onClick={()=>open(`${p.name} 우수 광고 상세`,<div className="top-ad-detail"><div className="top-ad-detail-row"><span>광고주</span><b>{top?top.brandName:'데이터 없음'}</b></div><div className="top-ad-detail-row"><span>{item.itemType}</span><b>{item.itemName}</b></div><div className="top-ad-detail-row"><span>CTR</span><b>{top?top.ctr.toFixed(2):'-'}%</b></div><div className="top-ad-detail-row"><span>CPC</span><b>{top?.cpc!=null?money(top.cpc):'-'}</b></div><p className="footnote">이 매체 안에서 {criterionLabel} 순으로 뽑은 광고주입니다(대시보드 상단 "순위 기준"과 연동됩니다). {item.itemType} 이름은 예시이며, 소재 라이브러리·키워드 관리와 연결하면 실제 항목명으로 대체됩니다.</p></div>)}><b>{String(i+1).padStart(2,'0')}</b><span><i style={{background:p.color}}/>{p.name} 고성과 광고</span><em>상세</em></button>})}</div></section>
+      <section className="card"><div className="card-title-row"><div><span className="section-kicker">TOP ADS</span><h2>우수 광고</h2></div></div><div className="top-ads-v2">{rankedPlatforms.slice(0,3).map((rp,i)=>{const p=platformMap.find(m=>m.name===rp.name);if(!p)return null;const top=topBrandForChannel(p.name);const item=top?topItemForChannel(p.name,top.brandName):null;const fallback=TOP_ITEM_BY_CHANNEL[p.name]??TOP_ITEM_BY_CHANNEL.기타;const criterionLabel=rankMetric==='roas'?'ROAS 높은':rankMetric==='cpa'?'CPA 낮은':rankMetric==='cpc'?'CPC 낮은':'ROAS 높은(매출 데이터가 없으면 CPA 낮은)';return <button key={p.name} onClick={()=>open(`${p.name} 우수 광고 상세`,<div className="top-ad-detail"><div className="top-ad-detail-row"><span>광고주</span><b>{top?top.brandName:'데이터 없음'}</b></div><div className="top-ad-detail-row"><span>{item?item.itemType:fallback.itemType}</span><b>{item?item.itemName:'연동된 소재/키워드 데이터 없음'}</b></div><div className="top-ad-detail-row"><span>CTR</span><b>{top?top.ctr.toFixed(2):'-'}%</b></div><div className="top-ad-detail-row"><span>CPC</span><b>{top?.cpc!=null?money(top.cpc):'-'}</b></div><p className="footnote">이 매체 안에서 {criterionLabel} 순으로 뽑은 광고주입니다(대시보드 상단 "순위 기준"과 연동됩니다). {item?'광고비 기준 1위 항목의 실제 이름입니다.':'설정 > 매체 계정 연동에서 소재·키워드 데이터가 동기화되면 실제 이름이 표시됩니다.'}</p></div>)}><b>{String(i+1).padStart(2,'0')}</b><span><i style={{background:p.color}}/>{p.name} 고성과 광고</span><em>상세</em></button>})}</div></section>
     </div>
 
     <TrendComboChart

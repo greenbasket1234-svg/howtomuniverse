@@ -286,6 +286,32 @@ async function metaFetchAdCreativeThumbnails(adIds) {
 
 /** 검색광고 키워드 단위 인사이트 — 지금은 구현된 매체가 없어 항상 빈 배열입니다.
     네이버/구글/카카오 검색광고 커넥터가 추가되면 이 함수들이 실제 데이터를 반환하게 됩니다. */
+/**
+ * 캠페인 → 광고그룹 → 소재(광고) 순으로 실제 소재 이름을 가져옵니다. 성과 수치는 아직
+ * /stats 연동이 계정별로 불안정해 0으로 둡니다 - 소재 관리 화면에 실제 이름만 우선 보여줍니다.
+ */
+async function naverFetchCreatives(credentials) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const adgroups = [];
+  for (const c of campaigns) {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
+    if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '' })));
+    await new Promise(r => setTimeout(r, 300));
+  }
+  const ads = [];
+  for (const ag of adgroups) {
+    const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []);
+    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignName: ag.campaignName })));
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return ads.slice(0, 200).map(a => ({
+    adId: a.nccAdId, adName: a.ad?.headline || a.ad?.description || a.nccAdId || '(이름 없음)', campaignName: a.campaignName || '',
+    impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0,
+    thumbnailUrl: null, mediaType: 'image', title: a.ad?.headline || '', body: a.ad?.description || '', cta: '',
+  }));
+}
+
 async function naverFetchKeywordMetrics(credentials, since, until) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
@@ -1172,8 +1198,10 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
           upsertDailyMetrics(advertiserId, channel, dailyRows);
           const keywordRows = await naverFetchKeywordMetrics(credentials, since, until).catch(() => []); // 실패해도 일별 데이터는 저장된 채로 유지합니다.
           if (keywordRows.length) upsertKeywordMetrics(advertiserId, channel, keywordRows);
+          const creativeRows = await naverFetchCreatives(credentials).catch(() => []); // 실패해도 나머지 데이터는 저장된 채로 유지합니다.
+          if (creativeRows.length) upsertCreativeMetrics(advertiserId, channel, creativeRows);
           recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, since, until, usedReportFallback });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, creativeCount: creativeRows.length, since, until, usedReportFallback });
         } catch (error) {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
           recordSyncResult(advertiserId, channel, { ok: false, error: msg });
@@ -1270,6 +1298,25 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
             }
           } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
         }
+      }
+      for (const adv of db.advertisers) {
+        const account = adv.accounts?.find(a => a.channel === 'naver' && a.status === 'connected');
+        if (!account?.api_key || !account?.secret_key) continue;
+        try {
+          const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+          const rows = await naverFetchCampaigns(credentials);
+          for (const c of rows) {
+            campaigns.push({
+              id: c.nccCampaignId, advertiserId: adv.id, platform: 'naver', name: c.name,
+              accountName: `${adv.name} 네이버`, budget: Number(c.dailyBudget || 0),
+              budgetType: c.useDailyBudget === false ? 'total' : 'daily',
+              startAt: c.regTm || new Date().toISOString(), endAt: undefined,
+              status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
+              lastSyncedAt: new Date().toISOString(),
+              capability: { upload: false, toggle: false, schedule: false },
+            });
+          }
+        } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
       }
       return sendJson(res, 200, campaigns);
     }
