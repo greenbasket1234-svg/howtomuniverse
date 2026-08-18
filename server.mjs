@@ -978,34 +978,62 @@ async function handleApi(req, res, pathname) {
 
       const advertiser = readDb().advertisers.find(a => a.name === advertiserName);
       const metaAccount = advertiser?.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
+      const naverAccount = advertiser?.accounts?.find(a => a.channel === 'naver' && a.status === 'connected');
+
+      const daysInMonth = new Date(year, monthNum, 0).getDate();
+      const pad = n => String(n).padStart(2, '0');
+      const since = `${year}-${pad(monthNum)}-01`;
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const monthEndIso = `${year}-${pad(monthNum)}-${pad(daysInMonth)}`;
+      const until = monthEndIso > todayIso ? todayIso : monthEndIso; // 미래 날짜는 요청하지 않습니다.
 
       const source = {};
-      if (platforms.includes('메타') && metaAccount?.account_id && metaConfigured()) {
+      if (platforms.includes('메타') && metaAccount?.account_id && metaConfigured() && since <= until) {
         try {
-          const daysInMonth = new Date(year, monthNum, 0).getDate();
-          const pad = n => String(n).padStart(2, '0');
-          const since = `${year}-${pad(monthNum)}-01`;
-          const todayIso = new Date().toISOString().slice(0, 10);
-          const monthEndIso = `${year}-${pad(monthNum)}-${pad(daysInMonth)}`;
-          const until = monthEndIso > todayIso ? todayIso : monthEndIso; // 미래 날짜는 요청하지 않습니다.
-          if (since <= until) {
-            const rows = await metaFetchInsights(metaAccount.account_id, since, until);
-            const byDate = new Map(rows.map(r => [r.date, r]));
-            const impressions = [], clicks = [], spend = [], leads = [], revenue = [], payments = [];
-            for (let day = 1; day <= daysInMonth; day++) {
-              const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
-              const row = byDate.get(iso);
-              impressions.push(row?.impressions || 0);
-              clicks.push(row?.clicks || 0);
-              spend.push(row?.spend || 0);
-              leads.push(row?.dbCount || 0);
-              revenue.push(row?.revenue || 0);
-              payments.push(row?.purchases || 0);
-            }
-            source['메타'] = { impressions, clicks, spend, leads, revenue, payments };
+          const rows = await metaFetchInsights(metaAccount.account_id, since, until);
+          const byDate = new Map(rows.map(r => [r.date, r]));
+          const impressions = [], clicks = [], spend = [], leads = [], revenue = [], payments = [];
+          for (let day = 1; day <= daysInMonth; day++) {
+            const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
+            const row = byDate.get(iso);
+            impressions.push(row?.impressions || 0);
+            clicks.push(row?.clicks || 0);
+            spend.push(row?.spend || 0);
+            leads.push(row?.dbCount || 0);
+            revenue.push(row?.revenue || 0);
+            payments.push(row?.purchases || 0);
           }
+          source['메타'] = { impressions, clicks, spend, leads, revenue, payments };
         } catch (error) {
           // Meta API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
+          void error;
+        }
+      }
+
+      if (platforms.includes('네이버') && naverAccount?.api_key && naverAccount?.secret_key && since <= until) {
+        try {
+          const credentials = { customerId: naverAccount.account_id, apiKey: naverAccount.api_key, secretKey: naverAccount.secret_key };
+          let rows;
+          try {
+            rows = await naverFetchDailyMetrics(credentials, since, until);
+          } catch (statsError) {
+            console.error('[naver-stats-failed-trying-report]', statsError instanceof Error ? statsError.message : statsError);
+            rows = await naverFetchDailyMetricsViaReport(credentials, since, until);
+          }
+          const byDate = new Map(rows.map(r => [r.date, r]));
+          const impressions = [], clicks = [], spend = [], leads = [], revenue = [];
+          for (let day = 1; day <= daysInMonth; day++) {
+            const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
+            const row = byDate.get(iso);
+            impressions.push(row?.impressions || 0);
+            clicks.push(row?.clicks || 0);
+            spend.push(row?.spend || 0);
+            leads.push(row?.dbCount || 0);
+            revenue.push(row?.revenue || 0);
+          }
+          source['네이버'] = { impressions, clicks, spend, leads, revenue };
+        } catch (error) {
+          // 네이버 API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
           void error;
         }
       }
