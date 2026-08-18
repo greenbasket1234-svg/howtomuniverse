@@ -304,14 +304,14 @@ async function naverFetchKeywordMetrics(credentials, since, until) {
     for (let i = 0; i < keywordIds.length; i += 100) {
       const chunk = keywordIds.slice(i, i + 100);
       let data = await naverApiRequest('GET', '/stats', {
-        ids: JSON.stringify(chunk),
+        ids: chunk,
         fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt']),
         timeRange: JSON.stringify({ since: range.since, until: range.until }),
       }, credentials).catch(() => null);
       if (!data) {
         // ccnt(전환) 필드가 이 계정에서 지원되지 않을 수 있어, 기본 필드로 한 번 더 시도합니다.
         data = await naverApiRequest('GET', '/stats', {
-          ids: JSON.stringify(chunk),
+          ids: chunk,
           fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
           timeRange: JSON.stringify({ since: range.since, until: range.until }),
         }, credentials).catch(() => null);
@@ -363,7 +363,15 @@ async function naverApiRequest(method, uri, params, credentials) {
   const signature = naverSignature(timestamp, method, uri, secretKey);
   const url = new URL(`${NAVER_API_BASE}${uri}`);
   if (method === 'GET') {
-    for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, value);
+    for (const [key, value] of Object.entries(params || {})) {
+      // ids처럼 배열 값은 JSON 문자열 하나가 아니라, 같은 이름의 파라미터를 여러 개
+      // 반복해서 보내야 합니다 (예: ?ids=A&ids=B). fields/timeRange 같은 JSON 문자열은 그대로 둡니다.
+      if (Array.isArray(value)) {
+        for (const v of value) url.searchParams.append(key, v);
+      } else {
+        url.searchParams.set(key, value);
+      }
+    }
   }
   const res = await fetch(url.toString(), {
     method,
@@ -427,7 +435,7 @@ async function naverFetchDailyMetrics(credentials, since, until) {
     let data;
     try {
       data = await naverApiRequest('GET', '/stats', {
-        ids: JSON.stringify(campaignIds),
+        ids: campaignIds,
         fields: JSON.stringify(fields),
         timeRange: JSON.stringify({ since: range.since, until: range.until }),
         timeIncrement: '1',
@@ -437,7 +445,7 @@ async function naverFetchDailyMetrics(credentials, since, until) {
         // 매출/전환 필드가 이 계정에서 지원되지 않는 것으로 보고, 기본 필드로 다시 시도합니다.
         fields = BASIC_FIELDS;
         data = await naverApiRequest('GET', '/stats', {
-          ids: JSON.stringify(campaignIds),
+          ids: campaignIds,
           fields: JSON.stringify(fields),
           timeRange: JSON.stringify({ since: range.since, until: range.until }),
           timeIncrement: '1',
