@@ -8,6 +8,7 @@ import { loadSubscriptions, loadUsageEvents } from '../utils/subscriptionStore';
 import { getAllAutomationJobs, loadAutomationRuns } from '../automation/automationStore';
 import { FEATURE_CATALOG } from '../control/permissionEngine';
 import { BackendBadge, ControlEmpty, ControlKpi, ControlPanel, ControlStatus, DemoBadge } from '../control/ControlUi';
+import { apiFetch } from '../hooks/useApi';
 import {
   exportFrontendBackup,
   importFrontendBackup,
@@ -133,7 +134,40 @@ function PaymentsAdmin(){return <ControlPanel title="결제 내역" description=
 function AiUsageAdmin(){const usage=loadUsageEvents();const byFeature=useMemo(()=>{const m=new Map<string,number>();usage.forEach(u=>m.set(u.feature,(m.get(u.feature)||0)+u.quantity));return [...m.entries()]},[usage]);const cost=usage.reduce((s,u)=>s+(u.aiCost||u.providerCost||0),0);return <><div className="ctrl-kpi-grid"><ControlKpi label="사용 이벤트" value={`${usage.length}건`}/><ControlKpi label="기록된 원가" value={cost?money(cost):'실측 없음'} sub="Provider 비용이 기록된 이벤트만"/><ControlKpi label="연결 Provider" value="미연동"/><ControlKpi label="월 한도 강제" value="서버 연결 후"/></div><ControlPanel title="기능별 사용량"><div className="ctrl-list">{byFeature.map(([feature,q])=><div className="ctrl-list-row" key={feature}><b>{feature}</b><strong>{q.toLocaleString()}</strong></div>)}{!byFeature.length&&<ControlEmpty>AI/콘텐츠 사용 이벤트가 없습니다.</ControlEmpty>}</div></ControlPanel></>}
 function StorageAdmin(){const assets=loadAssets(true);const fileBytes=assets.reduce((s,a)=>s+(a.fileSize||0),0);let localBytes=0;for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)localBytes+=(k.length+(localStorage.getItem(k)?.length||0))*2}return <div className="ctrl-kpi-grid"><ControlKpi label="자산" value={`${assets.length}개`}/><ControlKpi label="자산 메타 파일크기" value={bytes(fileBytes)}/><ControlKpi label="localStorage 추정" value={bytes(localBytes)}/><ControlKpi label="R2/클라우드" value="미연동"/></div>}
 function ExecutionsAdmin(){const runs=loadAutomationRuns();const jobs=new Map(getAllAutomationJobs().map(j=>[j.jobId,j]));return <ControlPanel title="전체 작업 실행 기록" description="AI 자동화 → 실행 기록과 같은 AutomationRun 저장소를 관리자 관점에서 조회합니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>시각</th><th>작업</th><th>광고주</th><th>상태</th><th>처리량</th></tr></thead><tbody>{runs.slice(0,100).map(r=>{const job=jobs.get(r.jobId);return <tr key={r.runId}><td>{new Date(r.startedAt||r.createdAt||Date.now()).toLocaleString('ko-KR')}</td><td><b>{r.jobName||job?.name||r.jobId}</b></td><td>{job?.advertiserName||job?.advertiserId||'-'}</td><td><ControlStatus tone={r.status==='success'?'success':r.status==='failed'?'danger':'warning'}>{r.status}</ControlStatus></td><td>{r.recordsProcessed??'-'}</td></tr>})}</tbody></table>{!runs.length&&<ControlEmpty>실행 기록이 없습니다.</ControlEmpty>}</div></ControlPanel>}
-function SecurityAdmin(){const events=loadAuditEvents();return <ControlPanel title="접속·보안 기록" description="현재는 프론트 관리 변경 감사 이벤트입니다. 실제 로그인/IP/세션 감사로그는 서버에서 append-only로 저장해야 합니다." actions={<BackendBadge/>}><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>시각</th><th>액션</th><th>광고주</th><th>대상</th><th>결과</th></tr></thead><tbody>{events.slice(0,150).map(e=><tr key={e.auditId}><td>{new Date(e.createdAt).toLocaleString('ko-KR')}</td><td><b>{e.action}</b></td><td>{e.advertiserId||'-'}</td><td>{e.targetType||'-'} {e.targetId||''}</td><td><ControlStatus tone={e.result==='success'?'success':'danger'}>{e.result}</ControlStatus></td></tr>)}</tbody></table></div></ControlPanel>}
+type AccessLogRow = { id: string; createdAt: string; action: string; email?: string; ip?: string; result?: string };
+function SecurityAdmin(){
+  const events=loadAuditEvents();
+  const [accessLogs,setAccessLogs]=useState<AccessLogRow[]>([]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    apiFetch<AccessLogRow[]>('/logs').then(rows=>setAccessLogs(rows||[])).catch(()=>setAccessLogs([])).finally(()=>setLoading(false));
+  },[]);
+  const actionLabel=(a:string)=>a==='login_success'?'로그인 성공':a==='login_failed'?'로그인 실패':a;
+  return <ControlPanel title="접속·보안 기록" description="실제 로그인 시도(성공/실패, IP)와 프론트 관리 변경 이벤트를 함께 보여줍니다." actions={<BackendBadge/>}>
+    <h4 style={{margin:'4px 0 10px'}}>로그인 기록</h4>
+    <div className="ctrl-table-wrap">
+      <table className="ctrl-table">
+        <thead><tr><th>시각</th><th>결과</th><th>계정</th><th>IP</th></tr></thead>
+        <tbody>
+          {accessLogs.filter(e=>e.action==='login_success'||e.action==='login_failed').slice(0,150).map(e=>
+            <tr key={e.id}><td>{new Date(e.createdAt).toLocaleString('ko-KR')}</td><td><ControlStatus tone={e.action==='login_success'?'success':'danger'}>{actionLabel(e.action)}</ControlStatus></td><td>{e.email||'-'}</td><td>{e.ip||'-'}</td></tr>
+          )}
+          {!loading&&!accessLogs.length&&<tr><td colSpan={4}><ControlEmpty>아직 기록된 로그인이 없습니다.</ControlEmpty></td></tr>}
+        </tbody>
+      </table>
+    </div>
+    <h4 style={{margin:'20px 0 10px'}}>관리 변경 이벤트</h4>
+    <div className="ctrl-table-wrap">
+      <table className="ctrl-table">
+        <thead><tr><th>시각</th><th>액션</th><th>광고주</th><th>대상</th><th>결과</th></tr></thead>
+        <tbody>
+          {events.slice(0,150).map(e=><tr key={e.auditId}><td>{new Date(e.createdAt).toLocaleString('ko-KR')}</td><td><b>{e.action}</b></td><td>{e.advertiserId||'-'}</td><td>{e.targetType||'-'} {e.targetId||''}</td><td><ControlStatus tone={e.result==='success'?'success':'danger'}>{e.result}</ControlStatus></td></tr>)}
+          {!events.length&&<tr><td colSpan={5}><ControlEmpty>아직 기록된 활동이 없습니다.</ControlEmpty></td></tr>}
+        </tbody>
+      </table>
+    </div>
+  </ControlPanel>;
+}
 function NoticesAdmin(){const notices=loadNotices();const [title,setTitle]=useState('');const [body,setBody]=useState('');return <ControlPanel title="공지사항" description="프론트 단계에서는 공지 콘텐츠와 공개 대상을 저장합니다."><div className="ctrl-form-grid"><label>제목<input value={title} onChange={e=>setTitle(e.target.value)}/></label><label>내용<textarea rows={3} value={body} onChange={e=>setBody(e.target.value)}/></label></div><button className="btn primary" onClick={()=>{if(!title.trim())return;upsertNotice({title:title.trim(),body:body.trim(),audience:'internal',status:'published'});setTitle('');setBody('')}}>공지 등록</button><div className="ctrl-list">{notices.map(n=><div className="ctrl-list-row" key={n.noticeId}><div><b>{n.title}</b><small>{n.audience} · {new Date(n.createdAt).toLocaleDateString('ko-KR')}</small></div><ControlStatus tone={n.status==='published'?'success':'neutral'}>{n.status}</ControlStatus></div>)}{!notices.length&&<ControlEmpty>등록된 공지가 없습니다.</ControlEmpty>}</div></ControlPanel>}
 function MenuAdmin(){const visibility=loadMenuVisibility();const menu=['홈','운영센터','인사이트','콘텐츠','AI 자동화','자산관리','광고주','관리자','설정'];const [state,setState]=useState<Record<string,boolean>>(()=>Object.fromEntries(menu.map(m=>[m,visibility[m]!==false])));return <ControlPanel title="메뉴 노출" description="저장하면 사이드바에 실제로 반영됩니다(라우트 자체는 지우지 않아 주소를 직접 입력하면 화면은 계속 열립니다). 진짜 접근 차단은 서버 전환 시 권한 엔진과 결합해서 처리합니다."><div className="ctrl-toggle-list">{menu.map(m=><label key={m}><input type="checkbox" checked={state[m]} onChange={e=>setState({...state,[m]:e.target.checked})}/><span><b>{m}</b><small>{m==='설정'?'메인 메뉴 마지막 유지':'메인 메뉴'}</small></span></label>)}</div><button className="btn primary" onClick={()=>saveMenuVisibility(state)}><Save size={14}/> 저장</button></ControlPanel>}
 function FlagsAdmin(){const flags=loadFeatureFlags();return <ControlPanel title="기능 공개 설정" description="Internal → Beta → Public 단계를 관리하며 Disabled 기능은 노출/사용 대상에서 제외할 수 있습니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>기능</th><th>featureKey</th><th>공개 단계</th></tr></thead><tbody>{flags.map(f=><tr key={f.featureKey}><td><b>{f.label}</b></td><td>{f.featureKey}</td><td><select value={f.state} onChange={e=>patchFeatureFlag(f.featureKey,{state:e.target.value as FeatureFlagState})}>{['disabled','internal','beta','public'].map(s=><option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></ControlPanel>}

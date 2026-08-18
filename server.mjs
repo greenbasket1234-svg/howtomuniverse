@@ -92,6 +92,18 @@ function mutateDb(mutator) {
 function makeId(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 }
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return String(forwarded).split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+/** 접속/보안 기록(로그인 성공·실패 등)을 DB에 남깁니다. 최근 500건만 보관합니다. */
+function addLog(entry) {
+  mutateDb(db => {
+    const row = { id: makeId('log'), createdAt: new Date().toISOString(), ...entry };
+    db.logs = [row, ...db.logs].slice(0, 500);
+  });
+}
 function cleanText(value, max = 5000) {
   return String(value ?? '').trim().slice(0, max);
 }
@@ -357,7 +369,7 @@ function naverSignature(timestamp, method, uri, secretKey) {
   return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
 }
 
-async function naverApiRequest(method, uri, params, credentials) {
+async function naverApiRequestOnce(method, uri, params, credentials) {
   const { customerId, apiKey, secretKey } = credentials;
   const timestamp = String(Date.now());
   const signature = naverSignature(timestamp, method, uri, secretKey);
@@ -391,11 +403,31 @@ async function naverApiRequest(method, uri, params, credentials) {
       apiKeyPrefix: apiKey ? apiKey.slice(0, 8) : null,
       naverResponse: data,
     });
-    const message = data?.title || data?.message || `Naver API HTTP ${res.status}`;
-    const detail = data?.code ? ` (code: ${data.code})` : '';
-    throw new Error(`${message}${detail} · status ${res.status}`);
+    const err = new Error(`${data?.title || data?.message || `Naver API HTTP ${res.status}`}${data?.code ? ` (code: ${data.code})` : ''} · status ${res.status}`);
+    err.naverCode = data?.code;
+    err.httpStatus = res.status;
+    throw err;
   }
   return data;
+}
+
+/**
+ * 네이버 stats API는 파라미터가 정확해도 간헐적으로(네이버 측에서도 인지하고 있는 불안정 이슈)
+ * code 11001("잘못된 파라미터 형식입니다")을 랜덤하게 반환하는 경우가 있습니다.
+ * (naver/searchad-apidoc GitHub 이슈 #1295, #1300 등에서 동일 증상 다수 보고됨)
+ * 그래서 이 코드가 뜨면 잠깐 대기 후 최대 3번까지 자동으로 재시도합니다.
+ */
+async function naverApiRequest(method, uri, params, credentials, attempt = 1) {
+  try {
+    return await naverApiRequestOnce(method, uri, params, credentials);
+  } catch (error) {
+    const retryable = error.naverCode === 11001 || (error.httpStatus >= 500);
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 800 * attempt));
+      return naverApiRequest(method, uri, params, credentials, attempt + 1);
+    }
+    throw error;
+  }
 }
 
 async function naverFetchCampaigns(credentials) {
@@ -679,14 +711,19 @@ async function handleAuth(req, res, pathname) {
     try { body = await readJson(req); } catch (e) { sendJson(res, 400, { error: e instanceof Error ? e.message : '요청 본문이 올바르지 않습니다.' }); return true; }
     const email = String(body.email ?? '').trim();
     const password = String(body.password ?? '');
+    const ip = getClientIp(req);
     if (!email || !password) { sendJson(res, 400, { error: '아이디와 비밀번호를 입력하세요.' }); return true; }
 
     const emailOk = timingSafeStringEqual(email, ADMIN_EMAIL);
     const passwordOk = timingSafeStringEqual(password, ADMIN_PASSWORD);
-    if (!emailOk || !passwordOk) { sendJson(res, 401, { error: '아이디 또는 비밀번호가 올바르지 않습니다.' }); return true; }
+    if (!emailOk || !passwordOk) {
+      addLog({ action: 'login_failed', email, ip, result: 'fail' });
+      sendJson(res, 401, { error: '아이디 또는 비밀번호가 올바르지 않습니다.' }); return true;
+    }
 
     const now = Math.floor(Date.now() / 1000);
     const token = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + TOKEN_TTL_SECONDS });
+    addLog({ action: 'login_success', email, ip, result: 'success' });
     sendJson(res, 200, { token, user: ADMIN_USER });
     return true;
   }
