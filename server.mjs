@@ -199,13 +199,23 @@ function pickAction(list, priorityTypes) {
 
 async function metaFetchInsights(accountId, since, until) {
   const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
-  const data = await metaGraphGet(`/${id}/insights`, {
-    time_range: JSON.stringify({ since, until }),
-    fields: 'impressions,clicks,spend,actions,action_values,date_start,date_stop',
-    time_increment: '1', // 날짜별로 쪼개서 반환
-    level: 'account',
-  });
-  const rows = Array.isArray(data.data) ? data.data : [];
+  // 기간이 길면(예: 90일) Meta가 결과를 여러 페이지로 나눠서 줍니다.
+  // limit을 넉넉히 주고, 그래도 다음 페이지(paging.next)가 있으면 끝까지 따라가서 다 가져옵니다.
+  let rows = [];
+  let after;
+  for (let page = 0; page < 20; page++) { // 최대 20페이지(=대략 2000일치)까지 안전장치
+    const data = await metaGraphGet(`/${id}/insights`, {
+      time_range: JSON.stringify({ since, until }),
+      fields: 'impressions,clicks,spend,actions,action_values,date_start,date_stop',
+      time_increment: '1', // 날짜별로 쪼개서 반환
+      level: 'account',
+      limit: '100',
+      ...(after ? { after } : {}),
+    });
+    rows = rows.concat(Array.isArray(data.data) ? data.data : []);
+    after = data.paging?.cursors?.after;
+    if (!after || !data.paging?.next) break;
+  }
   return rows.map(row => ({
     date: row.date_start,
     impressions: Number(row.impressions || 0),
