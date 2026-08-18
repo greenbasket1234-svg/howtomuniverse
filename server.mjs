@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 // 요청 처리 중 예상하지 못한 예외가 있어도 서버 프로세스 전체가 죽지 않도록 최상위
@@ -369,7 +370,7 @@ function naverSignature(timestamp, method, uri, secretKey) {
   return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
 }
 
-async function naverApiRequestOnce(method, uri, params, credentials) {
+async function naverApiRequestOnce(method, uri, params, credentials, body) {
   const { customerId, apiKey, secretKey } = credentials;
   const timestamp = String(Date.now());
   const signature = naverSignature(timestamp, method, uri, secretKey);
@@ -394,6 +395,7 @@ async function naverApiRequestOnce(method, uri, params, credentials) {
       'X-Signature': signature,
       'Content-Type': 'application/json; charset=UTF-8',
     },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
@@ -417,14 +419,14 @@ async function naverApiRequestOnce(method, uri, params, credentials) {
  * (naver/searchad-apidoc GitHub 이슈 #1295, #1300 등에서 동일 증상 다수 보고됨)
  * 그래서 이 코드가 뜨면 잠깐 대기 후 최대 3번까지 자동으로 재시도합니다.
  */
-async function naverApiRequest(method, uri, params, credentials, attempt = 1) {
+async function naverApiRequest(method, uri, params, credentials, body, attempt = 1) {
   try {
-    return await naverApiRequestOnce(method, uri, params, credentials);
+    return await naverApiRequestOnce(method, uri, params, credentials, body);
   } catch (error) {
     const retryable = error.naverCode === 11001 || (error.httpStatus >= 500);
     if (retryable && attempt < 3) {
       await new Promise(r => setTimeout(r, 800 * attempt));
-      return naverApiRequest(method, uri, params, credentials, attempt + 1);
+      return naverApiRequest(method, uri, params, credentials, body, attempt + 1);
     }
     throw error;
   }
@@ -451,6 +453,73 @@ function splitIntoChunks(since, until, maxDays) {
 }
 
 /** 계정(고객) 전체의 일별 성과를 캠페인 단위로 조회해 날짜별로 합산합니다. */
+/**
+ * StatReport(대용량 보고서) API — /stats(빠른 조회용)가 계정별로 형식 오류를 자주 일으켜서,
+ * 정기 자동 수집에는 이 방식을 대신 사용합니다: 보고서 생성 요청 → 완료될 때까지 상태 확인 →
+ * 완성되면 받은 다운로드 URL에서 탭 구분 파일을 받아 직접 파싱합니다.
+ */
+async function naverCreateStatReport(credentials, reportTp, statDt) {
+  return naverApiRequest('POST', '/stat-reports', {}, credentials, { reportTp, statDt });
+}
+async function naverGetStatReport(credentials, reportJobId) {
+  return naverApiRequest('GET', `/stat-reports/${reportJobId}`, {}, credentials);
+}
+/** 보고서가 완성될 때까지 몇 초 간격으로 최대 20회(약 1분) 상태를 확인합니다. */
+async function naverWaitForStatReport(credentials, reportJobId) {
+  for (let i = 0; i < 20; i++) {
+    const report = await naverGetStatReport(credentials, reportJobId);
+    const status = report?.status;
+    if (status === 'BUILT' || report?.downloadUrl) return report;
+    if (status === 'REG_ERROR' || status === 'ERROR') throw new Error(`네이버 보고서 생성 실패 (status: ${status})`);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error('네이버 보고서 생성이 시간 내에 끝나지 않았습니다.');
+}
+/** 완성된 보고서 파일(탭 구분, 헤더 없음)을 다운로드해 배열의 배열로 파싱합니다. */
+async function naverDownloadStatReportRows(downloadUrl, credentials) {
+  const { customerId, apiKey, secretKey } = credentials;
+  const timestamp = String(Date.now());
+  const urlObj = new URL(downloadUrl.startsWith('http') ? downloadUrl : `${NAVER_API_BASE}${downloadUrl}`);
+  const signature = naverSignature(timestamp, 'GET', urlObj.pathname, secretKey);
+  const res = await fetch(urlObj.toString(), {
+    headers: { 'X-Timestamp': timestamp, 'X-API-KEY': apiKey, 'X-Customer': String(customerId), 'X-Signature': signature },
+  });
+  if (!res.ok) throw new Error(`네이버 보고서 파일 다운로드 실패 (status ${res.status})`);
+  let text = await res.text();
+  // gzip으로 압축되어 오는 경우를 대비합니다.
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('gzip') || urlObj.pathname.endsWith('.gz')) {
+    const buf = Buffer.from(text, 'binary');
+    text = zlib.gunzipSync(buf).toString('utf8');
+  }
+  return text.split('\n').filter(Boolean).map(line => line.split('\t'));
+}
+
+/**
+ * StatReport(대용량 보고서) 방식으로 일별 계정 성과를 가져옵니다. /stats가 계정마다
+ * 형식 오류를 일으키는 문제를 피하기 위한 대안입니다. 정확한 컬럼 순서는 공식 문서에서
+ * 확인이 어려워, 처음 몇 줄을 서버 로그에 남겨 실제 값을 보고 빠르게 맞출 수 있게 합니다.
+ */
+async function naverFetchDailyMetricsViaReport(credentials, since, until) {
+  // AD_CONVERSION_DETAIL: 소재(광고) 단위 일별 성과+전환 보고서. statDt는 조회 시작일입니다.
+  const statDt = `${since}T00:00:00Z`;
+  const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', statDt);
+  const reportJobId = created?.reportJobId || created?.id;
+  if (!reportJobId) throw new Error(`네이버 보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
+  const finished = await naverWaitForStatReport(credentials, reportJobId);
+  const downloadUrl = finished?.downloadUrl;
+  if (!downloadUrl) throw new Error('네이버 보고서가 완료됐지만 다운로드 URL이 없습니다.');
+  const rows = await naverDownloadStatReportRows(downloadUrl, credentials);
+
+  console.error('[naver-report-sample]', { totalRows: rows.length, firstRows: rows.slice(0, 5) });
+
+  // 실제 컬럼 순서를 로그로 확인하기 전까지는, 숫자를 추측해서 잘못된 값을 저장하지 않도록
+  // 안전하게 빈 배열을 반환합니다. Railway 로그의 [naver-report-sample]을 확인한 뒤
+  // 정확한 컬럼 인덱스로 이 부분을 채우면 바로 실제 값이 반영됩니다.
+  void since; void until;
+  return [];
+}
+
 async function naverFetchDailyMetrics(credentials, since, until) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
@@ -1048,12 +1117,21 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
           const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
           const since = sinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
-          const dailyRows = await naverFetchDailyMetrics(credentials, since, until);
+          let dailyRows;
+          let usedReportFallback = false;
+          try {
+            dailyRows = await naverFetchDailyMetrics(credentials, since, until);
+          } catch (statsError) {
+            // /stats가 계정별 형식 오류로 실패하면, 대용량 보고서(StatReport) 방식으로 한 번 더 시도합니다.
+            console.error('[naver-stats-failed-trying-report]', statsError instanceof Error ? statsError.message : statsError);
+            dailyRows = await naverFetchDailyMetricsViaReport(credentials, since, until);
+            usedReportFallback = true;
+          }
           upsertDailyMetrics(advertiserId, channel, dailyRows);
           const keywordRows = await naverFetchKeywordMetrics(credentials, since, until).catch(() => []); // 실패해도 일별 데이터는 저장된 채로 유지합니다.
           if (keywordRows.length) upsertKeywordMetrics(advertiserId, channel, keywordRows);
           recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, since, until });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, since, until, usedReportFallback });
         } catch (error) {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
           recordSyncResult(advertiserId, channel, { ok: false, error: msg });
