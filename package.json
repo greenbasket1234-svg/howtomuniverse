@@ -1,23 +1,26 @@
 {
   "name": "howtom-universe",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node scripts/dev-server.mjs --source",
-    "build": "tsc --noEmit && vite build",
+    "dev": "node scripts/dev-server.mjs",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview",
     "start": "node server.mjs",
-    "dev:no-open": "node scripts/dev-server.mjs --source --no-open",
+    "dev:no-open": "node scripts/dev-server.mjs --no-open",
     "setup": "npm install --registry=https://registry.npmjs.org/",
     "dev:vite": "vite --host 127.0.0.1 --port 5173",
     "dev:static": "node server.mjs",
-    "dev:source": "node scripts/dev-server.mjs --source"
+    "dev:source": "node scripts/dev-server.mjs --source",
+    "test:metrics": "node scripts/metrics-integration-test.mjs",
+    "build:vite": "tsc --noEmit && vite build",
+    "audit:data": "node scripts/data-source-audit.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.13",

@@ -10,7 +10,7 @@ import { buildAdvertiserComparison } from '../advertiserAnalysis';
 import { buildCampaignComparison, loadCampaigns, type CampaignComparisonRow } from '../campaignAnalysis';
 import { buildMediaComparison, comparisonRange, rangeFor, type MediaComparisonRow } from '../mediaAnalysis';
 import { loadCreativeAnalysisRows } from '../creativeAnalysis';
-import { loadPerformanceDataset, type PerformanceDataset } from '../integratedPerformance';
+import { EMPTY_PERFORMANCE_DATASET, type PerformanceDataset } from '../integratedPerformance';
 import { getKeywordAnalysisRows, KEYWORD_PLATFORMS } from '../../data/keywordAnalysisMock';
 import {
   expansionSignalsFromCampaigns,
@@ -81,7 +81,7 @@ function spendForGroup(signals: InsightSignal[], context: RecommendationContext)
 }
 
 export function buildRecommendations(options: BuildRecommendationsOptions = {}): Recommendation[] {
-  const data = options.data ?? loadPerformanceDataset();
+  const data = options.data ?? EMPTY_PERFORMANCE_DATASET;
   const period = options.period ?? '최근 30일';
   const comparisonMode = options.comparison ?? '직전 동일기간';
 

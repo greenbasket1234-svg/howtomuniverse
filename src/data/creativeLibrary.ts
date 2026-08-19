@@ -35,6 +35,16 @@ export type Creative = {
   cta?: string;
   visualTags?: string[];
   videoStyleTags?: string[];
+  impressions?: number;
+  clicks?: number;
+  dbCount?: number;
+  purchases?: number;
+  revenue?: number;
+  ctr?: number;
+  cpc?: number;
+  cpm?: number;
+  cpa?: number;
+  roas?: number;
 };
 
 export const CREATIVE_LIBRARY: Creative[] = [];

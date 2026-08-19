@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { AdvertiserFilterProvider } from './context/AdvertiserFilterContext';
+import { MetricsQueryProvider } from './context/MetricsQueryContext';
 import App from './App';
 import { runZeroStateMigration } from './utils/zeroStateMigration';
 import './index.css';
@@ -15,7 +16,9 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <AuthProvider>
         <AdvertiserFilterProvider>
-          <App />
+          <MetricsQueryProvider>
+            <App />
+          </MetricsQueryProvider>
         </AdvertiserFilterProvider>
       </AuthProvider>
     </BrowserRouter>

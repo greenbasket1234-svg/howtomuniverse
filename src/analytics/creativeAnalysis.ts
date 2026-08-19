@@ -1,14 +1,15 @@
 import { CREATIVE_LIBRARY, type Creative } from '../data/creativeLibrary';
-import { CREATIVE_PERFORMANCE_SAMPLE, type CreativePerformanceSampleRow } from '../data/creativePerformance';
 import { loadDbRows, type DbDataRow } from '../utils/dbDataStore';
 
 export type CreativeLifecycle = '신규'|'성장'|'안정'|'피로'|'교체 권장'|'데이터 부족';
 export type CreativeAnalysisStatus = '매우 우수'|'우수'|'정상'|'주의'|'개선 필요'|'평가 보류';
 export type CreativeHookType = '가격'|'할인'|'한정'|'희소성'|'질문'|'문제제기'|'후기'|'공감'|'정보'|'비교'|'결과'|'숫자'|'혜택'|'불안'|'미분류';
 
+type LiveCreativePerformance={creativeId?:string;name:string;advertiser:string;media:string;campaign?:string;spend:number;impressions:number;clicks:number;dbCount?:number;revenue?:number;purchases?:number;trend:number[];days:number;frequency?:number};
+
 export type CreativeAnalysisRow = {
   creative: Creative;
-  performance?: CreativePerformanceSampleRow;
+  performance?: LiveCreativePerformance;
   dbRows: DbDataRow[];
   campaignName: string;
   spend: number;
@@ -109,12 +110,10 @@ function goalFor(brand:string){
   }catch{return undefined;}
 }
 
-function matchPerformance(creative:Creative){
-  const byId=CREATIVE_PERFORMANCE_SAMPLE.find(item=>item.creativeId===creative.id);
-  if(byId) return byId;
-  const media=normalizeCreativeMedia(creative.platform);
-  const norm=normalizeText(creative.name);
-  return CREATIVE_PERFORMANCE_SAMPLE.find(item=>normalizeText(item.name)===norm && item.advertiser===creative.brand && normalizeCreativeMedia(item.media)===media);
+function matchPerformance(creative:Creative):LiveCreativePerformance|undefined{
+  const has=Number(creative.spend||0)>0||Number(creative.impressions||0)>0||Number(creative.clicks||0)>0||Number(creative.dbCount||0)>0||Number(creative.revenue||0)>0;
+  if(!has)return undefined;
+  return{creativeId:creative.id,name:creative.name,advertiser:creative.brand,media:normalizeCreativeMedia(creative.platform),campaign:creative.campaignName,spend:Number(creative.spend)||0,impressions:Number(creative.impressions)||0,clicks:Number(creative.clicks)||0,dbCount:Number(creative.dbCount)||0,revenue:Number(creative.revenue)||0,purchases:Number(creative.purchases)||0,trend:[],days:1};
 }
 
 function matchDbRows(creative:Creative, all:DbDataRow[]){
@@ -125,7 +124,7 @@ function matchDbRows(creative:Creative, all:DbDataRow[]){
   ));
 }
 
-function fatigueFrom(performance:CreativePerformanceSampleRow|undefined, creative:Creative){
+function fatigueFrom(performance:LiveCreativePerformance|undefined, creative:Creative){
   if(!performance){
     if(creative.fatigue==='교체 권장') return {score:85,lifecycle:'교체 권장' as CreativeLifecycle};
     if(creative.fatigue==='주의') return {score:62,lifecycle:'피로' as CreativeLifecycle};
@@ -134,9 +133,9 @@ function fatigueFrom(performance:CreativePerformanceSampleRow|undefined, creativ
   }
   const trend=performance.trend.filter(Number.isFinite);
   const half=Math.max(1,Math.floor(trend.length/2));
-  const early=avg(trend.slice(0,half)), recent=avg(trend.slice(-half));
+  const early=trend.length?avg(trend.slice(0,half)):0, recent=trend.length?avg(trend.slice(-half)):0;
   const decay=early ? (early-recent)/early*100 : 0;
-  let score=clamp(Math.max(0,decay)*1.2 + Math.max(0,performance.days-14)*1.4 + Math.max(0,(performance.frequency??1)-2.5)*18);
+  let score=trend.length?clamp(Math.max(0,decay)*1.2 + Math.max(0,performance.days-14)*1.4 + Math.max(0,(performance.frequency??1)-2.5)*18):20;
   if(creative.fatigue==='교체 권장') score=Math.max(score,82);
   else if(creative.fatigue==='주의') score=Math.max(score,55);
   else if(creative.fatigue==='정상') score=Math.min(score,45);
@@ -154,11 +153,11 @@ export function loadCreativeAnalysisRows(dbRowsOverride?:DbDataRow[],creativesOv
   const base=source.map(creative=>{
     const performance=matchPerformance(creative);
     const dbRows=matchDbRows(creative,dbAll);
-    const db=dbRows.reduce((a,row)=>a+(Number(row.db)||0),0);
+    const db=Number(performance?.dbCount||0) || dbRows.reduce((a,row)=>a+(Number(row.db)||0),0);
     const validDb=dbRows.reduce((a,row)=>a+(Number(row.validDb)||0),0);
     const contracts=dbRows.reduce((a,row)=>a+(Number(row.contracts)||0),0);
     const dbSpend=dbRows.reduce((a,row)=>a+(Number(row.spend)||0),0);
-    const revenue=dbRows.reduce((a,row)=>a+(Number(row.revenue)||0),0);
+    const revenue=Number(performance?.revenue||0) || dbRows.reduce((a,row)=>a+(Number(row.revenue)||0),0);
     const spend=performance?.spend || dbSpend || creative.spend || 0;
     const impressions=performance?.impressions||0, clicks=performance?.clicks||0;
     const ctr=safeRate(clicks,impressions), cpc=clicks?spend/clicks:0, cpm=impressions?spend/impressions*1000:0;

@@ -6,7 +6,6 @@ import { AuthGate } from './gates/AuthGate';
 import { KeywordHubLayout, CreativeHubLayout, AutomationHubLayout, CalendarHubLayout, AdAccountsHubLayout, ReportsBrandLayout } from './layouts/HubLayouts';
 import { runAutoDbSyncIfDue } from './utils/googleSheetDbSync';
 
-import { BrandListPage } from './pages/BrandListPage';
 import { DashboardOverviewPage } from './pages/DashboardOverviewPage';
 import { ReportsHubPage } from './pages/ReportsHubPage';
 import { AdvertiserDailyReportPage } from './pages/AdvertiserDailyReportPage';

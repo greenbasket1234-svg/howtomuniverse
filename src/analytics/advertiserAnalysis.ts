@@ -1,4 +1,3 @@
-import { BRAND_REPORTS } from '../data/brandReports';
 import { derived, metricValue, pctChange, sumRows, type PerformanceDataset, type PerformanceMetric, type PerformancePoint } from './integratedPerformance';
 import { MEDIA_COLORS, MEDIA_ORDER, comparisonRange, dailySeries, inRange, rangeFor } from './mediaAnalysis';
 
@@ -75,10 +74,6 @@ export function loadAdvertiserMeta(){
       if(item?.name) map.set(String(item.name),{id:item.id?String(item.id):undefined,color:item.color?String(item.color):undefined,monthlyBudget:Number(item.monthlyBudget)||undefined});
     });
   }catch{/* ignore */}
-  BRAND_REPORTS.forEach(report=>{
-    const prev=map.get(report.config.brandName)||{};
-    map.set(report.config.brandName,{...prev,id:prev.id??report.config.brandId,monthlyBudget:prev.monthlyBudget??report.config.monthlyBudget});
-  });
   return map;
 }
 

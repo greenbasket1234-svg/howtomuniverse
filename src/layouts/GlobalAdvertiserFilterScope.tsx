@@ -2,8 +2,6 @@ import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
-import { ADVERTISERS as OPERATIONS_ADVERTISERS } from '../data/operationsMock';
-import { BRAND_REPORTS } from '../data/brandReports';
 
 /**
  * ⚠️ 이 컴포넌트는 "보조 안전장치"입니다. 주 필터링 방식이 아닙니다.
@@ -41,12 +39,7 @@ export function GlobalAdvertiserFilterScope() {
 
   useEffect(() => {
     const selected = normalize(filterValue);
-    const knownNames = Array.from(new Set([
-      ...advertisers.map(item => item.name),
-      ...OPERATIONS_ADVERTISERS.map(a => a.name),
-      ...OPERATIONS_ADVERTISERS.map(a => a.name.replace(/몰$/, '')),
-      ...BRAND_REPORTS.map(r => r.config.brandName),
-    ].filter(Boolean)));
+    const knownNames = Array.from(new Set(advertisers.map(item => item.name).filter(Boolean)));
 
     const apply = () => {
       const root = document.querySelector('.page-content');

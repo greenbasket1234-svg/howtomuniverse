@@ -2,7 +2,7 @@ import type { Campaign, FunnelMetricDefinition, FunnelRow, MetricView, ScheduleS
 
 /** Zero State: 광고주/캠페인/일정/퍼널 샘플을 포함하지 않습니다. */
 export const ADVERTISERS: { id:string; name:string; preset:string }[] = [];
-export const MOCK_CAMPAIGNS: Campaign[] = [];
+export const EMPTY_DEV_CAMPAIGNS: Campaign[] = [];
 
 // 지표 정의는 데이터가 아니라 시스템 스키마이므로 유지합니다.
 export const FUNNEL_METRICS: FunnelMetricDefinition[] = [

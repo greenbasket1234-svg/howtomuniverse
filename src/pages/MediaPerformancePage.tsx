@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, CircleDollarSign, Eye, MousePointerClick, Sparkles, Target, TrendingDown, TrendingUp, WalletCards } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
-import { derived, formatMetric, loadPerformanceDataset, metricValue, pctChange, sumRows, type PerformanceMetric } from '../analytics/integratedPerformance';
+import { derived, formatMetric, performanceDatasetFromMetricRows, metricValue, pctChange, sumRows, type PerformanceMetric, type PerformanceDataset } from '../analytics/integratedPerformance';
+import type { Campaign } from '../types/operations';
 import { MEDIA_COLORS, MEDIA_ORDER, buildFunnel, buildMediaComparison, comparisonRange, dailySeries, detectMediaAnomalies, inRange, normalizeCampaignMedia, rangeFor } from '../analytics/mediaAnalysis';
-import { useDbDataRevision } from '../hooks/useDbDataRevision';
-import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
+import { useMetricRows } from '../hooks/useMetrics';
+import type { DailyMetricRow } from '../types/metrics';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
 
 const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS'};
-const periodOptions=['오늘','어제','최근 7일','최근 14일','최근 30일','최근 60일','최근 90일','지난달','이번달','기간 직접 선택'];
 const comparisonOptions=['직전 동일기간','전월','전년 동기간','비교 안 함'];
 const trendMetrics:PerformanceMetric[]=['spend','clicks','leads','cpa','revenue','roas','ctr'];
 const channelLabels=['전체 비교',...MEDIA_ORDER];
@@ -22,10 +23,10 @@ function mediaIcon(name:string){ return name==='메타'?'∞':name==='네이버'
 type MediaPerformancePageProps = { embedded?: boolean; defaultAdvertiser?: string };
 
 export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' }: MediaPerformancePageProps){
-  const dbRevision=useDbDataRevision();
-  const data=useMemo(()=>loadPerformanceDataset(),[dbRevision]);
+  const {rows:metricRows}=useMetricRows<DailyMetricRow>('/metrics/daily');
+  const data=useMemo(()=>performanceDatasetFromMetricRows(metricRows),[metricRows]);
+  const {range}=useMetricsQuery();
   const [params,setParams]=useSearchParams();
-  const [period,setPeriod]=useState(params.get('period')||'최근 30일');
   const [comparison,setComparison]=useState(params.get('compare')||'직전 동일기간');
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||defaultAdvertiser||'');
   const [activeMedia,setActiveMedia]=useState(params.get('channel')||'전체 비교');
@@ -37,14 +38,9 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
   const [sortKey,setSortKey]=useState<'health'|'spend'|'leads'|'cpa'|'roas'>('health');
   const [sortDir,setSortDir]=useState<'asc'|'desc'>('desc');
   const [verdictFilter,setVerdictFilter]=useState('');
-  const defaultLatest = data.latestDate || new Date().toISOString().slice(0,10);
-  const [customRange,setCustomRange]=useState<DateRange>(()=>({
-    from: params.get('from') || defaultLatest,
-    to: params.get('to') || defaultLatest,
-  }));
   useEffect(()=>{ if(embedded && defaultAdvertiser) setAdvertiser(defaultAdvertiser); },[embedded,defaultAdvertiser]);
 
-  const [start,end]=period==='기간 직접 선택'?[customRange.from,customRange.to]:rangeFor(period,data.latestDate); const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
+  const [start,end]=[range.from,range.to]; const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
   const comparisonRows=useMemo(()=>buildMediaComparison(data,start,end,prevStart,prevEnd,advertiser,representativeKpi),[data,start,end,prevStart,prevEnd,advertiser,representativeKpi]);
   const selected=activeMedia==='전체 비교'?null:comparisonRows.find(row=>row.name===activeMedia)||null;
   const sourceRows=(selected?data.media.filter(row=>row.media===selected.name):data.totals).filter(row=>(!advertiser||row.advertiser===advertiser)&&inRange(row.date,start,end));
@@ -52,11 +48,7 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
   const now=derived(sumRows(sourceRows)),prev=derived(sumRows(prevRows));
   const daily=dailySeries(sourceRows),previousDaily=dailySeries(prevRows);
   const anomalies=detectMediaAnomalies(comparisonRows);
-  const accounts=useMemo(()=>{
-    if(activeMedia==='전체 비교') return [];
-    return [...new Set(MOCK_CAMPAIGNS.filter(c=>normalizeCampaignMedia(c.platform)===activeMedia).map(c=>c.accountName))];
-  },[activeMedia]);
-  const selectedCampaigns=useMemo(()=>MOCK_CAMPAIGNS.filter(c=>(activeMedia==='전체 비교'||normalizeCampaignMedia(c.platform)===activeMedia)&&(!advertiser||ADVERTISERS.find(a=>a.id===c.advertiserId)?.name===advertiser)&&(!account||c.accountName===account)),[activeMedia,advertiser,account]);
+  const selectedCampaigns:Campaign[]=[];
   const selectedReportType=sourceRows[0]?.reportType;
   const funnel=buildFunnel(now,selectedReportType);
 
@@ -80,14 +72,13 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
     {!embedded && <header className="map-head"><div><span>인사이트</span><h1>매체별 분석</h1><p>매체 성과를 비교하고 예산 효율·KPI 달성률·개선 포인트를 분석합니다.</p></div><div className="map-data-badge">데이터 기준 <b>{data.latestDate||'-'}</b></div></header>}
     {embedded && <div className="map-embedded-head"><div><h2>매체 성과</h2><p>{advertiser || '전체 광고주'}의 매체별 효율과 변화 추이를 같은 화면 폭에 맞춰 확인합니다.</p></div><div className="map-data-badge">데이터 기준 <b>{data.latestDate||'-'}</b></div></div>}
 
+    <MetricsDateBar compact/>
+
     <section className={`map-filter-card${embedded ? ' embedded' : ''}`}>
-      <label>기간<select value={period} onChange={e=>{setPeriod(e.target.value);syncParams({period:e.target.value})}}>{periodOptions.map(v=><option key={v}>{v}</option>)}</select></label>
       <label>비교기간<select value={comparison} onChange={e=>{setComparison(e.target.value);syncParams({compare:e.target.value})}}>{comparisonOptions.map(v=><option key={v}>{v}</option>)}</select></label>
       {!embedded && <label>광고주<select value={advertiser} onChange={e=>{setAdvertiser(e.target.value);setAccount('');syncParams({advertiser:e.target.value,account:''})}}><option value="">전체 광고주</option>{data.advertisers.map(v=><option key={v}>{v}</option>)}</select></label>}
-      <label>광고 계정<select value={account} disabled={activeMedia==='전체 비교'||!accounts.length} onChange={e=>{setAccount(e.target.value);syncParams({account:e.target.value})}}><option value="">전체 계정</option>{accounts.map(v=><option key={v}>{v}</option>)}</select></label>
       <label>대표 KPI<select value={representativeKpi} onChange={e=>{setRepresentativeKpi(e.target.value as PerformanceMetric);syncParams({kpi:e.target.value})}}><option value="leads">DB/전환</option><option value="cpa">CPA</option><option value="roas">ROAS</option><option value="revenue">매출</option><option value="clicks">클릭</option></select></label>
-      <button className="map-reset" onClick={()=>{setPeriod('최근 30일');setComparison('직전 동일기간');setAdvertiser(embedded?defaultAdvertiser:'');setActiveMedia('전체 비교');setAccount('');setRepresentativeKpi('leads');if(!embedded)setParams({}, {replace:true})}}>필터 초기화</button>
-      {period==='기간 직접 선택' && <div className="map-custom-range-field"><span>조회 기간</span><DateRangePicker value={customRange} onChange={r=>{setCustomRange(r);syncParams({from:r.from,to:r.to})}}/></div>}
+      <button className="map-reset" onClick={()=>{setComparison('직전 동일기간');setAdvertiser(embedded?defaultAdvertiser:'');setActiveMedia('전체 비교');setAccount('');setRepresentativeKpi('leads');if(!embedded)setParams({}, {replace:true})}}>필터 초기화</button>
     </section>
 
     <nav className="map-media-tabs" aria-label="매체 선택">{channelLabels.map(name=><button key={name} className={activeMedia===name?'active':''} onClick={()=>chooseMedia(name)} style={name==='전체 비교'?undefined:{'--media-color':MEDIA_COLORS[name]} as CSSProperties}><span>{name==='전체 비교'?'전체':mediaIcon(name)}</span>{name}</button>)}</nav>
@@ -112,12 +103,12 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
   </div>;
 }
 
-function MultiMediaTrend({rows,data,start,end,advertiser,metric}:{rows:ReturnType<typeof buildMediaComparison>;data:ReturnType<typeof loadPerformanceDataset>;start:string;end:string;advertiser:string;metric:PerformanceMetric}){
+function MultiMediaTrend({rows,data,start,end,advertiser,metric}:{rows:ReturnType<typeof buildMediaComparison>;data:PerformanceDataset;start:string;end:string;advertiser:string;metric:PerformanceMetric}){
   const maxDays=[...new Set(data.media.filter(row=>(!advertiser||row.advertiser===advertiser)&&inRange(row.date,start,end)).map(row=>row.date))].sort();
   return <><svg viewBox="0 0 100 82" preserveAspectRatio="none" className="map-line-chart"><line x1="8" y1="72" x2="100" y2="72"/>{rows.slice(0,7).map(row=>{const series=maxDays.map(date=>derived(sumRows(data.media.filter(item=>item.media===row.name&&(!advertiser||item.advertiser===advertiser)&&item.date===date))));return <polyline key={row.name} style={{stroke:MEDIA_COLORS[row.name]}} points={poly(series.map(day=>metricValue(day,metric)))}/>})}</svg><div className="map-multi-legend">{rows.map(row=><span key={row.name}><i style={{background:MEDIA_COLORS[row.name]}}/>{row.name}</span>)}</div></>;
 }
 
-function SelectedMediaDetail({media,summary,reportType,campaigns}:{media:string;summary:ReturnType<typeof derived>;reportType?:string;campaigns:typeof MOCK_CAMPAIGNS}){
+function SelectedMediaDetail({media,summary,reportType,campaigns}:{media:string;summary:ReturnType<typeof derived>;reportType?:string;campaigns:Campaign[]}){
   const funnel=buildFunnel(summary,reportType);
   return <section className="map-selected-grid"><article className="map-panel"><div className="map-panel-head"><div><h2>{media} 전환 퍼널</h2><p>현재 확보 가능한 공통 광고 데이터 기준입니다.</p></div></div><div className="map-funnel">{funnel.map((step,index)=><div key={step.label}><article><span>{step.label}</span><strong>{Math.round(step.value).toLocaleString()}</strong></article>{index<funnel.length-1&&<em>↓ <b>{funnel[index+1].rate?.toFixed(1)??'0.0'}%</b></em>}</div>)}</div></article><article className="map-panel"><div className="map-panel-head"><div><h2>{media} 캠페인 현황</h2><p>캠페인 관리 데이터와 연결합니다.</p></div><Link to="/campaigns">캠페인 관리 <ChevronRight size={14}/></Link></div>{campaigns.length?<div className="map-campaign-list">{campaigns.map(c=><div key={c.id}><span className={`map-campaign-state ${c.status}`}>{c.status==='on'?'ON':c.status==='off'?'OFF':c.status==='scheduled'?'예약':'확인'}</span><div><b>{c.name}</b><small>{c.accountName} · {c.budgetType==='daily'?'일':'총'} ₩{c.budget.toLocaleString()}</small></div><Link to="/campaigns">관리</Link></div>)}</div>:<div className="map-empty-detail"><b>연결된 캠페인 성과 데이터 없음</b><p>현재 광고 데이터에는 캠페인 단위 성과값이 없어서 임의의 성과 수치를 만들지 않았습니다. 캠페인 관리/API 데이터가 연결되면 여기에 실제 CPA·ROAS·전환이 표시됩니다.</p></div>}</article></section>;
 }

@@ -2,7 +2,10 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Database, Download, Link2, RefreshCw, Search, Settings2, Target, TrendingUp, UsersRound, WalletCards } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
-import { loadPerformanceDataset } from '../analytics/integratedPerformance';
+import { normalizeMedia } from '../analytics/integratedPerformance';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricRows } from '../hooks/useMetrics';
+import type { DailyMetricRow } from '../types/metrics';
 import { useDbDataRevision } from '../hooks/useDbDataRevision';
 import { loadDbConnections, loadDbRows, summarizeDbRows, type DbDataRow } from '../utils/dbDataStore';
 import { syncAllDbConnections } from '../utils/googleSheetDbSync';
@@ -10,9 +13,6 @@ import { syncAllDbConnections } from '../utils/googleSheetDbSync';
 const MEDIA_ORDER=['메타','네이버','구글 검색','유튜브','당근','카카오','틱톡'] as const;
 const MEDIA_COLOR:Record<string,string>={'메타':'#4776ff','네이버':'#03c75a','구글 검색':'#6b7280','유튜브':'#ef4444','당근':'#ff6f0f','카카오':'#f5c400','틱톡':'#111827'};
 
-type RangeMode='최근 7일'|'최근 30일'|'이번 달'|'전체';
-function iso(d:Date){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
-function addDays(date:string,n:number){const d=new Date(`${date}T00:00:00`);d.setDate(d.getDate()+n);return iso(d)}
 function money(value:number){return value?`₩${Math.round(value).toLocaleString()}`:'-'}
 function pct(a:number,b:number){return b?`${(a/b*100).toFixed(1)}%`:'-'}
 function points(values:number[]){const max=Math.max(...values,1);const denom=Math.max(1,values.length-1);return values.map((v,i)=>`${6+(i/denom)*88},${70-(v/max)*54}`).join(' ')}
@@ -28,13 +28,11 @@ export function DbDataPage(){
   const revision=useDbDataRevision();
   const rows=useMemo(()=>loadDbRows(),[revision]);
   const connections=useMemo(()=>loadDbConnections(),[revision]);
-  const performance=useMemo(()=>loadPerformanceDataset(),[revision]);
-  const [range,setRange]=useState<RangeMode>('최근 30일');
+  const {rows:performanceRows,range:metricsRange}=useMetricRows<DailyMetricRow>('/metrics/daily');
   const [advertiser,setAdvertiser]=useState(''); const [media,setMedia]=useState(''); const [campaign,setCampaign]=useState(''); const [query,setQuery]=useState('');
   const [syncing,setSyncing]=useState(false); const [syncMessage,setSyncMessage]=useState('');
-  const latestDates=rows.map(r=>r.date).sort();
-  const latest=latestDates[latestDates.length-1]??'';
-  const rangeStart=range==='전체'||!latest?'':range==='최근 7일'?addDays(latest,-6):range==='최근 30일'?addDays(latest,-29):`${latest.slice(0,7)}-01`;
+  const rangeStart=metricsRange.from;
+  const latest=metricsRange.to;
   const advertisers=useMemo(()=>[...new Set(rows.map(r=>r.advertiser))].sort((a,b)=>a.localeCompare(b,'ko')),[rows]);
   const medias=useMemo(()=>MEDIA_ORDER.filter(name=>rows.some(r=>(!advertiser||r.advertiser===advertiser)&&r.media===name)),[rows,advertiser]);
   const campaigns=useMemo(()=>[...new Set(rows.filter(r=>(!advertiser||r.advertiser===advertiser)&&(!media||r.media===media)).map(r=>r.campaignName||r.campaignId||'').filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko')),[rows,advertiser,media]);
@@ -42,8 +40,8 @@ export function DbDataPage(){
 
   const performanceSpendMap=useMemo(()=>{
     const map=new Map<string,number>();
-    performance.media.forEach(r=>{const key=`${r.date}|${r.advertiser}|${r.media}`;map.set(key,(map.get(key)??0)+r.spend)});return map;
-  },[performance]);
+    performanceRows.forEach(r=>{const key=`${r.date}|${r.advertiserName??r.advertiserId}|${normalizeMedia(r.channel)}`;map.set(key,(map.get(key)??0)+r.spend)});return map;
+  },[performanceRows]);
   const enriched=useMemo(()=>filtered.map(r=>({...r,resolvedSpend:r.spend??performanceSpendMap.get(`${r.date}|${r.advertiser}|${r.media}`)??0})),[filtered,performanceSpendMap]);
   const summary=useMemo(()=>enriched.reduce((a,r)=>({db:a.db+r.db,validDb:a.validDb+r.validDb,contracts:a.contracts+r.contracts,spend:a.spend+r.resolvedSpend,revenue:a.revenue+(r.revenue??0),platformConversions:a.platformConversions+(r.platformConversions??0)}),{db:0,validDb:0,contracts:0,spend:0,revenue:0,platformConversions:0}),[enriched]);
   const mediaRows=useMemo(()=>MEDIA_ORDER.map(name=>{const part=enriched.filter(r=>r.media===name);const s=part.reduce((a,r)=>({db:a.db+r.db,validDb:a.validDb+r.validDb,contracts:a.contracts+r.contracts,spend:a.spend+r.resolvedSpend}),{db:0,validDb:0,contracts:0,spend:0});return {name,...s};}).filter(r=>r.db||r.validDb||r.contracts),[enriched]);
@@ -67,7 +65,7 @@ export function DbDataPage(){
     {!rows.length&&<section className="dbx-empty"><Database size={34}/><h2>연동된 DB 데이터가 없습니다.</h2><p>설정에서 Google Apps Script 웹앱 URL을 등록한 뒤 동기화하세요. 개인정보 원문이 아니라 날짜·광고주·매체·DB 수 같은 집계값만 가져옵니다.</p><Link className="btn primary" to="/settings/db-integrations">Google Sheets DB 연동 설정</Link></section>}
 
     <section className="dbx-filterbar">
-      <div className="dbx-range">{(['최근 7일','최근 30일','이번 달','전체'] as RangeMode[]).map(v=><button key={v} className={range===v?'active':''} onClick={()=>setRange(v)}>{v}</button>)}</div>
+      <MetricsDateBar compact/>
       <select value={advertiser} onChange={e=>{setAdvertiser(e.target.value);setMedia('');setCampaign('')}}><option value="">전체 광고주</option>{advertisers.map(v=><option key={v}>{v}</option>)}</select>
       <select value={media} onChange={e=>{setMedia(e.target.value);setCampaign('')}}><option value="">전체 매체</option>{medias.map(v=><option key={v}>{v}</option>)}</select>
       <select value={campaign} onChange={e=>setCampaign(e.target.value)}><option value="">전체 캠페인</option>{campaigns.map(v=><option key={v}>{v}</option>)}</select>

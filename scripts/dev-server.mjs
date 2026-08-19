@@ -12,6 +12,7 @@ const nodeCommand = process.execPath;
 const args = new Set(process.argv.slice(2));
 const noOpen = args.has('--no-open') || process.env.NO_OPEN === '1' || process.env.CI === 'true';
 const forceSource = args.has('--source') || process.env.DEV_SOURCE === '1';
+const forcePortable = args.has('--portable') || process.env.DEV_PORTABLE === '1';
 const requestedPort = Number(process.env.PORT || 5173);
 const requestedApiPort = Number(process.env.API_PORT || 4000);
 const viteBin = path.join(rootDir, 'node_modules', '.bin', isWindows ? 'vite.cmd' : 'vite');
@@ -104,9 +105,7 @@ process.once('exit', stopChildren);
 
 async function startStaticMode() {
   if (!existsSync(distIndex)) {
-    console.error('[오류] 개발 패키지와 dist/index.html이 모두 없습니다.');
-    console.error('[해결] 인터넷 연결 후 npm run setup 및 npm run build를 실행하세요.');
-    process.exit(1);
+    return startPortableMode();
   }
 
   const port = await findAvailablePort(requestedPort);
@@ -130,6 +129,46 @@ async function startStaticMode() {
   setTimeout(() => openBrowser(url), 900);
 }
 
+async function startPortableMode() {
+  const port = await findAvailablePort(requestedPort);
+  const apiPort = await findAvailablePort(requestedApiPort);
+  const url = `http://127.0.0.1:${port}/home`;
+
+  console.log('[안내] 개발 패키지와 dist가 없어 Portable Mode로 실행합니다.');
+  console.log('[안내] 패키지 설치를 강제로 시도하지 않습니다.');
+  console.log(`[안내] API 서버를 시작합니다: http://127.0.0.1:${apiPort}`);
+  const apiChild = registerChild(spawn(nodeCommand, ['server.mjs'], {
+    cwd: rootDir,
+    stdio: 'inherit',
+    env: { ...process.env, PORT: String(apiPort) },
+  }));
+  apiChild.once('error', (error) => {
+    console.error(`[오류] API 서버 실행에 실패했습니다: ${error.message}`);
+  });
+
+  const portableChild = registerChild(spawn(nodeCommand, ['scripts/portable-dev-server.mjs'], {
+    cwd: rootDir,
+    stdio: 'inherit',
+    env: { ...process.env, PORT: String(port), API_PORT: String(apiPort) },
+  }));
+  portableChild.once('error', (error) => {
+    console.error(`[오류] Portable Mode 실행에 실패했습니다: ${error.message}`);
+    try { apiChild.kill(); } catch { /* ignore */ }
+    process.exit(1);
+  });
+  portableChild.once('exit', (code) => {
+    if (shuttingDown) return;
+    if (code && code !== 0) {
+      try { apiChild.kill(); } catch { /* ignore */ }
+      process.exit(code);
+    }
+  });
+
+  console.log(`[안내] HOWTOM 유니버스: ${url}`);
+  console.log('[안내] 완전한 Vite/HMR 개발 모드는 npm run dev:source를 사용하세요.');
+  setTimeout(() => openBrowser(url), 1200);
+}
+
 async function installDependencies() {
   console.log('[안내] 소스 개발 모드에 필요한 패키지를 설치합니다.');
   const result = spawnSync(npmCommand, ['install'], {
@@ -141,12 +180,16 @@ async function installDependencies() {
 }
 
 async function startSourceMode() {
+  if (forcePortable) return startPortableMode();
   if (!dependenciesReady()) {
-    if (!forceSource) return startStaticMode();
+    if (!forceSource) {
+      if (existsSync(distIndex)) return startStaticMode();
+      return startPortableMode();
+    }
     const installed = await installDependencies();
     if (!installed) {
-      console.warn('[경고] 패키지 설치에 실패해 기존 dist 빌드 실행을 시도합니다.');
-      return startStaticMode();
+      console.warn('[경고] 패키지 설치에 실패했습니다. Portable Mode로 자동 전환합니다.');
+      return startPortableMode();
     }
   }
 

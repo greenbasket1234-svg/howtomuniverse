@@ -99,6 +99,95 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_tenant ON daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_adv_date ON daily_metrics(advertiser_id, date);
 
+
+CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  campaign_name TEXT,
+  date DATE NOT NULL,
+  impressions BIGINT NOT NULL DEFAULT 0,
+  clicks BIGINT NOT NULL DEFAULT 0,
+  spend NUMERIC NOT NULL DEFAULT 0,
+  db_count BIGINT NOT NULL DEFAULT 0,
+  purchases BIGINT NOT NULL DEFAULT 0,
+  revenue NUMERIC NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(advertiser_id, channel, campaign_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
+
+CREATE TABLE IF NOT EXISTS creative_daily_metrics (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  campaign_id TEXT,
+  campaign_name TEXT,
+  adgroup_id TEXT,
+  ad_id TEXT NOT NULL,
+  ad_name TEXT,
+  date DATE NOT NULL,
+  impressions BIGINT NOT NULL DEFAULT 0,
+  clicks BIGINT NOT NULL DEFAULT 0,
+  spend NUMERIC NOT NULL DEFAULT 0,
+  db_count BIGINT NOT NULL DEFAULT 0,
+  purchases BIGINT NOT NULL DEFAULT 0,
+  revenue NUMERIC NOT NULL DEFAULT 0,
+  thumbnail_url TEXT,
+  media_type TEXT,
+  title TEXT,
+  body TEXT,
+  description TEXT,
+  cta TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(advertiser_id, channel, ad_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
+
+CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  campaign_id TEXT,
+  campaign_name TEXT,
+  adgroup_id TEXT,
+  keyword_id TEXT NOT NULL DEFAULT '',
+  keyword TEXT NOT NULL,
+  date DATE NOT NULL,
+  impressions BIGINT NOT NULL DEFAULT 0,
+  clicks BIGINT NOT NULL DEFAULT 0,
+  spend NUMERIC NOT NULL DEFAULT 0,
+  db_count BIGINT NOT NULL DEFAULT 0,
+  purchases BIGINT NOT NULL DEFAULT 0,
+  revenue NUMERIC NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(advertiser_id, channel, keyword_id, keyword, date)
+);
+CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant ON keyword_daily_metrics(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_keyword_daily_adv_date ON keyword_daily_metrics(advertiser_id, date);
+
+CREATE TABLE IF NOT EXISTS sync_validation_logs (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  date_from DATE,
+  date_to DATE,
+  source_label TEXT,
+  source_totals JSONB NOT NULL DEFAULT '{}'::jsonb,
+  stored_totals JSONB NOT NULL DEFAULT '{}'::jsonb,
+  delta JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ok BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sync_validation_tenant ON sync_validation_logs(tenant_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS creative_metrics (
   id BIGSERIAL PRIMARY KEY,
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

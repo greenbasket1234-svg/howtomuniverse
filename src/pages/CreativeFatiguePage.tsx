@@ -1,97 +1,26 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { Search, Eye } from 'lucide-react';
+import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
+import { apiFetch } from '../hooks/useApi';
+import { metricQuery } from '../hooks/useMetrics';
+import type { CreativeDailyMetricRow, CreativeMetricRow, MetricsMeta } from '../types/metrics';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
-type CreativeObjective='판매'|'트래픽'|'DB 수집'|'DA(Display Ads)'|'SA(Search Ads)';
-type Fatigue={id:number;name:string;campaign:string;thumb:string;type:'이미지'|'영상';objective:CreativeObjective;score:number;cpm3:number|null;cpm7:number|null;ctr:number|null;cpc:number|null;frequency:number;days:number};
-const seed:Fatigue[]=[];
-
-type SortKey='score'|'ctr'|'cpc'|'cpm3'|'cpm7'|'days';
-const SORT_LABEL:Record<SortKey,string>={score:'피로도',ctr:'CTR 하락',cpc:'CPC 상승',cpm3:'3일 CPM',cpm7:'7일 CPM',days:'사용기간'};
+type Response={rows:CreativeMetricRow[];dailyRows:CreativeDailyMetricRow[];meta:MetricsMeta};
+type FatigueRow=CreativeMetricRow&{score:number;cpm3Change:number|null;cpm7Change:number|null;ctr7Change:number|null;cpc7Change:number|null;activeDays:number};
+const pct=(a:number,b:number)=>b>0?(a-b)/b*100:null;
+function aggregate(rows:CreativeDailyMetricRow[]){const x=rows.reduce((a,r)=>({impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,spend:a.spend+r.spend}),{impressions:0,clicks:0,spend:0});return{...x,cpm:x.impressions?x.spend/x.impressions*1000:0,ctr:x.impressions?x.clicks/x.impressions*100:0,cpc:x.clicks?x.spend/x.clicks:0}}
+function lastDates(rows:CreativeDailyMetricRow[],n:number,offset=0){const dates=[...new Set(rows.map(r=>r.date))].sort().reverse().slice(offset,offset+n);const s=new Set(dates);return rows.filter(r=>s.has(r.date))}
+function fatigue(base:CreativeMetricRow, daily:CreativeDailyMetricRow[]):FatigueRow{const recent3=aggregate(lastDates(daily,3)),prev3=aggregate(lastDates(daily,3,3)),recent7=aggregate(lastDates(daily,7)),prev7=aggregate(lastDates(daily,7,7));const cpm3=pct(recent3.cpm,prev3.cpm),cpm7=pct(recent7.cpm,prev7.cpm),ctr=pct(recent7.ctr,prev7.ctr),cpc=pct(recent7.cpc,prev7.cpc);let score=0;if((cpm3||0)>=50)score+=25;else if((cpm3||0)>=25)score+=12;if((cpm7||0)>=30)score+=25;else if((cpm7||0)>=15)score+=12;if((ctr||0)<=-20)score+=25;else if((ctr||0)<=-10)score+=12;if((cpc||0)>=30)score+=20;else if((cpc||0)>=15)score+=10;const activeDays=new Set(daily.filter(r=>r.impressions>0||r.spend>0).map(r=>r.date)).size;if(activeDays>=21)score+=5;return{...base,score:Math.min(100,score),cpm3Change:cpm3,cpm7Change:cpm7,ctr7Change:ctr,cpc7Change:cpc,activeDays}}
+const fmt=(n:number|null,reverse=false)=>n==null?'-':`${n>0?'+':''}${n.toFixed(1)}%${reverse&&n<0?' ↓':''}`;
 
 export function CreativeFatiguePage(){
-  const [q,setQ]=useState('');
-  const [selected,setSelected]=useState<Fatigue|null>(null);
-  const [typeFilter,setTypeFilter]=useState<'전체'|Fatigue['type']>('전체');
-  const [objectiveFilter,setObjectiveFilter]=useState<'전체'|CreativeObjective>('전체');
-  const [sortKey,setSortKey]=useState<SortKey>('score');
-  const [sortDir,setSortDir]=useState<'desc'|'asc'>('desc');
-  const { filterValue }=useAdvertiserFilter();
-  const rows=useMemo(()=>{
-    const filtered=seed.filter(x=>
-      (x.name+x.type+x.objective+x.campaign).includes(q)
-      && matchesAdvertiserFilter(x.campaign,filterValue)
-      && (typeFilter==='전체'||x.type===typeFilter)
-      && (objectiveFilter==='전체'||x.objective===objectiveFilter)
-    );
-    // null(값 없음)은 항상 맨 뒤로 보내고, 나머지는 선택한 기준·방향으로 정렬합니다.
-    return [...filtered].sort((a,b)=>{
-      const av=a[sortKey], bv=b[sortKey];
-      if(av==null&&bv==null)return 0;
-      if(av==null)return 1;
-      if(bv==null)return -1;
-      return sortDir==='desc'?bv-av:av-bv;
-    });
-  },[q,filterValue,typeFilter,objectiveFilter,sortKey,sortDir]);
-  const danger=rows.filter(x=>x.score>=85).length, warn=rows.filter(x=>x.score>=70&&x.score<85).length, normal=rows.filter(x=>x.score<70).length;
-  const toggleSort=(key:SortKey)=>{ if(sortKey===key){setSortDir(sortDir==='desc'?'asc':'desc');}else{setSortKey(key);setSortDir('desc');} };
-  const sortArrow=(key:SortKey)=>sortKey===key?(sortDir==='desc'?' ▼':' ▲'):'';
-  return (
-    <div>
-      <PageHeader title="소재 피로도 관리" description="3일/7일 CPM 상승 · CTR 하락 · CPC 상승 · 빈도 · 사용기간 · 전환감소를 종합해 0~100점으로 평가합니다." action={<div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재명·종류·광고 목표 검색"/></div>}/>
-      <div className="fatigue-stat-grid"><div><span>🔴 위험 (85+)</span><strong>{danger}건</strong></div><div><span>🟡 주의 (70+)</span><strong>{warn}건</strong></div><div><span>🟢 정상</span><strong>{normal}건</strong></div></div>
-      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',margin:'0 0 14px'}}>
-        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,color:'#64748b'}}>종류
-          <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value as typeof typeFilter)}><option>전체</option><option>이미지</option><option>영상</option></select>
-        </label>
-        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,color:'#64748b'}}>광고 목표
-          <select value={objectiveFilter} onChange={e=>setObjectiveFilter(e.target.value as typeof objectiveFilter)}>
-            <option>전체</option><option>판매</option><option>트래픽</option><option>DB 수집</option><option>DA(Display Ads)</option><option>SA(Search Ads)</option>
-          </select>
-        </label>
-        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,color:'#64748b'}}>정렬 기준
-          <select value={sortKey} onChange={e=>setSortKey(e.target.value as SortKey)}>
-            {(Object.keys(SORT_LABEL) as SortKey[]).map(k=><option key={k} value={k}>{SORT_LABEL[k]}</option>)}
-          </select>
-        </label>
-        <button type="button" className="btn secondary" onClick={()=>setSortDir(sortDir==='desc'?'asc':'desc')}>{sortDir==='desc'?'내림차순':'오름차순'}</button>
-      </div>
-      <section className="card ops-card">
-        <div className="table-scroll">
-          <table className="ops-table fatigue-table">
-            <thead><tr>
-              <th>소재 / 광고</th><th>종류</th><th>광고 목표</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('score')}>피로도{sortArrow('score')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('cpm3')}>3일 CPM{sortArrow('cpm3')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('cpm7')}>7일 CPM{sortArrow('cpm7')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('ctr')}>CTR 하락{sortArrow('ctr')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('cpc')}>CPC 상승{sortArrow('cpc')}</th>
-              <th>빈도</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('days')}>사용기간{sortArrow('days')}</th>
-              <th></th>
-            </tr></thead>
-            <tbody>
-              {rows.map(r=>
-                <tr key={r.id}>
-                  <td><div className="creative-name-cell"><span className="mini-thumb">{r.thumb}</span><div><b>{r.name}</b><small>{r.campaign}</small></div></div></td>
-                  <td><span className="creative-kind-badge">{r.type}</span></td>
-                  <td><span className="creative-objective-badge">{r.objective}</span></td>
-                  <td><div className="score-cell"><b>{r.score}</b><i><span style={{width:`${r.score}%`}}/></i><em>{r.score>=85?'위험':r.score>=70?'주의':'정상'}</em></div></td>
-                  {[r.cpm3,r.cpm7,r.ctr,r.cpc].map((v,i)=><td key={i} className={v!=null&&v>0?'metric-up':'metric-down'}>{v==null?'-':`${v>0?'+':''}${v}%${i>=2?'↓':''}`}</td>)}
-                  <td>{r.frequency.toFixed(1)}</td>
-                  <td className={r.days>=21?'warning-text':''}>{r.days}일</td>
-                  <td><button className="icon-btn" onClick={()=>setSelected(r)}><Eye size={15}/></button></td>
-                </tr>
-              )}
-              {rows.length===0&&<tr><td colSpan={10} style={{textAlign:'center',padding:24,color:'var(--text-muted)'}}>조건에 맞는 소재가 없습니다.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <div className="footnote">점수 기준: 3일 CPM +50% / 7일 CPM +30% / CTR -20% / CPC +30% / 빈도 3+ / 전환 감소 / 사용 21일+. 85점 이상은 소재 자동화 규칙과 연결할 수 있습니다.</div>
-      </section>
-      {selected&&<div className="modal-backdrop"><div className="modal-card"><div className="modal-head"><div><h3>{selected.name}</h3><div className="creative-identity-row"><span className="creative-kind-badge">{selected.type}</span><span className="creative-objective-badge">{selected.objective}</span></div></div><button className="icon-btn" onClick={()=>setSelected(null)}>×</button></div><div className="detail-grid"><div>소재 종류<strong>{selected.type}</strong></div><div>광고 목표<strong>{selected.objective}</strong></div><div>피로도 점수<strong>{selected.score}점</strong></div><div>사용 기간<strong>{selected.days}일</strong></div><div>빈도<strong>{selected.frequency}</strong></div><div>상태<strong>{selected.score>=85?'교체 권장':'정상'}</strong></div></div><div className="modal-actions"><button className="btn secondary" onClick={()=>alert('소재 상세 화면으로 이동합니다.')}>상세 보기</button><button className="btn primary" onClick={()=>alert('소재 재등록 센터에 후보로 추가했습니다.')}>재등록 후보 추가</button></div></div></div>}
-    </div>
-  );
+  const {range}=useMetricsQuery();const {filterValue}=useAdvertiserFilter();const [data,setData]=useState<Response|null>(null);const [loading,setLoading]=useState(true);const [error,setError]=useState('');const [q,setQ]=useState('');
+  useEffect(()=>{let alive=true;setLoading(true);setError('');apiFetch<Response>(`/metrics/creatives?${metricQuery(range)}`).then(r=>alive&&setData(r)).catch(e=>{if(alive){setData(null);setError(e instanceof Error?e.message:String(e))}}).finally(()=>alive&&setLoading(false));return()=>{alive=false}},[range.from,range.to]);
+  const rows=useMemo(()=>{if(!data)return[];return data.rows.map(base=>fatigue(base,data.dailyRows.filter(d=>d.advertiserId===base.advertiserId&&d.channel===base.channel&&d.adId===base.adId))).filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&`${r.adName} ${r.campaignName||''}`.toLowerCase().includes(q.trim().toLowerCase())).sort((a,b)=>b.score-a.score)},[data,filterValue,q]);
+  const connected=data?.meta.connections.filter(c=>c.status==='connected')||[];
+  return <div><PageHeader title="소재 피로도 관리" description="동일 creative_daily_metrics에서 최근 3일·7일 구간의 CPM·CTR·CPC 변화를 계산합니다." action={<div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재·캠페인 검색"/></div>}/><MetricsDateBar/>{error&&<div className="status-banner danger">{error}</div>}<div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?'실제 소재 일별 성과 기준입니다.':'연동된 소재 성과 매체가 없습니다.'} 빈도·도달 데이터는 현재 저장하지 않아 피로도 점수에 포함하지 않습니다.</div><div className="fatigue-stat-grid"><div><span>🔴 위험 (85+)</span><strong>{rows.filter(r=>r.score>=85).length}건</strong></div><div><span>🟡 주의 (70+)</span><strong>{rows.filter(r=>r.score>=70&&r.score<85).length}건</strong></div><div><span>🟢 정상</span><strong>{rows.filter(r=>r.score<70).length}건</strong></div></div><section className="card ops-card"><div className="table-scroll"><table className="ops-table fatigue-table"><thead><tr><th>소재</th><th>매체</th><th>피로도</th><th>3일 CPM 변화</th><th>7일 CPM 변화</th><th>7일 CTR 변화</th><th>7일 CPC 변화</th><th>활성일</th><th>기간 광고비</th></tr></thead><tbody>{loading?<tr><td colSpan={9} className="empty-cell">불러오는 중...</td></tr>:rows.length===0?<tr><td colSpan={9} className="empty-cell">분석할 실제 소재 일별 데이터가 없습니다.</td></tr>:rows.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><div className="creative-name-cell">{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></div></td><td>{r.channel==='meta'?'Meta':r.channel==='naver'?'네이버':r.channel}</td><td><b>{r.score}</b>점</td><td>{fmt(r.cpm3Change)}</td><td>{fmt(r.cpm7Change)}</td><td>{fmt(r.ctr7Change,true)}</td><td>{fmt(r.cpc7Change)}</td><td>{r.activeDays}일</td><td>₩{Math.round(r.spend).toLocaleString()}</td></tr>)}</tbody></table></div><div className="footnote">점수는 선택 기간 안에서 소재별 일별 데이터가 충분한 경우에만 변화율을 계산합니다. 데이터가 없는 지표를 0으로 가장하지 않습니다.</div></section></div>;
 }

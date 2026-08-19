@@ -1,257 +1,47 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, Power, ExternalLink, X } from 'lucide-react';
+import { Search, ExternalLink, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
-import { MockNote } from '../components/MockNote';
-import { BRAND_REPORTS } from '../data/brandReports';
-import { getKeywordAnalysisRows, type KeywordAnalysisGrade, type KeywordAnalysisRow, type KeywordPlatform } from '../data/keywordAnalysisMock';
+import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { useMetricRows } from '../hooks/useMetrics';
+import type { KeywordMetricRow } from '../types/metrics';
 
-const gradeLabel: Record<KeywordAnalysisGrade, string> = {
-  high_performance: '고성과', stable: '안정', waste: '비용 낭비', exclude_candidate: '제외 후보', expansion_candidate: '확장 후보',
-};
-const gradeTone: Record<KeywordAnalysisGrade, 'success' | 'neutral' | 'danger' | 'warning' | 'accent'> = {
-  high_performance: 'success', stable: 'neutral', waste: 'danger', exclude_candidate: 'warning', expansion_candidate: 'accent',
-};
-const pct = (n: number, d: number) => (d ? `${((n / d) * 100).toFixed(2)}%` : '-');
-const won = (v: number) => `₩${Math.round(v).toLocaleString()}`;
+type ChannelKey='naver'|'google'|'daangn'|'kakao';
+const CHANNEL_LABEL:Record<ChannelKey,string>={naver:'네이버',google:'구글',daangn:'당근',kakao:'카카오'};
+const CHANNEL_URL:Record<ChannelKey,string>={naver:'https://searchad.naver.com',google:'https://ads.google.com',daangn:'https://ads.daangn.com',kakao:'https://keywordad.kakao.com'};
+function won(v:number){return `₩${Math.round(v).toLocaleString()}`}
+function pct(n:number,d:number){return d?`${(n/d*100).toFixed(2)}%`:'-'}
+function connectionText(status?:string){if(status==='connected')return '연동';if(status==='connector_unimplemented')return '커넥터 미구현';if(status==='error')return '동기화 오류';return '미연동'}
+function grade(row:KeywordMetricRow){if(row.spend>0&&row.clicks>=10&&row.dbCount===0)return{label:'비용 낭비',tone:'danger' as const};if(row.impressions>=100&&row.clicks===0)return{label:'제외 후보',tone:'warning' as const};if((row.cvr||0)>=5&&row.dbCount>=2)return{label:'고성과',tone:'success' as const};return{label:'안정',tone:'neutral' as const}}
 
-type ChannelKey = 'naver' | 'google' | 'daangn' | 'kakao';
-// 이 파일은 매체를 영문 키(naver/google/daangn/kakao)로 다루지만, 키워드 데이터 소스
-// (keywordAnalysisMock.ts)는 한글 값(KeywordPlatform)을 기준으로 만들어져 있습니다.
-// 이 맵으로 항상 변환해서 넘겨야, 두 타입이 서로 안 맞아 빌드가 실패하는 일이 없습니다.
-const CHANNEL_LABEL: Record<ChannelKey, KeywordPlatform> = { naver: '네이버', google: '구글', daangn: '당근', kakao: '카카오' };
-const CHANNEL_URL: Record<ChannelKey, string> = {
-  naver: 'https://searchad.naver.com',
-  google: 'https://ads.google.com',
-  daangn: 'https://ads.daangn.com',
-  kakao: 'https://keywordad.kakao.com',
-};
-const CHANNEL_AD_NAME: Record<ChannelKey, string> = { naver: '네이버 검색광고', google: '구글 검색광고', daangn: '당근 비즈프로필 키워드', kakao: '카카오 키워드광고' };
-
-function storageKey(channel: ChannelKey, brandId: string) { return `adcc-search-ads-${channel}-${brandId}`; }
-
-function loadRowState(channel: ChannelKey, brandId: string, base: KeywordAnalysisRow[]): (KeywordAnalysisRow & { budget: number; automations: string[] })[] {
-  try {
-    const raw = localStorage.getItem(storageKey(channel, brandId));
-    if (raw) {
-      const saved = JSON.parse(raw) as Record<string, { status: 'active' | 'paused'; budget: number; automation?: string; automations?: string[] }>;
-      return base.map((r) => {
-        const entry = saved[r.id];
-        // 예전 버전은 규칙을 하나(automation: string)만 저장했습니다. 그 데이터도 배열
-        // 형태로 자연스럽게 이어받습니다.
-        const automations = entry?.automations ?? (entry?.automation && entry.automation !== '자동화 없음' ? [entry.automation] : []);
-        return { ...r, status: entry?.status ?? r.status, budget: entry?.budget ?? Math.round(r.spend * 1.2), automations };
-      });
-    }
-  } catch { /* 무시 */ }
-  return base.map((r) => ({ ...r, budget: Math.round(r.spend * 1.2), automations: [] }));
+export function SearchAdBrandListPage({channel}:{channel:ChannelKey}){
+  const [query,setQuery]=useState('');const {filterValue}=useAdvertiserFilter();const [advertisers]=useAdvertisers();
+  const metrics=useMetricRows<KeywordMetricRow>('/metrics/keywords',{channel});
+  const connByAdv=useMemo(()=>new Map((metrics.meta?.connections||[]).filter(c=>c.channel===channel).map(c=>[c.advertiserId,c])),[metrics.meta,channel]);
+  const rows=useMemo(()=>advertisers.filter(a=>a.name.toLowerCase().includes(query.toLowerCase())&&matchesAdvertiserFilter(a.name,filterValue)).map(a=>{const part=metrics.rows.filter(r=>r.advertiserId===a.id);return{advertiser:a,keywordCount:part.length,spend:part.reduce((s,r)=>s+r.spend,0),clicks:part.reduce((s,r)=>s+r.clicks,0),conversions:part.reduce((s,r)=>s+r.dbCount,0),connection:connByAdv.get(a.id)}}),[advertisers,query,filterValue,metrics.rows,connByAdv]);
+  return <div><PageHeader title={`${CHANNEL_LABEL[channel]} 검색광고 관리`} description="선택 기간에 매체 API에서 수집한 실제 키워드 성과만 표시합니다." action={<a className="btn secondary" href={CHANNEL_URL[channel]} target="_blank" rel="noreferrer">광고센터 <ExternalLink size={14}/></a>}/><MetricsDateBar/>
+    <div className="channel-switch-tabs">{(['naver','google','daangn','kakao'] as ChannelKey[]).map(c=><Link key={c} to={`/search-ads/${c}`} className={c===channel?'active':''}>{CHANNEL_LABEL[c]}</Link>)}</div>
+    <div className="search-input-wrap"><Search size={15}/><input className="search-input" placeholder="광고주 이름으로 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+    <div className="card" style={{padding:0}}><div className="table-scroll"><table className="brand-table"><thead><tr><th>광고주명</th><th>연동 상태</th><th className="num">키워드 수</th><th className="num">광고비</th><th className="num">클릭</th><th className="num">전환</th><th></th></tr></thead><tbody>{rows.map(r=><tr key={r.advertiser.id}><td><b>{r.advertiser.name}</b></td><td><Badge tone={r.connection?.status==='connected'?'success':r.connection?.status==='error'?'danger':'neutral'}>{connectionText(r.connection?.status)}</Badge></td><td className="num">{r.keywordCount}</td><td className="num">{won(r.spend)}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num">{r.conversions.toLocaleString()}</td><td style={{textAlign:'right'}}><Link className="btn btn-primary" to={`/search-ads/${channel}/${r.advertiser.id}`}>보기</Link></td></tr>)}{!metrics.loading&&!rows.length&&<tr><td colSpan={7} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>광고주가 없습니다.</td></tr>}</tbody></table></div></div>
+    <p className="footnote">미연동·커넥터 미구현 매체는 0 성과를 생성하지 않습니다. 현재 실제 키워드 수집 커넥터는 구현된 매체에서만 데이터가 표시됩니다.</p>
+  </div>;
 }
 
-// ============================================================
-// 채널별 광고주 목록
-// ============================================================
-export function SearchAdBrandListPage({ channel }: { channel: ChannelKey }) {
-  const [query, setQuery] = useState('');
-  const { filterValue } = useAdvertiserFilter();
-  const label = CHANNEL_LABEL[channel];
-  const rows = useMemo(
-    () => BRAND_REPORTS.filter(({ config }) => config.brandName.toLowerCase().includes(query.trim().toLowerCase()) && matchesAdvertiserFilter(config.brandName, filterValue))
-      .map(({ config }) => {
-        const keywordRows = loadRowState(channel, config.brandId, getKeywordAnalysisRows(config.brandId, config.brandName, CHANNEL_LABEL[channel]));
-        return { config, keywordCount: keywordRows.length, totalBudget: keywordRows.reduce((s, r) => s + r.budget, 0), totalSpend: keywordRows.reduce((s, r) => s + r.spend, 0) };
-      }),
-    [query, filterValue, channel]
-  );
-  type SortKey = 'name' | 'keywordCount' | 'totalBudget' | 'totalSpend';
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  // 값 범위 필터: "지금 정렬 기준으로 쓰는 항목"(예: 총 일예산, 소진 비용)의 최소·최대를
-  // 지정해서 그 범위에 있는 광고주만 봅니다.
-  const [rangeMin, setRangeMin] = useState('');
-  const [rangeMax, setRangeMax] = useState('');
-  const rangedRows = useMemo(() => {
-    if (sortKey === 'name' || (!rangeMin && !rangeMax)) return rows;
-    const min = rangeMin ? Number(rangeMin) : -Infinity;
-    const max = rangeMax ? Number(rangeMax) : Infinity;
-    return rows.filter(r => { const v = r[sortKey] as number; return v >= min && v <= max; });
-  }, [rows, sortKey, rangeMin, rangeMax]);
-  const sortedRows = useMemo(() => [...rangedRows].sort((a, b) => {
-    const valueOf = (r: typeof a) => sortKey === 'name' ? r.config.brandName : r[sortKey];
-    const av = valueOf(a), bv = valueOf(b);
-    const diff = typeof av === 'string' ? av.localeCompare(String(bv)) : (av as number) - (bv as number);
-    return sortDir === 'asc' ? diff : -diff;
-  }), [rangedRows, sortKey, sortDir]);
-  const toggleSort = (key: SortKey) => { if (sortKey === key) setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey(key); setSortDir('asc'); } };
-  const sortArrow = (key: SortKey) => sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
-  return (
-    <div>
-      <PageHeader title={`${label} 키워드 보고서`} description={`${CHANNEL_AD_NAME[channel]} 키워드별 효율을 분석하고 예산 조정·ON/OFF를 관리합니다.`} />
-      <div className="channel-switch-tabs">
-        {(['naver', 'google', 'daangn', 'kakao'] as ChannelKey[]).map(c => (
-          <Link key={c} to={`/search-ads/${c}`} className={c === channel ? 'active' : ''}>{CHANNEL_LABEL[c]}</Link>
-        ))}
-      </div>
-      {filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}
-      <div className="search-input-wrap"><Search size={15} /><input className="search-input" placeholder="광고주 이름으로 검색" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      {sortKey !== 'name' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: '#64748b', margin: '8px 0' }}>
-          {sortKey === 'keywordCount' ? '키워드 수' : sortKey === 'totalBudget' ? '총 일예산' : '소진 비용'} 범위:
-          <input type="number" placeholder="최소" value={rangeMin} onChange={e => setRangeMin(e.target.value)} style={{ width: 90, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 12 }} />
-          ~
-          <input type="number" placeholder="최대" value={rangeMax} onChange={e => setRangeMax(e.target.value)} style={{ width: 90, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 12 }} />
-          {(rangeMin || rangeMax) && <button type="button" className="btn sm secondary" onClick={() => { setRangeMin(''); setRangeMax(''); }}>해제</button>}
-        </div>
-      )}
-      <div className="card" style={{ padding: 0 }}>
-        <table className="brand-table">
-          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>광고주명{sortArrow('name')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('keywordCount')}>키워드 수{sortArrow('keywordCount')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalBudget')}>총 일예산{sortArrow('totalBudget')}</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('totalSpend')}>현재 소진 비용{sortArrow('totalSpend')}</th><th></th></tr></thead>
-          <tbody>
-            {sortedRows.map(({ config, keywordCount, totalBudget, totalSpend }) => {
-              return (
-                <tr key={config.brandId}>
-                  <td className="brand-name-cell">{config.brandName}</td>
-                  <td className="num">{keywordCount}개</td>
-                  <td className="num">{won(totalBudget)}</td>
-                  <td className="num">{won(totalSpend)}</td>
-                  <td style={{ textAlign: 'right' }}><Link className="btn btn-primary" to={`/search-ads/${channel}/${config.brandId}`}>관리하기</Link></td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>해당 광고주가 없습니다.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <MockNote>{`${label} API 연동 전 화면 검증용 mock 데이터입니다.`}</MockNote>
-    </div>
-  );
-}
-
-// ============================================================
-// 채널별 키워드 관리 상세 (효율 분석 + 예산 증액/감액 + ON/OFF)
-// ============================================================
-export function SearchAdKeywordDetailPage({ channel }: { channel: ChannelKey }) {
-  const { brandId } = useParams();
-  const [query, setQuery] = useState('');
-  const [grade, setGrade] = useState<'all' | KeywordAnalysisGrade>('all');
-  type SortKey = 'impressions' | 'clicks' | 'ctr' | 'spend' | 'conversions' | 'cvr' | 'budget';
-  const [sortKey, setSortKey] = useState<SortKey>('spend');
-  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
-  const label = CHANNEL_LABEL[channel];
-  const found = BRAND_REPORTS.find(({ config }) => config.brandId === brandId);
-  const baseRows = useMemo(() => (found ? getKeywordAnalysisRows(found.config.brandId, found.config.brandName, CHANNEL_LABEL[channel]) : []), [found, channel]);
-  const [rows, setRows] = useState(() => (found ? loadRowState(channel, found.config.brandId, baseRows) : []));
-  const [editingAutomation, setEditingAutomation] = useState<typeof rows[number] | null>(null);
-
-  if (!found) {
-    return <div><Link className="breadcrumb-back" to={`/search-ads/${channel}`}>← 광고주 목록으로</Link><PageHeader title="광고주를 찾을 수 없습니다" description="관리 대상 광고주가 존재하지 않습니다." /></div>;
-  }
-  const { config } = found;
-
-  const persist = (next: typeof rows) => {
-    setRows(next);
-    const toSave: Record<string, { status: 'active' | 'paused'; budget: number; automations: string[] }> = {};
-    next.forEach((r) => { toSave[r.id] = { status: r.status, budget: r.budget, automations: r.automations }; });
-    localStorage.setItem(storageKey(channel, config.brandId), JSON.stringify(toSave));
-  };
-  const adjustBudget = (id: string, pctChange: number) => persist(rows.map((r) => (r.id === id ? { ...r, budget: Math.max(0, Math.round(r.budget * (1 + pctChange / 100))) } : r)));
-  const toggleStatus = (id: string) => persist(rows.map((r) => (r.id === id ? { ...r, status: r.status === 'active' ? 'paused' : 'active' } : r)));
-
-  const filteredRows = [...rows.filter((row) => row.keyword.toLowerCase().includes(query.trim().toLowerCase()) && (grade === 'all' || row.grade === grade))].sort((a, b) => {
-    const valueOf = (r: typeof a) => sortKey === 'ctr' ? (r.impressions > 0 ? r.clicks / r.impressions : 0)
-      : sortKey === 'cvr' ? (r.clicks > 0 ? r.conversions / r.clicks : 0)
-      : r[sortKey];
-    const diff = valueOf(a) - valueOf(b);
-    return sortDir === 'desc' ? -diff : diff;
-  });
-  const toggleSort = (key: SortKey) => { if (sortKey === key) setSortDir(sortDir === 'desc' ? 'asc' : 'desc'); else { setSortKey(key); setSortDir('desc'); } };
-  const sortArrow = (key: SortKey) => sortKey === key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : '';
-  const high = rows.filter((r) => r.grade === 'high_performance');
-  const waste = rows.filter((r) => r.grade === 'waste');
-  const exclude = rows.filter((r) => r.grade === 'exclude_candidate');
-  const expansion = rows.filter((r) => r.grade === 'expansion_candidate');
-  const totalBudget = rows.reduce((s, r) => s + r.budget, 0);
-
-  return (
-    <div>
-      <Link className="breadcrumb-back" to={`/search-ads/${channel}`}>← 광고주 목록으로</Link>
-      <PageHeader title={`${config.brandName} · ${label} 키워드 관리`} description={`${CHANNEL_AD_NAME[channel]} 키워드별 노출·클릭·광고비·전환 효율 분석과 예산 조정, ON/OFF를 관리합니다.`} action={<a className="btn primary" href={CHANNEL_URL[channel]} target="_blank" rel="noreferrer"><ExternalLink size={15}/> {label} 검색광고 바로가기</a>} />
-      <div className="channel-switch-tabs">
-        {(['naver', 'google', 'daangn', 'kakao'] as ChannelKey[]).map(c => (
-          <Link key={c} to={`/search-ads/${c}/${config.brandId}`} className={c === channel ? 'active' : ''}>{CHANNEL_LABEL[c]}</Link>
-        ))}
-      </div>
-
-      <div className="summary-grid">
-        <div className="summary-card"><div className="summary-card-label">전체 키워드</div><div className="summary-card-value">{rows.length}개</div></div>
-        <div className="summary-card"><div className="summary-card-label">고성과</div><div className="summary-card-value">{high.length}개</div></div>
-        <div className="summary-card"><div className="summary-card-label">비용 낭비</div><div className="summary-card-value">{waste.length}개</div></div>
-        <div className="summary-card"><div className="summary-card-label">제외 후보</div><div className="summary-card-value">{exclude.length}개</div></div>
-        <div className="summary-card"><div className="summary-card-label">일 예산 합계</div><div className="summary-card-value">{won(totalBudget)}</div></div>
-      </div>
-
-      <div className="keyword-toolbar">
-        <div className="search-input-wrap" style={{ marginBottom: 0 }}><Search size={15} /><input className="search-input" placeholder="키워드 검색" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-        <select className="form-select" value={grade} onChange={(e) => setGrade(e.target.value as any)}>
-          <option value="all">전체 분석 등급</option>
-          <option value="high_performance">고성과</option><option value="stable">안정</option><option value="waste">비용 낭비</option>
-          <option value="exclude_candidate">제외 후보</option><option value="expansion_candidate">확장 후보</option>
-        </select>
-      </div>
-
-      <div className="card" style={{ padding: 0 }}>
-        <div className="table-scroll">
-          <table className="data-table keyword-analysis-table">
-            <thead><tr><th>키워드</th><th>광고그룹</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('impressions')}>노출{sortArrow('impressions')}</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('clicks')}>클릭{sortArrow('clicks')}</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('ctr')}>CTR{sortArrow('ctr')}</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('spend')}>광고비{sortArrow('spend')}</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('conversions')}>전환{sortArrow('conversions')}</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('cvr')}>전환율{sortArrow('cvr')}</th><th>분석</th><th className="num" style={{ cursor: 'pointer' }} onClick={() => toggleSort('budget')}>일 예산{sortArrow('budget')}</th><th>예산 조정</th><th>ON/OFF</th><th>ON/OFF 자동화</th></tr></thead>
-            <tbody>
-              {filteredRows.map((row) => (
-                <tr key={row.id}>
-                  <td><strong>{row.keyword}</strong>{row.memo && <div className="table-cell-note">{row.memo}</div>}</td>
-                  <td>{row.adGroup || '-'}</td>
-                  <td className="num">{row.impressions.toLocaleString()}</td>
-                  <td className="num">{row.clicks.toLocaleString()}</td>
-                  <td className="num">{pct(row.clicks, row.impressions)}</td>
-                  <td className="num">{won(row.spend)}</td>
-                  <td className="num">{row.conversions.toLocaleString()}</td>
-                  <td className="num">{pct(row.conversions, row.clicks)}</td>
-                  <td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td>
-                  <td className="num">{won(row.budget)}</td>
-                  <td>
-                    <div className="inline-actions">
-                      <button className="icon-btn" title="예산 10% 증액" onClick={() => adjustBudget(row.id, 10)}><TrendingUp size={14} color="var(--accent)" /></button>
-                      <button className="icon-btn" title="예산 10% 감액" onClick={() => adjustBudget(row.id, -10)}><TrendingDown size={14} color="var(--danger)" /></button>
-                    </div>
-                  </td>
-                  <td><button className={`switch ${row.status === 'active' ? 'on' : ''}`} aria-pressed={row.status === 'active'} onClick={() => toggleStatus(row.id)} title={row.status === 'active' ? '끄기' : '켜기'}><i /></button></td>
-                  <td><button type="button" className="btn secondary sm" onClick={() => setEditingAutomation(row)}>{row.automations.length > 0 ? `${row.automations.length}개 규칙` : '자동화 없음'}</button></td>
-                </tr>
-              ))}
-              {filteredRows.length === 0 && <tr><td colSpan={13} style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>조건에 맞는 키워드가 없습니다.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="keyword-analysis-cards">
-        <div className="card"><div className="card-title">고성과 키워드</div>{high.map((r) => <p key={r.id} className="analysis-item"><Badge tone="success">{r.keyword}</Badge> 전환율 {pct(r.conversions, r.clicks)}</p>)}</div>
-        <div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map((r) => <p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> {r.memo}</p>)}</div>
-        <div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map((r) => <p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> {r.memo}</p>)}</div>
-        <div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map((r) => <p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> {r.memo}</p>)}</div>
-      </div>
-      <div className="footnote">예산 증액/감액과 ON/OFF는 지금 이 화면·브라우저에 저장됩니다. 실제 매체에 반영되려면 각 채널의 광고계정 연동(쓰기 권한)이 필요합니다.</div>
-      <MockNote>{`${label} API 연동 전 화면 검증용 mock 데이터입니다.`}</MockNote>
-      {editingAutomation && (
-        <AutomationEditor
-          title={`${editingAutomation.keyword} ON/OFF 자동화`}
-          value={editingAutomation.automations}
-          onClose={() => setEditingAutomation(null)}
-          onSave={(labels) => { persist(rows.map((r) => (r.id === editingAutomation.id ? { ...r, automations: labels } : r))); setEditingAutomation(null); }}
-        />
-      )}
-    </div>
-  );
+export function SearchAdKeywordDetailPage({channel}:{channel:ChannelKey}){
+  const {brandId}=useParams();const [query,setQuery]=useState('');const [advertisers]=useAdvertisers();const found=advertisers.find(a=>a.id===brandId);
+  const metrics=useMetricRows<KeywordMetricRow>('/metrics/keywords',{advertiserId:brandId,channel});
+  const rows=useMemo(()=>metrics.rows.filter(r=>!query||r.keyword.toLowerCase().includes(query.toLowerCase())),[metrics.rows,query]);
+  const connection=(metrics.meta?.connections||[]).find(c=>c.advertiserId===brandId&&c.channel===channel);
+  if(!found)return <div><Link className="breadcrumb-back" to={`/search-ads/${channel}`}>← 광고주 목록으로</Link><PageHeader title="광고주를 찾을 수 없습니다"/></div>;
+  return <div><Link className="breadcrumb-back" to={`/search-ads/${channel}`}>← 광고주 목록으로</Link><PageHeader title={`${found.name} · ${CHANNEL_LABEL[channel]} 검색광고`} description="실제 keyword_daily_metrics를 조회하는 읽기 전용 성과 화면입니다." action={<a className="btn secondary" href={CHANNEL_URL[channel]} target="_blank" rel="noreferrer">광고센터 <ExternalLink size={14}/></a>}/><MetricsDateBar/>
+    <div className="card" style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}><Badge tone={connection?.status==='connected'?'success':connection?.status==='error'?'danger':'neutral'}>{CHANNEL_LABEL[channel]} · {connectionText(connection?.status)}</Badge><div className="search-input-wrap" style={{margin:0,marginLeft:'auto'}}><Search size={15}/><input className="search-input" placeholder="키워드 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div></div>
+    <div className="card" style={{padding:0}}><div className="table-scroll"><table className="data-table"><thead><tr><th>키워드</th><th>캠페인</th><th>광고그룹</th><th className="num">노출</th><th className="num">클릭</th><th className="num">CTR</th><th className="num">CPC</th><th className="num">CPM</th><th className="num">광고비</th><th className="num">전환</th><th className="num">전환율</th><th className="num">CPA</th><th className="num">전환매출</th><th className="num">ROAS</th><th>분석</th></tr></thead><tbody>{rows.map((r,i)=>{const g=grade(r);return <tr key={`${r.keywordId||r.keyword}-${i}`}><td><b>{r.keyword}</b></td><td>{r.campaignName||'-'}</td><td>{r.adgroupId||'-'}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num">{pct(r.clicks,r.impressions)}</td><td className="num">{r.clicks?won(r.spend/r.clicks):'-'}</td><td className="num">{r.impressions?won(r.spend/r.impressions*1000):'-'}</td><td className="num">{won(r.spend)}</td><td className="num">{r.dbCount.toLocaleString()}</td><td className="num">{pct(r.dbCount,r.clicks)}</td><td className="num">{r.dbCount?won(r.spend/r.dbCount):'-'}</td><td className="num">{r.revenue?won(r.revenue):'-'}</td><td className="num">{r.revenue?`${(r.roas||0).toFixed(1)}%`:'-'}</td><td><Badge tone={g.tone}>{g.label}</Badge></td></tr>})}{!metrics.loading&&!rows.length&&<tr><td colSpan={15} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택 기간에 실제 키워드 데이터가 없습니다.</td></tr>}</tbody></table></div></div>
+    <p className="footnote">예산 변경·ON/OFF 쓰기 기능은 해당 매체의 쓰기 권한과 서버 API가 구현되기 전까지 제공하지 않습니다. 화면에서 가짜로 상태를 변경하지 않습니다.</p>
+  </div>;
 }
 
 export function AutomationModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {

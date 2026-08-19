@@ -7,6 +7,8 @@ import {
   UsersRound, Wand2, WalletCards
 } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
 import { loadDbRows } from '../utils/dbDataStore';
 import { loadCreativeAnalysisRows, creativeInsight, normalizeCreativeMedia, type CreativeAnalysisRow } from '../analytics/creativeAnalysis';
 import { calculateCreativeFatigue } from '../analytics/creativeFatigueAnalysis';
@@ -15,17 +17,9 @@ import { saveCreativeBrief } from '../utils/creativeBriefStore';
 import { useLiveCreatives } from '../hooks/useLiveCreatives';
 
 const MEDIA_COLORS:Record<string,string>={'메타':'#4776ff','네이버':'#03c75a','구글 검색':'#6b7280','유튜브':'#ef4444','당근':'#ff6f0f','카카오':'#f5c400','틱톡':'#111827'};
-const periods=['최근 7일','최근 14일','최근 30일','이번 달','전체'];
 const confidenceTone:Record<string,string>={'높음':'good','보통':'neutral','참고':'warning','판단 보류':'muted'};
 const money=(n:number)=>n?`₩${Math.round(n).toLocaleString()}`:'-';
 const pct=(n:number,digits=1)=>Number.isFinite(n)?`${n.toFixed(digits)}%`:'-';
-const iso=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-function addDays(value:string,days:number){const d=new Date(value+'T00:00:00');d.setDate(d.getDate()+days);return iso(d);}
-function periodRange(period:string,latest:string){
-  if(!latest||period==='전체') return {from:'',to:''};
-  if(period==='이번 달') return {from:latest.slice(0,7)+'-01',to:latest};
-  const days=Number(period.match(/\d+/)?.[0]||30); return {from:addDays(latest,-days+1),to:latest};
-}
 function statusTone(row:CreativeAnalysisRow){return row.analysisStatus==='매우 우수'||row.analysisStatus==='우수'?'good':row.analysisStatus==='정상'?'neutral':row.analysisStatus==='주의'?'warning':row.analysisStatus==='개선 필요'?'bad':'muted';}
 function fatigueTone(row:CreativeAnalysisRow){const score=row.fatigueScore;return score===undefined?'muted':score>=80?'bad':score>=60?'warning':score>=35?'neutral':'good';}
 function previewStyle(row:CreativeAnalysisRow){
@@ -45,9 +39,9 @@ function PatternTable({title,rows}:{title:string;rows:CreativePattern[]}){return
 
 export function CreativeAnalysisPage(){
   const navigate=useNavigate(); const [params,setParams]=useSearchParams();
-  const [period,setPeriod]=useState(params.get('period')||'최근 30일');
+  const {range}=useMetricsQuery();
   const [query,setQuery]=useState(''); const [sort,setSort]=useState<'score'|'spend'|'ctr'|'cpa'|'db'|'fatigue'>('score'); const [dir,setDir]=useState<'desc'|'asc'>('desc');
-  const rawDb=loadDbRows(); const latestDb=(()=>{const dates=rawDb.map(row=>row.date).sort();return dates[dates.length-1]||''})(); const range=periodRange(period,latestDb);
+  const rawDb=loadDbRows();
   const scopedDb=rawDb.filter(row=>(!range.from||row.date>=range.from)&&(!range.to||row.date<=range.to));
   const liveCreatives=useLiveCreatives();
   const allRows=useMemo(()=>loadCreativeAnalysisRows(scopedDb,liveCreatives),[JSON.stringify(scopedDb),liveCreatives]);
@@ -95,7 +89,7 @@ export function CreativeAnalysisPage(){
   }
 
   return <div className="creative-analysis-page"><PageHeader title="소재 분석" description="이미지·영상·카피의 광고 성과, 실제 DB 품질, 피로도와 성공 패턴을 분석하고 콘텐츠 제작으로 연결합니다."/>
-    <section className="card creative-analysis-filters"><label>기간<select value={period} onChange={e=>{setPeriod(e.target.value);const next=new URLSearchParams(params);next.set('period',e.target.value);setParams(next,{replace:true})}}>{periods.map(v=><option key={v}>{v}</option>)}</select></label><label>광고주<select value={advertiser} onChange={e=>updateParam('advertiser',e.target.value)}><option value="">전체</option>{advertisers.map(v=><option key={v}>{v}</option>)}</select></label><label>매체<select value={media} onChange={e=>updateParam('media',e.target.value)}><option value="">전체</option>{medias.map(v=><option key={v}>{v}</option>)}</select></label><label>캠페인<select value={campaign} onChange={e=>updateParam('campaign',e.target.value)}><option value="">전체</option>{campaigns.map(v=><option key={v}>{v}</option>)}</select></label><label>소재 유형<select value={type} onChange={e=>updateParam('type',e.target.value)}><option value="">전체</option>{types.map(v=><option key={v}>{v}</option>)}</select></label><button className="btn secondary" onClick={()=>{setPeriod('최근 30일');setParams({}, {replace:true});setQuery('')}}><RefreshCw size={14}/> 초기화</button></section>
+    <MetricsDateBar/><section className="card creative-analysis-filters"><label>광고주<select value={advertiser} onChange={e=>updateParam('advertiser',e.target.value)}><option value="">전체</option>{advertisers.map(v=><option key={v}>{v}</option>)}</select></label><label>매체<select value={media} onChange={e=>updateParam('media',e.target.value)}><option value="">전체</option>{medias.map(v=><option key={v}>{v}</option>)}</select></label><label>캠페인<select value={campaign} onChange={e=>updateParam('campaign',e.target.value)}><option value="">전체</option>{campaigns.map(v=><option key={v}>{v}</option>)}</select></label><label>소재 유형<select value={type} onChange={e=>updateParam('type',e.target.value)}><option value="">전체</option>{types.map(v=><option key={v}>{v}</option>)}</select></label><button className="btn secondary" onClick={()=>{setParams({}, {replace:true});setQuery('')}}><RefreshCw size={14}/> 필터 초기화</button></section>
     <section className="creative-analysis-kpi-grid"><MiniKpi icon={<ImageIcon/>} label="분석 소재" value={`${rows.length}개`} sub={`성과 연결 ${usable.length}개`}/><MiniKpi icon={<WalletCards/>} label="광고비" value={money(totalSpend)} sub="연결 소재 합계"/><MiniKpi icon={<MousePointerClick/>} label="클릭" value={totalClicks?totalClicks.toLocaleString():'-'} sub={totalImpressions?`평균 CTR ${pct(avgCtr,2)}`:'광고 성과 미연결'}/><MiniKpi icon={<Database/>} label="실제 DB" value={totalDb?totalDb.toLocaleString():'-'} sub={totalValid?`유효 DB ${totalValid.toLocaleString()}`:'Google Sheets 소재ID 연결 시 집계'}/><MiniKpi icon={<CircleDollarSign/>} label="평균 DB 비용" value={avgCpa?money(avgCpa):'-'} sub="실제 DB 연결 기준"/><MiniKpi icon={<Target/>} label="성과 우수" value={`${scored.filter(r=>(r.score??0)>=80).length}개`} sub="성과점수 80+"/><MiniKpi icon={<Gauge/>} label="피로 주의" value={`${rows.filter(r=>(r.fatigueScore??0)>=60).length}개`} sub="피로도 60+"/><MiniKpi icon={<Sparkles/>} label="패턴 표본" value={`${patterns.patterns.length}개`} sub={`우수 패턴 ${patterns.winning.length}개`}/></section>
 
     <div className="creative-analysis-two creative-featured-grid"><section className="card creative-analysis-panel"><div className="creative-panel-head"><div><h3>성과 우수 소재</h3><p>성과점수와 KPI/DB 품질을 종합해 봅니다.</p></div></div><div className="creative-featured-cards">{best.length?best.map(row=><button key={row.creative.id} onClick={()=>updateParam('creative',row.creative.id)}><CreativePreview row={row}/><div><b>{row.creative.name}</b><small>{row.creative.brand} · {normalizeCreativeMedia(row.creative.platform)}</small><span><em className="good">{row.score}점</em>{row.db>0&&<>DB {row.db.toLocaleString()}</>}{row.cpa>0&&<>CPA {money(row.cpa)}</>}</span></div><ChevronRight size={16}/></button>):<p className="creative-analysis-empty">평가 가능한 소재 성과가 없습니다.</p>}</div></section><section className="card creative-analysis-panel"><div className="creative-panel-head"><div><h3>개선 필요 소재</h3><p>저성과 또는 피로 신호가 큰 소재를 우선 표시합니다.</p></div></div><div className="creative-featured-cards">{worst.length?worst.map(row=><button key={row.creative.id} onClick={()=>updateParam('creative',row.creative.id)}><CreativePreview row={row}/><div><b>{row.creative.name}</b><small>{row.creative.brand} · {normalizeCreativeMedia(row.creative.platform)}</small><span><em className={statusTone(row)}>{row.score}점</em><>피로 {row.fatigueScore??'-'}</></span></div><ChevronRight size={16}/></button>):<p className="creative-analysis-empty">평가 가능한 소재 성과가 없습니다.</p>}</div></section></div>

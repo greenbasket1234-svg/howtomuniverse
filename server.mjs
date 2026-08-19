@@ -2,7 +2,6 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import pg from 'pg';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -54,7 +53,7 @@ const types = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; char
    ======================================================================== */
 const DATA_DIR = process.env.HOWTOM_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(baseDir, '.data');
 const DB_FILE = path.join(DATA_DIR, 'howtom-db.json');
-const EMPTY_DB = Object.freeze({ advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], creativeMetrics: [], keywordMetrics: [], scheduleSlots: [] });
+const EMPTY_DB = Object.freeze({ advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], campaignMetrics: [], creativeMetrics: [], creativeDailyMetrics: [], keywordMetrics: [], keywordDailyMetrics: [], syncValidationLogs: [], scheduleSlots: [] });
 
 function ensureDbFile() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -71,12 +70,16 @@ function readDb() {
       blogAssets: Array.isArray(parsed.blogAssets) ? parsed.blogAssets : [],
       logs: Array.isArray(parsed.logs) ? parsed.logs : [],
       dailyMetrics: Array.isArray(parsed.dailyMetrics) ? parsed.dailyMetrics : [],
+      campaignMetrics: Array.isArray(parsed.campaignMetrics) ? parsed.campaignMetrics : [],
       creativeMetrics: Array.isArray(parsed.creativeMetrics) ? parsed.creativeMetrics : [],
+      creativeDailyMetrics: Array.isArray(parsed.creativeDailyMetrics) ? parsed.creativeDailyMetrics : [],
       keywordMetrics: Array.isArray(parsed.keywordMetrics) ? parsed.keywordMetrics : [],
+      keywordDailyMetrics: Array.isArray(parsed.keywordDailyMetrics) ? parsed.keywordDailyMetrics : [],
+      syncValidationLogs: Array.isArray(parsed.syncValidationLogs) ? parsed.syncValidationLogs : [],
       scheduleSlots: Array.isArray(parsed.scheduleSlots) ? parsed.scheduleSlots : [],
     };
   } catch {
-    return { advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], creativeMetrics: [], keywordMetrics: [], scheduleSlots: [] };
+    return { advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], campaignMetrics: [], creativeMetrics: [], creativeDailyMetrics: [], keywordMetrics: [], keywordDailyMetrics: [], syncValidationLogs: [], scheduleSlots: [] };
   }
 }
 function writeDb(next) {
@@ -141,7 +144,17 @@ const JWT_SECRET = process.env.JWT_SECRET || '';
    실행했을 때만 데이터가 채워집니다. 다음 단계에서 실제 읽기/쓰기를 Postgres로 옮깁니다.
    ======================================================================== */
 const DATABASE_URL = process.env.DATABASE_URL || '';
-const pgPool = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
+let pgPool = null;
+if (DATABASE_URL) {
+  try {
+    const pgModule = await import('pg');
+    const pg = pgModule.default || pgModule;
+    pgPool = new pg.Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  } catch (error) {
+    console.error('[오류] DATABASE_URL이 설정됐지만 pg 패키지를 불러오지 못했습니다:', error?.message || error);
+    if (isPublicRuntime) process.exit(1);
+  }
+}
 
 const ENCRYPTION_KEY_HEX = process.env.SECRET_ENCRYPTION_KEY || '';
 const ENCRYPTION_KEY = ENCRYPTION_KEY_HEX.length === 64 ? Buffer.from(ENCRYPTION_KEY_HEX, 'hex') : null;
@@ -276,21 +289,47 @@ async function metaFetchInsights(accountId, since, until) {
   }));
 }
 
-/** 광고(소재) 단위 인사이트를 가져옵니다. 기간 전체 합산값 하나씩 돌려줍니다. */
-async function metaFetchAdInsights(accountId, since, until) {
+/** Meta 레벨별 일별 인사이트. campaign/ad 모두 time_increment=1을 강제합니다. */
+async function metaFetchLevelInsights(accountId, since, until, level) {
   const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
-  const data = await metaGraphGet(`/${id}/insights`, {
-    time_range: JSON.stringify({ since, until }),
-    fields: 'ad_id,ad_name,campaign_name,impressions,clicks,spend,actions,action_values',
-    level: 'ad',
-    limit: '500',
-  });
-  const rows = Array.isArray(data.data) ? data.data : [];
+  const identityFields = level === 'campaign'
+    ? 'campaign_id,campaign_name'
+    : 'campaign_id,campaign_name,ad_id,ad_name';
+  let rows = [];
+  let after;
+  for (let page = 0; page < 40; page++) {
+    const data = await metaGraphGet(`/${id}/insights`, {
+      time_range: JSON.stringify({ since, until }),
+      fields: `${identityFields},impressions,clicks,spend,actions,action_values,date_start,date_stop`,
+      time_increment: '1',
+      level,
+      limit: '500',
+      ...(after ? { after } : {}),
+    });
+    rows = rows.concat(Array.isArray(data.data) ? data.data : []);
+    after = data.paging?.cursors?.after;
+    if (!after || !data.paging?.next) break;
+  }
   return rows.map(row => ({
-    adId: row.ad_id, adName: row.ad_name || '(이름 없음)', campaignName: row.campaign_name || '',
-    impressions: Number(row.impressions || 0), clicks: Number(row.clicks || 0), spend: Number(row.spend || 0),
-    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY), revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
+    date: row.date_start,
+    campaignId: row.campaign_id || '',
+    campaignName: row.campaign_name || '(이름 없음)',
+    ...(level === 'ad' ? { adId: row.ad_id || '', adName: row.ad_name || '(이름 없음)' } : {}),
+    impressions: Number(row.impressions || 0),
+    clicks: Number(row.clicks || 0),
+    spend: Number(row.spend || 0),
+    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY),
+    purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
+    revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
   }));
+}
+
+async function metaFetchCampaignInsights(accountId, since, until) {
+  return metaFetchLevelInsights(accountId, since, until, 'campaign');
+}
+
+async function metaFetchAdInsights(accountId, since, until) {
+  return metaFetchLevelInsights(accountId, since, until, 'ad');
 }
 
 /** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
@@ -321,102 +360,161 @@ async function metaFetchAdCreativeThumbnails(adIds) {
   return result;
 }
 
-/** 검색광고 키워드 단위 인사이트 — 지금은 구현된 매체가 없어 항상 빈 배열입니다.
-    네이버/구글/카카오 검색광고 커넥터가 추가되면 이 함수들이 실제 데이터를 반환하게 됩니다. */
-/**
- * 캠페인 → 광고그룹 → 소재(광고) 순으로 실제 소재 이름을 가져옵니다. 성과 수치는 아직
- * /stats 연동이 계정별로 불안정해 0으로 둡니다 - 소재 관리 화면에 실제 이름만 우선 보여줍니다.
- */
-async function naverFetchCreatives(credentials) {
+/** 네이버 광고그룹/소재 마스터를 수집합니다. */
+async function naverFetchAdMasters(credentials) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const adgroups = [];
   for (const c of campaigns) {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
     if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '' })));
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 120));
   }
   const ads = [];
   for (const ag of adgroups) {
     const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []);
-    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignName: ag.campaignName })));
-    await new Promise(r => setTimeout(r, 300));
+    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, adgroupId: ag.nccAdgroupId })));
+    await new Promise(r => setTimeout(r, 120));
   }
-  return ads.slice(0, 200).map(a => ({
-    adId: a.nccAdId, adName: a.ad?.headline || a.ad?.description || a.nccAdId || '(이름 없음)', campaignName: a.campaignName || '',
-    impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0,
-    thumbnailUrl: null, mediaType: 'image', title: a.ad?.headline || '', body: a.ad?.description || '', cta: '',
-  }));
+  return ads;
 }
 
-async function naverFetchKeywordMetrics(credentials, since, until) {
-  const campaigns = await naverFetchCampaigns(credentials);
-  const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
-  if (!campaignIds.length) return [];
-  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+/** 네이버 /stats의 ID 묶음을 일별 행으로 정규화합니다. timeIncrement=1이 무시되는 계정은 일자별 재요청합니다. */
+async function naverStatsForIdsDaily(credentials, ids, since, until) {
+  if (!ids.length) return [];
+  const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
+  const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
+  const fetchRange = async (rangeSince, rangeUntil) => {
+    let data = await naverApiRequest('GET', '/stats', {
+      ids,
+      fields: JSON.stringify(FULL_FIELDS),
+      timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
+      timeIncrement: '1',
+    }, credentials).catch(() => null);
+    if (!data) {
+      data = await naverApiRequest('GET', '/stats', {
+        ids,
+        fields: JSON.stringify(BASIC_FIELDS),
+        timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
+        timeIncrement: '1',
+      }, credentials).catch(() => null);
+    }
+    return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+  };
 
-  // 캠페인 → 광고그룹 → 키워드 순으로 마스터 데이터를 모읍니다.
+  const output = [];
+  for (const range of splitIntoChunks(since, until, 90)) {
+    const rows = await fetchRange(range.since, range.until);
+    const hasDates = rows.some(row => row.dateStart || row.date);
+    if (hasDates || range.since === range.until) {
+      for (const row of rows) output.push({ ...row, date: row.dateStart || row.date || range.since });
+    } else {
+      // 일부 계정은 timeIncrement를 무시하고 기간 합계를 돌려주므로, 정확한 기간 필터를 위해 일자별로 재조회합니다.
+      let d = new Date(`${range.since}T00:00:00`);
+      const end = new Date(`${range.until}T00:00:00`);
+      while (d <= end) {
+        const day = d.toISOString().slice(0, 10);
+        const dailyRows = await fetchRange(day, day);
+        for (const row of dailyRows) output.push({ ...row, date: row.dateStart || row.date || day });
+        d.setDate(d.getDate() + 1);
+        await new Promise(r => setTimeout(r, 120));
+      }
+    }
+  }
+  return output;
+}
+
+async function naverFetchCreativeDailyMetrics(credentials, since, until) {
+  const ads = (await naverFetchAdMasters(credentials)).slice(0, 500);
+  const ids = ads.map(a => a.nccAdId).filter(Boolean);
+  if (!ids.length) return [];
+  const master = new Map(ads.map(a => [a.nccAdId, a]));
+  const rows = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const stats = await naverStatsForIdsDaily(credentials, chunk, since, until);
+    for (const row of stats) {
+      const adId = row.id || row.nccAdId;
+      const ad = master.get(adId);
+      if (!adId || !ad) continue;
+      rows.push({
+        date: row.date,
+        campaignId: ad.campaignId || '',
+        campaignName: ad.campaignName || '',
+        adgroupId: ad.adgroupId || '',
+        adId,
+        adName: ad.ad?.headline || ad.ad?.description || adId,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: Number(row.ccnt || 0),
+        purchases: Number(row.ccnt || 0),
+        revenue: Number(row.convAmt || 0),
+        thumbnailUrl: null,
+        mediaType: 'image',
+        title: ad.ad?.headline || '',
+        body: ad.ad?.description || '',
+        description: '',
+        cta: '',
+      });
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+  return rows;
+}
+
+async function naverFetchKeywordDailyMetrics(credentials, since, until) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const adgroups = [];
-  for (const cid of campaignIds) {
-    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: cid }, credentials).catch(() => []);
+  for (const c of campaigns) {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
     if (Array.isArray(rows)) adgroups.push(...rows);
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 120));
   }
   const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
-
   const keywords = [];
   for (const agid of adgroups.map(a => a.nccAdgroupId).filter(Boolean)) {
     const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(() => []);
     if (Array.isArray(rows)) keywords.push(...rows);
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 120));
   }
-  const keywordIds = keywords.map(k => k.nccKeywordId).filter(Boolean).slice(0, 300); // 한 계정에서 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
-  if (!keywordIds.length) return [];
-  const keywordNameMap = new Map(keywords.map(k => [k.nccKeywordId, k.keyword]));
-  const keywordAdgroupMap = new Map(keywords.map(k => [k.nccKeywordId, k.nccAdgroupId]));
-
-  const byKeyword = new Map();
-  for (const range of splitIntoChunks(since, until, 90)) {
-    for (let i = 0; i < keywordIds.length; i += 100) {
-      const chunk = keywordIds.slice(i, i + 100);
-      let data = await naverApiRequest('GET', '/stats', {
-        ids: chunk,
-        fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ccnt']),
-        timeRange: JSON.stringify({ since: range.since, until: range.until }),
-      }, credentials).catch(() => null);
-      if (!data) {
-        // ccnt(전환) 필드가 이 계정에서 지원되지 않을 수 있어, 기본 필드로 한 번 더 시도합니다.
-        data = await naverApiRequest('GET', '/stats', {
-          ids: chunk,
-          fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
-          timeRange: JSON.stringify({ since: range.since, until: range.until }),
-        }, credentials).catch(() => null);
-      }
-      const rows = Array.isArray(data?.data) ? data.data : [];
-      for (const row of rows) {
-        const kid = row.id;
-        const cur = byKeyword.get(kid) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0 };
-        cur.impressions += Number(row.impCnt || 0);
-        cur.clicks += Number(row.clkCnt || 0);
-        cur.spend += Number(row.salesAmt || 0);
-        cur.dbCount += Number(row.ccnt || 0);
-        byKeyword.set(kid, cur);
-      }
-      await new Promise(r => setTimeout(r, 500));
+  const selected = keywords.slice(0, 500);
+  const ids = selected.map(k => k.nccKeywordId).filter(Boolean);
+  const master = new Map(selected.map(k => [k.nccKeywordId, k]));
+  const result = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const stats = await naverStatsForIdsDaily(credentials, chunk, since, until);
+    for (const row of stats) {
+      const keywordId = row.id || row.nccKeywordId;
+      const kw = master.get(keywordId);
+      if (!keywordId || !kw) continue;
+      const adgroupId = kw.nccAdgroupId || '';
+      const campaignId = adgroupCampaignMap.get(adgroupId) || '';
+      result.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || '',
+        adgroupId,
+        keywordId,
+        keyword: kw.keyword || keywordId,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: Number(row.ccnt || 0),
+        purchases: Number(row.ccnt || 0),
+        revenue: Number(row.convAmt || 0),
+      });
     }
+    await new Promise(r => setTimeout(r, 150));
   }
-  return Array.from(byKeyword.entries()).map(([kid, v]) => {
-    const agid = keywordAdgroupMap.get(kid);
-    const cid = adgroupCampaignMap.get(agid);
-    return { keyword: keywordNameMap.get(kid) || kid, campaignName: campaignNameMap.get(cid) || '', ...v };
-  });
+  return result;
 }
-/** 구글/카카오처럼 아직 커넥터가 없는 매체는 항상 빈 배열입니다. */
-async function fetchKeywordMetrics(channel, _accountId, _since, _until) {
-  void channel;
-  return [];
-}
-const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao']; // Meta는 키워드 개념이 없어 제외
+
+/** 구글/카카오 등 미구현 커넥터는 데이터를 0으로 가장하지 않고 명시적으로 미구현 상태를 반환합니다. */
+const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao'];
+const IMPLEMENTED_METRIC_CHANNELS = new Set(['meta', 'naver']);
 
 /* ========================================================================
    네이버 검색광고 API 연동
@@ -583,56 +681,50 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until) {
   return [];
 }
 
-async function naverFetchDailyMetrics(credentials, since, until) {
+async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
   if (!campaignIds.length) return [];
-
-  // 전환 추적(구매 매출)이 설정 안 된 계정은 convAmt/ccnt 필드 요청 자체를 거부하는 경우가 있어서,
-  // 전체 필드로 먼저 시도하고 실패하면 기본 필드(노출/클릭/광고비)만으로 다시 시도합니다.
-  const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
-  const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
-
-  // ids(복수)로 여러 캠페인을 한 번에 묶어 보내는 방식이 계정/버전에 따라 형식 오류(11001)를
-  // 일으키는 경우가 있어서, 캠페인 하나당 단수 id로 개별 요청합니다 (형식이 명확해 더 안전합니다).
-  const byDate = new Map();
-  for (const range of splitIntoChunks(since, until, 90)) {
-    for (const campaignId of campaignIds) {
-      let fields = FULL_FIELDS;
-      let data;
-      try {
-        data = await naverApiRequest('GET', '/stats', {
-          id: campaignId,
-          fields: JSON.stringify(fields),
-          timeRange: JSON.stringify({ since: range.since, until: range.until }),
-          timeIncrement: '1',
-        }, credentials);
-      } catch (error) {
-        fields = BASIC_FIELDS;
-        data = await naverApiRequest('GET', '/stats', {
-          id: campaignId,
-          fields: JSON.stringify(fields),
-          timeRange: JSON.stringify({ since: range.since, until: range.until }),
-          timeIncrement: '1',
-        }, credentials).catch(() => null);
-      }
-      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-      for (const row of rows) {
-        const date = row.dateStart || row.date;
-        if (!date) continue;
-        const cur = byDate.get(date) || { impressions: 0, clicks: 0, spend: 0, dbCount: 0, revenue: 0 };
-        cur.impressions += Number(row.impCnt || 0);
-        cur.clicks += Number(row.clkCnt || 0);
-        cur.spend += Number(row.salesAmt || 0);
-        cur.dbCount += Number(row.ccnt || 0);
-        cur.revenue += Number(row.convAmt || 0);
-        byDate.set(date, cur);
-      }
-      await new Promise(r => setTimeout(r, 500)); // 네이버 API 호출 간 간격을 둡니다.
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const rowsOut = [];
+  for (const campaignId of campaignIds) {
+    const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
+    for (const row of rows) {
+      rowsOut.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || campaignId,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: Number(row.ccnt || 0),
+        purchases: Number(row.ccnt || 0),
+        revenue: Number(row.convAmt || 0),
+      });
     }
-    await new Promise(r => setTimeout(r, 500)); // 네이버 API 호출 간 간격을 둡니다.
+    await new Promise(r => setTimeout(r, 150));
   }
-  return Array.from(byDate.entries()).map(([date, v]) => ({ date, ...v }));
+  return rowsOut;
+}
+
+function aggregateDailyFromDetailed(rows) {
+  const byDate = new Map();
+  for (const row of rows || []) {
+    if (!row.date) continue;
+    const cur = byDate.get(row.date) || { date: row.date, impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 };
+    cur.impressions += Number(row.impressions || 0);
+    cur.clicks += Number(row.clicks || 0);
+    cur.spend += Number(row.spend || 0);
+    cur.dbCount += Number(row.dbCount || 0);
+    cur.purchases += Number(row.purchases || 0);
+    cur.revenue += Number(row.revenue || 0);
+    byDate.set(row.date, cur);
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function naverFetchDailyMetrics(credentials, since, until) {
+  return aggregateDailyFromDetailed(await naverFetchCampaignDailyMetrics(credentials, since, until));
 }
 
 /* ========================================================================
@@ -1135,78 +1227,50 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, { configured: metaConfigured() });
     }
 
-    // ---- 보고서 관리(AdvertiserDailyReportPage) 'API 자동수집' 버튼이 호출하는 엔드포인트 ----
+    // ---- 보고서 관리 ---------------------------------------------------------------
+    // 보고서도 대시보드/인사이트와 완전히 동일한 중앙 dailyMetrics를 사용합니다.
+    // 보고서 요청 시 외부 매체 API를 다시 호출하지 않으므로 같은 광고주·같은 기간의 숫자는 항상 동일합니다.
     if (req.method === 'POST' && pathname === '/api/reports/daily-performance') {
       const body = await readJson(req);
       const advertiserName = cleanText(body.advertiserName || '', 120);
-      const month = cleanText(body.month || '', 7); // 'YYYY-MM'
+      const month = cleanText(body.month || '', 7);
       const platforms = Array.isArray(body.platforms) ? body.platforms : [];
       const [yearStr, monthStr] = month.split('-');
       const year = Number(yearStr), monthNum = Number(monthStr);
-      if (!advertiserName || !year || !monthNum) return sendJson(res, 200, { ok: true, source: {} });
+      if (!advertiserName || !year || !monthNum) return sendJson(res, 400, { error: 'advertiserName과 month가 필요합니다.' });
 
-      const advertiser = readDb().advertisers.find(a => a.name === advertiserName);
-      const metaAccount = advertiser?.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
-      const naverAccount = advertiser?.accounts?.find(a => a.channel === 'naver' && a.status === 'connected');
-
+      const db = readDb();
+      const advertiser = db.advertisers.find(a => a.name === advertiserName);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
       const daysInMonth = new Date(year, monthNum, 0).getDate();
       const pad = n => String(n).padStart(2, '0');
       const since = `${year}-${pad(monthNum)}-01`;
-      const todayIso = new Date().toISOString().slice(0, 10);
       const monthEndIso = `${year}-${pad(monthNum)}-${pad(daysInMonth)}`;
-      const until = monthEndIso > todayIso ? todayIso : monthEndIso; // 미래 날짜는 요청하지 않습니다.
-
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const until = monthEndIso > todayIso ? todayIso : monthEndIso;
+      const requestedChannels = new Map([['메타','meta'],['네이버','naver'],['구글','google'],['당근','daangn'],['카카오','kakao'],['틱톡','tiktok']]);
+      const selected = platforms.length ? platforms : [...requestedChannels.keys()];
       const source = {};
-      if (platforms.includes('메타') && metaAccount?.account_id && metaConfigured() && since <= until) {
-        try {
-          const rows = await metaFetchInsights(metaAccount.account_id, since, until);
-          const byDate = new Map(rows.map(r => [r.date, r]));
-          const impressions = [], clicks = [], spend = [], leads = [], revenue = [], payments = [];
-          for (let day = 1; day <= daysInMonth; day++) {
-            const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
-            const row = byDate.get(iso);
-            impressions.push(row?.impressions || 0);
-            clicks.push(row?.clicks || 0);
-            spend.push(row?.spend || 0);
-            leads.push(row?.dbCount || 0);
-            revenue.push(row?.revenue || 0);
-            payments.push(row?.purchases || 0);
-          }
-          source['메타'] = { impressions, clicks, spend, leads, revenue, payments };
-        } catch (error) {
-          // Meta API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
-          void error;
-        }
-      }
+      const statuses = [];
 
-      if (platforms.includes('네이버') && naverAccount?.api_key && naverAccount?.secret_key && since <= until) {
-        try {
-          const credentials = { customerId: naverAccount.account_id, apiKey: naverAccount.api_key, secretKey: naverAccount.secret_key };
-          let rows;
-          try {
-            rows = await naverFetchDailyMetrics(credentials, since, until);
-          } catch (statsError) {
-            console.error('[naver-stats-failed-trying-report]', statsError instanceof Error ? statsError.message : statsError);
-            rows = await naverFetchDailyMetricsViaReport(credentials, since, until);
-          }
-          const byDate = new Map(rows.map(r => [r.date, r]));
-          const impressions = [], clicks = [], spend = [], leads = [], revenue = [];
-          for (let day = 1; day <= daysInMonth; day++) {
-            const iso = `${year}-${pad(monthNum)}-${pad(day)}`;
-            const row = byDate.get(iso);
-            impressions.push(row?.impressions || 0);
-            clicks.push(row?.clicks || 0);
-            spend.push(row?.spend || 0);
-            leads.push(row?.dbCount || 0);
-            revenue.push(row?.revenue || 0);
-          }
-          source['네이버'] = { impressions, clicks, spend, leads, revenue };
-        } catch (error) {
-          // 네이버 API 호출이 실패해도 다른 매체 데이터는 그대로 반환합니다.
-          void error;
+      for (const label of selected) {
+        const channel = requestedChannels.get(label);
+        if (!channel) continue;
+        const account = (advertiser.accounts || []).find(a => a.channel === channel);
+        if (!account || account.status !== 'connected') { statuses.push({ channel, label, status: 'disconnected' }); continue; }
+        if (!IMPLEMENTED_METRIC_CHANNELS.has(channel)) { statuses.push({ channel, label, status: 'connector_unimplemented' }); continue; }
+        if (account.last_sync_error) { statuses.push({ channel, label, status: 'error', error: account.last_sync_error }); continue; }
+        const rows = (db.dailyMetrics || []).filter(r => String(r.advertiserId) === String(advertiser.id) && r.channel === channel && r.date >= since && r.date <= until);
+        const byDate = new Map(rows.map(r => [r.date, r]));
+        const impressions=[], clicks=[], spend=[], leads=[], revenue=[], payments=[];
+        for (let day=1;day<=daysInMonth;day++) {
+          const iso=`${year}-${pad(monthNum)}-${pad(day)}`; const row=byDate.get(iso);
+          impressions.push(metricNumber(row?.impressions)); clicks.push(metricNumber(row?.clicks)); spend.push(metricNumber(row?.spend)); leads.push(metricNumber(row?.dbCount)); revenue.push(metricNumber(row?.revenue)); payments.push(metricNumber(row?.purchases));
         }
+        source[label]={ impressions, clicks, spend, leads, revenue, payments };
+        statuses.push({ channel, label, status: 'connected', lastSyncedAt: account.last_synced_at || null, rowCount: rows.length });
       }
-      return sendJson(res, 200, { ok: true, source, mode: 'live', collectedAt: new Date().toISOString() });
+      return sendJson(res, 200, { ok: true, source, statuses, mode: 'central-metrics', from: since, to: until, collectedAt: new Date().toISOString() });
     }
     if (req.method === 'GET' && pathname === '/api/integrations/meta/accounts') {
       if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
@@ -1236,26 +1300,75 @@ async function handleApi(req, res, pathname) {
     // 매체 계정 연동(설정 > 매체 계정 연동 > 광고 매체 계정)에서 연결에 성공하면 이 저장소에
     // 데이터를 채워 넣고, 보고서/통합 홈/캠페인 관리/소재 관리/키워드 관리 등 모든 화면이
     // 이 한 곳만 읽습니다.
+    function metricNumber(value) { return Number(value || 0) || 0; }
     function upsertDailyMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
-        const kept = db.dailyMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.date === m.date)));
-        const added = rows.map(r => ({ advertiserId, channel, date: r.date, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, purchases: r.purchases || 0, revenue: r.revenue || 0, updatedAt: new Date().toISOString() }));
-        db.dailyMetrics = [...kept, ...added];
+        const keys = new Set((rows || []).map(r => `${r.date}`));
+        db.dailyMetrics = db.dailyMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && keys.has(String(m.date))));
+        db.dailyMetrics.push(...(rows || []).filter(r => r.date).map(r => ({ advertiserId, channel, date: r.date, impressions: metricNumber(r.impressions), clicks: metricNumber(r.clicks), spend: metricNumber(r.spend), dbCount: metricNumber(r.dbCount), purchases: metricNumber(r.purchases), revenue: metricNumber(r.revenue), updatedAt: new Date().toISOString() })));
       });
     }
-    function upsertCreativeMetrics(advertiserId, channel, rows) {
+    function upsertCampaignDailyMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
-        const kept = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.adId === m.adId)));
-        const added = rows.map(r => ({ advertiserId, channel, adId: r.adId, adName: r.adName, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, revenue: r.revenue || 0, thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, title: r.title || '', body: r.body || '', description: r.description || '', cta: r.cta || '', updatedAt: new Date().toISOString() }));
-        db.creativeMetrics = [...kept, ...added];
+        const keys = new Set((rows || []).map(r => `${r.campaignId}|${r.date}`));
+        db.campaignMetrics = db.campaignMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && keys.has(`${m.campaignId}|${m.date}`)));
+        db.campaignMetrics.push(...(rows || []).filter(r => r.date && r.campaignId).map(r => ({ advertiserId, channel, date: r.date, campaignId: String(r.campaignId), campaignName: r.campaignName || String(r.campaignId), impressions: metricNumber(r.impressions), clicks: metricNumber(r.clicks), spend: metricNumber(r.spend), dbCount: metricNumber(r.dbCount), purchases: metricNumber(r.purchases), revenue: metricNumber(r.revenue), updatedAt: new Date().toISOString() })));
       });
     }
-    function upsertKeywordMetrics(advertiserId, channel, rows) {
+    function rebuildCreativeAggregate(db, advertiserId, channel) {
+      const source = db.creativeDailyMetrics.filter(m => m.advertiserId === advertiserId && m.channel === channel);
+      const grouped = new Map();
+      for (const row of source) {
+        const key = row.adId;
+        const cur = grouped.get(key) || { advertiserId, channel, adId: row.adId, adName: row.adName, campaignId: row.campaignId || '', campaignName: row.campaignName || '', impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0, thumbnailUrl: row.thumbnailUrl || null, mediaType: row.mediaType || null, title: row.title || '', body: row.body || '', description: row.description || '', cta: row.cta || '' };
+        cur.impressions += metricNumber(row.impressions); cur.clicks += metricNumber(row.clicks); cur.spend += metricNumber(row.spend); cur.dbCount += metricNumber(row.dbCount); cur.purchases += metricNumber(row.purchases); cur.revenue += metricNumber(row.revenue);
+        cur.adName = row.adName || cur.adName; cur.campaignId = row.campaignId || cur.campaignId; cur.campaignName = row.campaignName || cur.campaignName; cur.thumbnailUrl = row.thumbnailUrl || cur.thumbnailUrl; cur.mediaType = row.mediaType || cur.mediaType; cur.title = row.title || cur.title; cur.body = row.body || cur.body; cur.description = row.description || cur.description; cur.cta = row.cta || cur.cta;
+        grouped.set(key, cur);
+      }
+      db.creativeMetrics = db.creativeMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel));
+      db.creativeMetrics.push(...Array.from(grouped.values()).map(row => ({ ...row, updatedAt: new Date().toISOString() })));
+    }
+    function upsertCreativeDailyMetrics(advertiserId, channel, rows) {
       mutateDb(db => {
-        const kept = db.keywordMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && rows.some(r => r.keyword === m.keyword)));
-        const added = rows.map(r => ({ advertiserId, channel, keyword: r.keyword, campaignName: r.campaignName, impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0, dbCount: r.dbCount || 0, updatedAt: new Date().toISOString() }));
-        db.keywordMetrics = [...kept, ...added];
+        const keys = new Set((rows || []).map(r => `${r.adId}|${r.date}`));
+        db.creativeDailyMetrics = db.creativeDailyMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && keys.has(`${m.adId}|${m.date}`)));
+        db.creativeDailyMetrics.push(...(rows || []).filter(r => r.date && r.adId).map(r => ({ advertiserId, channel, date: r.date, campaignId: r.campaignId || '', campaignName: r.campaignName || '', adgroupId: r.adgroupId || '', adId: String(r.adId), adName: r.adName || String(r.adId), impressions: metricNumber(r.impressions), clicks: metricNumber(r.clicks), spend: metricNumber(r.spend), dbCount: metricNumber(r.dbCount), purchases: metricNumber(r.purchases), revenue: metricNumber(r.revenue), thumbnailUrl: r.thumbnailUrl || null, mediaType: r.mediaType || null, title: r.title || '', body: r.body || '', description: r.description || '', cta: r.cta || '', updatedAt: new Date().toISOString() })));
+        rebuildCreativeAggregate(db, advertiserId, channel);
       });
+    }
+    function rebuildKeywordAggregate(db, advertiserId, channel) {
+      const source = db.keywordDailyMetrics.filter(m => m.advertiserId === advertiserId && m.channel === channel);
+      const grouped = new Map();
+      for (const row of source) {
+        const key = row.keywordId || row.keyword;
+        const cur = grouped.get(key) || { advertiserId, channel, keywordId: row.keywordId || '', keyword: row.keyword, campaignId: row.campaignId || '', campaignName: row.campaignName || '', adgroupId: row.adgroupId || '', impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 };
+        cur.impressions += metricNumber(row.impressions); cur.clicks += metricNumber(row.clicks); cur.spend += metricNumber(row.spend); cur.dbCount += metricNumber(row.dbCount); cur.purchases += metricNumber(row.purchases); cur.revenue += metricNumber(row.revenue);
+        grouped.set(key, cur);
+      }
+      db.keywordMetrics = db.keywordMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel));
+      db.keywordMetrics.push(...Array.from(grouped.values()).map(row => ({ ...row, updatedAt: new Date().toISOString() })));
+    }
+    function upsertKeywordDailyMetrics(advertiserId, channel, rows) {
+      mutateDb(db => {
+        const keys = new Set((rows || []).map(r => `${r.keywordId || r.keyword}|${r.date}`));
+        db.keywordDailyMetrics = db.keywordDailyMetrics.filter(m => !(m.advertiserId === advertiserId && m.channel === channel && keys.has(`${m.keywordId || m.keyword}|${m.date}`)));
+        db.keywordDailyMetrics.push(...(rows || []).filter(r => r.date && (r.keywordId || r.keyword)).map(r => ({ advertiserId, channel, date: r.date, campaignId: r.campaignId || '', campaignName: r.campaignName || '', adgroupId: r.adgroupId || '', keywordId: r.keywordId || '', keyword: r.keyword || r.keywordId, impressions: metricNumber(r.impressions), clicks: metricNumber(r.clicks), spend: metricNumber(r.spend), dbCount: metricNumber(r.dbCount), purchases: metricNumber(r.purchases), revenue: metricNumber(r.revenue), updatedAt: new Date().toISOString() })));
+        rebuildKeywordAggregate(db, advertiserId, channel);
+      });
+    }
+    function aggregateMetricRows(rows) {
+      return (rows || []).reduce((a, r) => ({ impressions: a.impressions + metricNumber(r.impressions), clicks: a.clicks + metricNumber(r.clicks), spend: a.spend + metricNumber(r.spend), dbCount: a.dbCount + metricNumber(r.dbCount), purchases: a.purchases + metricNumber(r.purchases), revenue: a.revenue + metricNumber(r.revenue) }), { impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 });
+    }
+    function recordValidation(advertiserId, channel, since, until, sourceRows, storedRows, sourceLabel, accountId = '') {
+      const source = aggregateMetricRows(sourceRows);
+      const stored = aggregateMetricRows(storedRows);
+      const delta = Object.fromEntries(Object.keys(source).map(k => [k, metricNumber(stored[k]) - metricNumber(source[k])]));
+      const tolerance = (key) => key === 'spend' || key === 'revenue' ? 1 : 0;
+      const ok = Object.keys(delta).every(k => Math.abs(delta[k]) <= tolerance(k));
+      mutateDb(db => {
+        db.syncValidationLogs = [{ id: makeId('syncv'), createdAt: new Date().toISOString(), advertiserId, accountId, channel, since, until, sourceLabel, source, stored, delta, ok }, ...db.syncValidationLogs].slice(0, 500);
+      });
+      return { ok, source, stored, delta };
     }
 
 /** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
@@ -1270,7 +1383,6 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
     if (ok) { acc.last_row_count = count ?? 0; acc.last_sync_error = null; }
     else { acc.last_sync_error = error || '알 수 없는 오류'; }
   });
-  // '접속·보안 기록' 화면에서 과거~현재 전체 이력을 볼 수 있도록, 성공/실패 모두 누적 로그에 남깁니다.
   addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류') });
 }
 
@@ -1290,20 +1402,25 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
         if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
         try {
           const until = new Date().toISOString().slice(0, 10);
-          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
-          const [dailyRows, adRows] = await Promise.all([
+          const [accountRows, campaignRows, adRows] = await Promise.all([
             metaFetchInsights(account.account_id, since, until),
-            metaFetchAdInsights(account.account_id, since, until).catch(() => []), // 소재 데이터 실패는 전체 동기화를 막지 않습니다.
+            metaFetchCampaignInsights(account.account_id, since, until),
+            metaFetchAdInsights(account.account_id, since, until),
           ]);
+          const dailyRows = aggregateDailyFromDetailed(campaignRows);
           upsertDailyMetrics(advertiserId, channel, dailyRows);
+          upsertCampaignDailyMetrics(advertiserId, channel, campaignRows);
           if (adRows.length) {
-            const thumbnails = await metaFetchAdCreativeThumbnails(adRows.map(r => r.adId)).catch(() => ({}));
+            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))]).catch(() => ({}));
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
-            upsertCreativeMetrics(advertiserId, channel, enrichedAdRows);
+            upsertCreativeDailyMetrics(advertiserId, channel, enrichedAdRows);
           }
+          const storedRows = readDb().dailyMetrics.filter(r => r.advertiserId === advertiserId && r.channel === channel && r.date >= since && r.date <= until);
+          const validation = recordValidation(advertiserId, channel, since, until, accountRows, storedRows, 'Meta account insights vs HOWTOM campaign aggregation', account.account_id);
           recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, creativeCount: adRows.length, since, until });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: adRows.length, since, until, validation });
         } catch (error) {
           const msg = error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.';
           recordSyncResult(advertiserId, channel, { ok: false, error: msg });
@@ -1315,26 +1432,25 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
         if (!account.api_key || !account.secret_key) return sendJson(res, 400, { error: '네이버 API Key/Secret Key가 저장되어 있지 않습니다.' });
         try {
           const until = new Date().toISOString().slice(0, 10);
-          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
-          let dailyRows;
-          let usedReportFallback = false;
-          try {
-            dailyRows = await naverFetchDailyMetrics(credentials, since, until);
-          } catch (statsError) {
-            // /stats가 계정별 형식 오류로 실패하면, 대용량 보고서(StatReport) 방식으로 한 번 더 시도합니다.
-            console.error('[naver-stats-failed-trying-report]', statsError instanceof Error ? statsError.message : statsError);
-            dailyRows = await naverFetchDailyMetricsViaReport(credentials, since, until);
-            usedReportFallback = true;
-          }
+          const [campaignRows, creativeRows, keywordRows] = await Promise.all([
+            naverFetchCampaignDailyMetrics(credentials, since, until),
+            naverFetchCreativeDailyMetrics(credentials, since, until),
+            naverFetchKeywordDailyMetrics(credentials, since, until),
+          ]);
+          const dailyRows = aggregateDailyFromDetailed(campaignRows);
           upsertDailyMetrics(advertiserId, channel, dailyRows);
-          const keywordRows = await naverFetchKeywordMetrics(credentials, since, until).catch(() => []); // 실패해도 일별 데이터는 저장된 채로 유지합니다.
-          if (keywordRows.length) upsertKeywordMetrics(advertiserId, channel, keywordRows);
-          const creativeRows = await naverFetchCreatives(credentials).catch(() => []); // 실패해도 나머지 데이터는 저장된 채로 유지합니다.
-          if (creativeRows.length) upsertCreativeMetrics(advertiserId, channel, creativeRows);
+          upsertCampaignDailyMetrics(advertiserId, channel, campaignRows);
+          if (creativeRows.length) upsertCreativeDailyMetrics(advertiserId, channel, creativeRows);
+          if (keywordRows.length) upsertKeywordDailyMetrics(advertiserId, channel, keywordRows);
+          // 같은 네이버 /stats 원천에서 계정 합계를 별도로 한 번 계산해 저장값과 대조합니다.
+          const sourceRows = await naverFetchDailyMetrics(credentials, since, until);
+          const storedRows = readDb().dailyMetrics.filter(r => r.advertiserId === advertiserId && r.channel === channel && r.date >= since && r.date <= until);
+          const validation = recordValidation(advertiserId, channel, since, until, sourceRows, storedRows, 'Naver account aggregate vs HOWTOM campaign aggregation', account.account_id);
           recordSyncResult(advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, keywordCount: keywordRows.length, creativeCount: creativeRows.length, since, until, usedReportFallback });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until, validation });
         } catch (error) {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
           recordSyncResult(advertiserId, channel, { ok: false, error: msg });
@@ -1342,70 +1458,124 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
         }
       }
 
-      if (KEYWORD_CAPABLE_CHANNELS.includes(channel)) {
-        // 구글/카카오 검색광고 커넥터가 아직 없어서, 연결은 되어도 실제 값은 비어 있습니다.
-        const until = new Date().toISOString().slice(0, 10);
-        const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
-        const since = sinceDate.toISOString().slice(0, 10);
-        const rows = await fetchKeywordMetrics(channel, account.account_id, since, until);
-        upsertKeywordMetrics(advertiserId, channel, rows);
-        return sendJson(res, 200, { ok: true, channel, count: rows.length, note: rows.length ? undefined : `${channel} 키워드 커넥터가 아직 구현되지 않아 0건입니다.` });
+      if (!IMPLEMENTED_METRIC_CHANNELS.has(channel)) return sendJson(res, 501, { error: `${channel} 커넥터는 아직 구현되지 않았습니다.`, status: 'connector_unimplemented' });
+      return sendJson(res, 400, { error: `${channel} 동기화 요청을 처리할 수 없습니다.` });
+    }
+
+    function parseMetricQuery() {
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const from = query.get('from') || query.get('since') || '';
+      const to = query.get('to') || query.get('until') || '';
+      const advertiserId = query.get('advertiserId') || '';
+      const channels = (query.get('channel') || '').split(',').map(v => v.trim()).filter(Boolean);
+      return { query, from, to, advertiserId, channels };
+    }
+    function filterMetricRows(rows, filters) {
+      return (rows || []).filter(row =>
+        (!filters.advertiserId || String(row.advertiserId) === filters.advertiserId) &&
+        (!filters.channels.length || filters.channels.includes(String(row.channel))) &&
+        (!filters.from || !row.date || String(row.date) >= filters.from) &&
+        (!filters.to || !row.date || String(row.date) <= filters.to)
+      );
+    }
+    function advertiserNameMap(db) { return new Map((db.advertisers || []).map(a => [String(a.id), a.name])); }
+    function decorateRows(rows, db) {
+      const names = advertiserNameMap(db);
+      return rows.map(row => ({ ...row, advertiserName: names.get(String(row.advertiserId)) || String(row.advertiserId) }));
+    }
+    function withDerived(row) {
+      const impressions = metricNumber(row.impressions), clicks = metricNumber(row.clicks), spend = metricNumber(row.spend), dbCount = metricNumber(row.dbCount), purchases = metricNumber(row.purchases), revenue = metricNumber(row.revenue);
+      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, ctr: impressions ? clicks / impressions * 100 : 0, cpc: clicks ? spend / clicks : 0, cpm: impressions ? spend / impressions * 1000 : 0, cvr: clicks ? dbCount / clicks * 100 : 0, cpa: dbCount ? spend / dbCount : 0, roas: spend ? revenue / spend * 100 : 0 };
+    }
+    function groupMetrics(rows, keyFn, seedFn) {
+      const map = new Map();
+      for (const row of rows) {
+        const key = keyFn(row);
+        const cur = map.get(key) || seedFn(row);
+        cur.impressions += metricNumber(row.impressions); cur.clicks += metricNumber(row.clicks); cur.spend += metricNumber(row.spend); cur.dbCount += metricNumber(row.dbCount); cur.purchases += metricNumber(row.purchases); cur.revenue += metricNumber(row.revenue);
+        if (row.date) { cur.from = !cur.from || row.date < cur.from ? row.date : cur.from; cur.to = !cur.to || row.date > cur.to ? row.date : cur.to; }
+        map.set(key, cur);
       }
+      return Array.from(map.values()).map(withDerived);
+    }
+    function metricConnectionStatus(db, filters) {
+      const selected = filters.advertiserId ? db.advertisers.filter(a => String(a.id) === filters.advertiserId) : db.advertisers;
+      return selected.flatMap(adv => (adv.accounts || []).map(acc => ({
+        advertiserId: String(adv.id), advertiserName: adv.name, channel: acc.channel,
+        status: acc.status !== 'connected' ? 'disconnected' : IMPLEMENTED_METRIC_CHANNELS.has(acc.channel) ? (acc.last_sync_error ? 'error' : 'connected') : 'connector_unimplemented',
+        lastSyncedAt: acc.last_synced_at || null, lastRowCount: acc.last_row_count || 0, error: acc.last_sync_error || null,
+      })));
+    }
+    function metricMeta(db, filters) { return { from: filters.from || null, to: filters.to || null, connections: metricConnectionStatus(db, filters), generatedAt: new Date().toISOString() }; }
 
-      return sendJson(res, 400, { error: `${channel} 커넥터는 아직 구현되지 않았습니다.` });
+    // 중앙 Metrics API — 모든 데이터 화면은 이 계층만 사용합니다.
+    if (req.method === 'GET' && pathname === '/api/metrics/daily') {
+      const filters = parseMetricQuery(); const db = readDb();
+      const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/summary') {
+      const filters = parseMetricQuery(); const db = readDb(); const source = filterMetricRows(db.dailyMetrics, filters);
+      const summary = withDerived(aggregateMetricRows(source));
+      return sendJson(res, 200, { summary, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/media') {
+      const filters = parseMetricQuery(); const db = readDb(); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.channel}`, r => ({ channel: r.channel, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      void names;
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/advertisers') {
+      const filters = parseMetricQuery(); const db = readDb(); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.advertiserId}`, r => ({ advertiserId: r.advertiserId, advertiserName: names.get(String(r.advertiserId)) || String(r.advertiserId), impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
+      const filters = parseMetricQuery(); const db = readDb(); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.advertiserId}|${r.channel}|${r.campaignId}`, r => ({ advertiserId:r.advertiserId, advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId), channel:r.channel, campaignId:r.campaignId, campaignName:r.campaignName, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/creatives') {
+      const filters = parseMetricQuery(); const db = readDb(); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
+      const grouped = new Map();
+      for (const row of source) {
+        const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
+        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adgroupId:row.adgroupId||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
+        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
+      }
+      const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
+      const filters = parseMetricQuery(); const db = readDb(); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
+      const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
+      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/funnel') {
+      const filters=parseMetricQuery(); const db=readDb(); const source=filterMetricRows(db.dailyMetrics,filters);
+      const rows=groupMetrics(source,r=>r.channel,r=>({channel:r.channel,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/status') {
+      const filters=parseMetricQuery(); const db=readDb(); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/sync-validation') {
+      const filters=parseMetricQuery(); const db=readDb(); let rows=db.syncValidationLogs||[];
+      if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
+      const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
+      const names=advertiserNameMap(db);return sendJson(res,200,{rows:rows.slice(0,limit).map(r=>({...r,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId)}))});
     }
 
-    if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
-      const advertiserId = query.get('advertiserId');
-      let rows = readDb().creativeMetrics;
-      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
-      return sendJson(res, 200, { rows: rows.sort((a, b) => b.spend - a.spend) });
-    }
-
-    if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
-      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
-      const advertiserId = query.get('advertiserId');
-      let rows = readDb().keywordMetrics;
-      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
-      const db = readDb();
-      const connectedKeywordChannels = advertiserId
-        ? (db.advertisers.find(a => String(a.id) === advertiserId)?.accounts || []).filter(a => KEYWORD_CAPABLE_CHANNELS.includes(a.channel) && a.status === 'connected').map(a => a.channel)
-        : [];
-      return sendJson(res, 200, { rows: rows.sort((a, b) => b.spend - a.spend), connectedKeywordChannels, keywordCapableChannels: KEYWORD_CAPABLE_CHANNELS });
-    }
-
+    // 기존 경로 호환: 내부 구현은 중앙 Metrics API와 같은 기간별 저장소를 사용합니다.
     if (req.method === 'GET' && pathname === '/api/daily-metrics') {
-      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
-      const advertiserId = query.get('advertiserId');
-      const since = query.get('since');
-      const until = query.get('until');
-
-      // 오늘·어제처럼 최근 날짜는 마지막 동기화 이후 갱신이 안 되어 있을 수 있어서,
-      // 조회할 때마다 연결된 계정의 최근 3일치를 자동으로 다시 가져와 채워 넣습니다.
-      if (metaConfigured()) {
-        const db = readDb();
-        const todayIso = new Date().toISOString().slice(0, 10);
-        const topUpSince = new Date(); topUpSince.setDate(topUpSince.getDate() - 3);
-        const topUpSinceIso = topUpSince.toISOString().slice(0, 10);
-        const targets = advertiserId ? db.advertisers.filter(a => String(a.id) === advertiserId) : db.advertisers;
-        await Promise.all(targets.map(async adv => {
-          const account = adv.accounts?.find(a => a.channel === 'meta' && a.status === 'connected');
-          if (!account?.account_id) return;
-          const alreadyFresh = db.dailyMetrics.some(m => m.advertiserId === String(adv.id) && m.channel === 'meta' && m.date === todayIso);
-          if (alreadyFresh) return; // 오늘 데이터가 이미 있으면 다시 부르지 않습니다(호출 최소화).
-          try {
-            const rows = await metaFetchInsights(account.account_id, topUpSinceIso, todayIso);
-            upsertDailyMetrics(String(adv.id), 'meta', rows);
-          } catch { /* 자동 보충 실패는 조용히 넘어가고, 기존 저장된 값을 그대로 보여줍니다. */ }
-        }));
-      }
-
-      let rows = readDb().dailyMetrics;
-      if (advertiserId) rows = rows.filter(m => m.advertiserId === advertiserId);
-      if (since) rows = rows.filter(m => m.date >= since);
-      if (until) rows = rows.filter(m => m.date <= until);
-      return sendJson(res, 200, { rows: rows.sort((a, b) => a.date.localeCompare(b.date)) });
+      const filters=parseMetricQuery();const db=readDb();const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/creative-metrics') {
+      const filters=parseMetricQuery();const db=readDb();const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
+      const filters=parseMetricQuery();const db=readDb();const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
     }
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------

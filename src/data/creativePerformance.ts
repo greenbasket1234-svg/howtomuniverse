@@ -17,4 +17,4 @@ export type CreativePerformanceSampleRow = {
 };
 
 /** Zero State: 실제 소재 성과 API가 연결되기 전에는 빈 배열입니다. */
-export const CREATIVE_PERFORMANCE_SAMPLE: CreativePerformanceSampleRow[] = [];
+

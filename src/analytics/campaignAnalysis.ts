@@ -1,4 +1,4 @@
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
+import { ADVERTISERS } from '../data/operationsMock';
 import type { Campaign } from '../types/operations';
 import { derived, metricValue, pctChange, sumRows, type PerformanceDataset, type PerformanceMetric, type PerformancePoint } from './integratedPerformance';
 import { loadAdvertiserKpiConfigs, type AdvertiserKpiConfig } from './advertiserAnalysis';
@@ -81,7 +81,7 @@ export function loadCampaigns():Campaign[]{
     const parsed=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'null');
     if(Array.isArray(parsed)&&parsed.length) return parsed as Campaign[];
   }catch{/* ignore */}
-  return MOCK_CAMPAIGNS;
+  return [];
 }
 
 export function campaignAdvertiserNames(campaign:Campaign){

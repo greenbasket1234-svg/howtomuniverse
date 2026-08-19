@@ -1,235 +1,222 @@
-# HOWTOM 유니버스 v1.1.0
+# HOWTOM 유니버스 v1.2.0 — Central Metrics / Actual API Data Build
 
-이 버전은 **Zero State + Railway 백엔드 + 블로그 제작 워크스페이스**를 기준으로 정리한 운영 전환본입니다. 기존에 코드와 브라우저 저장소에 포함되어 있던 광고주·성과·소재·키워드·보고서·자동화 샘플/시드 데이터는 기본값에서 제거했습니다.
+이 버전은 **Meta·네이버 실제 광고 API → 일자별 중앙 성과 저장소 → HOWTOM 데이터/인사이트/보고서 화면**을 하나의 데이터 흐름으로 통일한 빌드입니다. 실제 성과 화면에서는 샘플/Mock/저장 보고서를 성과 Source로 사용하지 않습니다.
 
-## 1. 이번 버전 핵심 변경
+## 1. 핵심 데이터 원칙
 
-- `콘텐츠 > 블로그 작성`을 **`콘텐츠 > 블로그 제작`**으로 고도화했습니다.
-- 블로그 프로젝트·광고주 문체 프로필·블로그 사진 자산을 `server.mjs` 백엔드 API와 JSON 저장소에 저장합니다.
-- 새 설치의 백엔드 DB는 `advertisers`, `blogProjects`, `blogStyles`, `blogAssets`, `logs` 모두 빈 배열로 시작합니다.
-- 과거 빌드가 브라우저 `localStorage`에 남긴 업무 데이터는 v1.1.0 최초 실행 시 로그인 세션을 제외하고 한 번 정리해 **Zero State**로 전환합니다.
-- 홈 인사말은 로그인 사용자 기준으로 표시합니다. 관리자는 항상 `안녕하세요, 관리자님!`, 일반 사용자는 `닉네임 → 이름 → 광고주명 → 사용자` 순으로 표시합니다.
-- Railway 운영 환경에서는 인증된 요청만 데이터 API를 사용할 수 있습니다.
+- Production Repository는 항상 `api` 모드입니다.
+- 실제 성과 화면에서 `loadPerformanceDataset`, `MOCK_CAMPAIGNS`, `CREATIVE_PERFORMANCE_SAMPLE`, `BRAND_REPORTS`를 사용하지 않습니다.
+- 외부 매체 장애 시 Mock 성과로 fallback하지 않습니다.
+- 미연동 매체는 `disconnected`, 아직 개발하지 않은 커넥터는 `connector_unimplemented`, 동기화 실패는 `error` 상태로 표시합니다.
+- 동일 광고주·동일 기간은 대시보드/인사이트/중앙 보고서가 동일한 중앙 Metrics 데이터를 사용합니다.
 
-## 2. 블로그 제작 기능
+## 2. 실제 매체 API 데이터 파이프라인
 
-### 제작 홈
-- 이번 달 제작 / 작성 중 / 검토 필요 / 발행 완료 / 규정 경고 KPI
-- 광고주 필터와 제목·키워드 검색
-- 서버에 저장된 블로그 프로젝트 목록
-- Zero State 안내
+현재 실제 성과 수집 커넥터:
 
-### 새 글 제작 워크스페이스
-- 광고주, 플랫폼, 업종, 콘텐츠 유형
-- 메인·서브 키워드, 지역, 목적, 목표 글자수, 톤앤매너
-- 참고자료
-- 기존 문체 반영 / 광고주 정보 반영 / 사진 추천 / 업종별 규정 검수 / SEO 사전점검
-- 의료 업종은 의료광고 사전점검 옵션 추가
+- Meta Ads
+  - 계정 일별 인사이트
+  - 캠페인 일별 인사이트
+  - 소재(Ad) 일별 인사이트
+  - 소재 썸네일/텍스트 메타데이터
+- 네이버 검색광고
+  - 캠페인 일별 성과
+  - 소재 일별 성과
+  - 키워드 일별 성과
+  - 전환/전환금액은 네이버 `/stats`에서 제공되는 범위에서 저장
 
-### 초안·편집
-- 외부 AI API 연동 초안 생성 (설정 안 하면 규칙 기반 폴백)
-- 제목 후보 생성
-- 본문 / 소제목 / 사진 / 목록 / 인용문 / FAQ / CTA / 구분선 블록
-- 전체 복사
-- TXT / HTML 내보내기
-- 서버 저장
+수집 흐름:
 
-`/api/blog/generate`는 `BLOG_AI_PROVIDER` 환경변수(`anthropic` | `openai` | `custom`)가 설정되어 있으면 실제 외부 AI API를 호출해 제목·본문을 생성합니다. 설정하지 않았거나 외부 호출이 실패하면 비용 없는 **규칙 기반 백엔드 생성기**로 자동 대체됩니다. `/api/blog/ai-status`로 현재 연결 상태를 확인할 수 있고, 화면에는 어떤 방식으로 생성됐는지 안내 문구가 그대로 표시됩니다. 자세한 변수는 `.env.example`을 참고하세요.
+```text
+Meta / Naver API
+        ↓
+POST /api/integrations/sync
+        ↓
+dailyMetrics
+campaignMetrics (campaign + date)
+creativeDailyMetrics (ad + date)
+keywordDailyMetrics (keyword + date)
+        ↓
+Central Metrics API
+        ↓
+대시보드 / 광고 데이터 / 인사이트 / 소재 / 키워드 / 보고서 / AI 추천
+```
 
-### SEO 점검
-HOWTOM 내부 작성 기준으로 제목·도입부·소제목 키워드, 목표 글자수, FAQ, CTA, 이미지 배치, 키워드 과다 반복을 점검합니다. 검색 순위를 보장하는 점수는 아닙니다.
+Google·Kakao·당근·TikTok 등 아직 구현하지 않은 매체는 실제 데이터 0으로 가장하지 않고 `커넥터 미구현`으로 표시합니다.
 
-### 업종별 규정 사전점검
-- 과도한 단정/보장 표현
-- 객관적 근거가 필요한 최상급 표현
-- 가격·혜택 표현
-- 의료 업종 추가 검수: 치료효과 단정, 치료경험담, 비교·비방, 전문병원 명칭, 할인 표현, 부작용·중요정보 확인, 사전심의 대상 여부 확인
+## 3. 중앙 Metrics API
 
-이 기능은 **내부 사전점검 및 심의관리 보조 도구**이며 법률 자문이나 의료광고 자율심의기구의 공식 심의·승인을 대체하지 않습니다.
+모든 실제 데이터 조회는 다음 API를 기준으로 합니다.
 
-### 의료광고 심의 관리
-- 사전심의 대상 여부 담당자 확인
-- 심의 준비 / 심의 중 / 수정 요청 / 심의 완료 상태
-- 심의필번호
-- 심의 완료일
-- 심의 완료 문안 잠금
-- 수정 필요 시 잠금 해제와 동시에 재검토 상태 전환
+```text
+GET /api/metrics/summary
+GET /api/metrics/daily
+GET /api/metrics/media
+GET /api/metrics/advertisers
+GET /api/metrics/campaigns
+GET /api/metrics/creatives
+GET /api/metrics/keywords
+GET /api/metrics/funnel
+GET /api/metrics/status
+```
 
-### 광고주 문체·자료
-광고주별로 톤앤매너, 문체 규칙, 선호 표현, 금지 표현, 기본 CTA, 기존 글/참고 원문을 서버에 저장합니다. 향후 AI 생성 프롬프트의 Style Profile로 사용할 수 있습니다.
+공통 조회 파라미터:
 
-### 사진 자산
-광고주별 이미지 URL·이름·태그를 백엔드에 저장하고 블로그 키워드와 태그의 연관도를 기준으로 추천합니다. 본문의 사진 블록에 자산을 연결할 수 있습니다.
+```text
+advertiserId
+channel
+from=YYYY-MM-DD
+to=YYYY-MM-DD
+```
 
-## 3. Zero State 정책
+`tenant_id`는 향후 멀티테넌트 PostgreSQL 전환 시 로그인 세션/JWT에서 서버가 강제하는 구조로 전환합니다.
 
-신규 실행 시 임의 광고주나 임의 성과 숫자를 생성하지 않습니다. 다음 항목의 코드 기본 데이터는 빈 상태입니다.
+## 4. 공통 기간 선택
+
+실제 데이터를 보는 화면은 공통 `MetricsQueryContext`와 `MetricsDateBar`를 사용합니다.
+
+- 오늘
+- 어제
+- 최근 7일
+- 최근 14일
+- 최근 30일
+- 최근 60일
+- 최근 90일
+- 지난달
+- 이번달
+- 기간 직접 선택
+
+선택한 기간은 데이터 화면 이동 중 유지되며 API에 동일한 `from/to`로 전달됩니다.
+
+## 5. 실제 성과가 연결된 주요 화면
+
+- 통합 홈
+- 전체 대시보드
+- 통합 성과 분석
+- 매체별 분석
+- 광고주별 분석
+- 캠페인 분석 — 실제 `campaign_id` 기준
+- 소재 성과 — Meta·네이버 실제 `creative_daily_metrics`
+- 소재 라이브러리/상세
+- 소재 분석
+- 소재 피로도 — `creative_daily_metrics` 일별 추이 기반
+- 키워드 분석/성과 — 실제 `keyword_daily_metrics`
+- 검색광고 관리의 성과 조회
+- 전환 퍼널
+- DB 데이터의 광고 성과 연결 영역
+- AI 추천의 성과 입력값
+- 통합 보고서
+
+캠페인 분석은 계정 전체 성과를 캠페인 성과로 추정하지 않습니다. 소재 분석과 소재 성과는 같은 `creative_daily_metrics`를 사용합니다.
+
+## 6. Sync 검증 로그
+
+Meta·네이버 동기화 시 외부 매체의 계정 합계와 HOWTOM에 저장된 캠페인 일별 집계를 대조합니다.
+
+```text
+GET /api/integrations/sync-validation
+```
+
+로그에 저장되는 항목:
 
 - 광고주
-- 광고 성과
-- 키워드 분석
-- 소재 성과/라이브러리
-- 캠페인
-- 퍼널 데이터
-- DB/수당/일정/업로드 데이터
-- 보고서 원본
-- 자동화 규칙 및 실행 데이터
-- 날씨/시즌 예시 데이터
-- 데이터 수집 상태 예시
-- 관리자 사용자 시드/구독상품 시드
+- 매체
+- from / to
+- 외부 매체 원천 합계
+- HOWTOM 저장 합계
+- 차이(delta)
+- 일치 여부
+- 검증 시각
 
-브라우저에서는 v1.1.0 최초 실행 시 기존 업무 관련 `localStorage`를 초기화하고 인증 세션만 유지합니다. 서버 DB도 파일이 처음 생성될 때 빈 배열로 시작합니다.
+`데이터 동기화` 화면에서도 확인할 수 있습니다.
 
-## 4. 로그인 인사말
+## 7. Zero State
 
-홈 화면은 `AuthContext`에서 현재 로그인 사용자를 읽습니다.
-
-- `role === admin` → `안녕하세요, 관리자님!`
-- 일반 사용자 → `nickname`이 있으면 닉네임
-- 닉네임이 없으면 `name`
-- 둘 다 없으면 연결된 `advertiser_name`
-- 최종 폴백 → `사용자`
-
-현재 내장 백엔드는 Railway 환경변수로 설정하는 **관리자 1계정 인증**을 우선 제공합니다. 일반 사용자 계정 DB/초대 기능을 이후 연결하더라도 프론트 인사말은 같은 규칙으로 동작하도록 준비되어 있습니다.
-
-## 5. 백엔드 저장소
-
-`server.mjs`가 Node 기본 모듈만으로 최소 운영 백엔드를 제공합니다.
-
-기본 저장 파일:
-
-```text
-.data/howtom-db.json
-```
-
-Railway에서는 휘발성 파일시스템 대신 **Volume을 연결**해야 합니다. 예를 들어 Volume을 `/data`에 마운트하고 다음 환경변수를 설정합니다.
-
-```text
-HOWTOM_DATA_DIR=/data
-```
-
-DB 초기 구조:
+신규 설치는 샘플 광고주나 임의 성과 숫자를 생성하지 않습니다.
 
 ```json
 {
   "advertisers": [],
-  "blogProjects": [],
-  "blogStyles": [],
-  "blogAssets": [],
-  "logs": []
+  "dailyMetrics": [],
+  "campaignMetrics": [],
+  "creativeDailyMetrics": [],
+  "keywordDailyMetrics": [],
+  "syncValidationLogs": []
 }
 ```
 
-## 6. 주요 API
+연결되지 않은 매체는 빈 실제 데이터 + 연결 상태로 표시됩니다.
 
-인증:
+## 8. 로그인 인사말
 
-```text
-POST /api/auth/login
-GET  /api/auth/me
-```
+- 관리자 → `안녕하세요, 관리자님!`
+- 일반 사용자 → `nickname → name → advertiser_name → 사용자` 순으로 표시합니다.
 
-광고주:
+현재 내장 인증은 관리자 1계정 기반 최소 구현입니다. 유료 SaaS 공개 전에는 PostgreSQL 기반 `tenant / users / tenant_members / RBAC`로 전환해야 합니다.
 
-```text
-GET    /api/advertisers
-POST   /api/advertisers
-PATCH  /api/advertisers/:id
-DELETE /api/advertisers/:id
-```
+## 9. 로컬 실행
 
-블로그:
-
-```text
-GET    /api/blog/projects
-POST   /api/blog/projects
-GET    /api/blog/projects/:id
-PATCH  /api/blog/projects/:id
-DELETE /api/blog/projects/:id
-POST   /api/blog/generate
-GET    /api/blog/styles/:advertiserId
-PUT    /api/blog/styles/:advertiserId
-GET    /api/blog/assets
-POST   /api/blog/assets
-```
-
-상태 확인:
-
-```text
-GET /api/health
-```
-
-`/api/health`를 제외한 데이터 API는 로그인 JWT가 필요합니다.
-
-## 7. Railway 배포
-
-`railway.toml`은 배포 시 다음 순서로 실행하도록 구성했습니다.
-
-```text
-npm ci --no-audit --no-fund
-npm run build
-node server.mjs
-```
-
-Railway Variables에 최소 다음 값을 설정하세요.
-
-```text
-HOWTOM_ADMIN_EMAIL=<로그인 아이디>
-HOWTOM_ADMIN_PASSWORD=<로그인 비밀번호>
-JWT_SECRET=<32자 이상 랜덤 문자열>
-HOWTOM_ADMIN_NAME=관리자
-HOWTOM_DATA_DIR=/data
-```
-
-그리고 Railway Volume을 `/data`에 마운트하는 것을 권장합니다.
-
-프론트와 백엔드를 같은 서비스로 배포할 때는 `VITE_API_URL`을 비워두면 `/api`를 사용합니다. 데모 로그인 우회 기능은 없으며, 로컬·운영 모두 `/api/auth/login`을 통한 실제 로그인만 사용합니다.
-
-블로그 초안을 외부 AI로 생성하려면 `BLOG_AI_PROVIDER`, `BLOG_AI_API_KEY`(또는 `custom` 모드의 `BLOG_AI_API_URL`)를 함께 설정하세요. 비워두면 규칙 기반 생성기로 동작합니다.
-
-## 8. 로컬 실행
-
-패키지가 설치되어 있다면:
-
-```bash
-npm ci
-npm run build
-npm start
-```
-
-개발 모드:
+일반 실행:
 
 ```bash
 npm run dev
 ```
 
-`npm run dev`는 패키지가 없으면 설치를 시도한 뒤 Vite 프론트와 Node 백엔드를 함께 실행합니다. 이 배포본에는 수정 전 번들이 섞이지 않도록 `dist`를 포함하지 않으며, Railway 또는 로컬 빌드 과정에서 새로 생성합니다.
+패키지가 설치되어 있으면 Vite 개발모드를 사용합니다. 패키지가 없고 `dist`가 있으면 포함된 완성 빌드를 즉시 실행합니다. 둘 다 없을 때는 Portable Mode로 전환합니다.
 
-운영 인증을 로컬에서도 확인하려면 `.env.example`을 참고해 필요한 환경변수를 쉘 또는 실행 환경에 설정하세요. 실제 비밀번호/Secret이 들어간 `.env` 파일은 배포 ZIP에 포함하지 않습니다.
+소스 HMR 개발을 명시적으로 원할 때:
 
-## 9. 현재 범위와 다음 연결점
+```bash
+npm run setup
+npm run dev:source
+```
 
-이번 버전에서 실제 백엔드 저장까지 구현된 핵심 영역은 **광고주 + 블로그 제작**입니다. 기존 HOWTOM 유니버스의 다른 메뉴는 샘플 데이터를 제거해 Zero State로 두었고, 실제 광고 API·운영 DB가 연결될 때 데이터를 받도록 확장해야 합니다.
+## 10. 검증 명령
 
-다음 실제 연동 우선순위는 다음과 같습니다.
+```bash
+npm run typecheck
+npm run audit:data
+npm run test:metrics
+npm run build
+```
 
-1. Railway Volume 확인
-2. 관리자 로그인 환경변수 설정
-3. 첫 광고주 등록
-4. 블로그 제작 프로젝트 생성·저장 검증
-5. Meta 광고 API 1개 계정 연결
-6. 광고 성과 DB 스키마와 일일 자동수집 연결
-7. 블로그 생성 AI API 선택 연결
+- `audit:data`: 실제 데이터 화면의 금지 Mock 성과 Source와 Production Repository 설정 검사
+- `test:metrics`: 기간 필터, campaign/creative/keyword, 파생지표, 연결상태, sync 검증 로그 API 통합 테스트
+- `build`: TypeScript 검사 후 Vite build를 우선 실행합니다. 현재 OS용 Rollup optional binary가 없는 압축본 환경에서는 portable ESM production build로 자동 검증합니다.
+
+## 11. Railway
+
+Railway/Nixpacks에서는 정상적인 Linux 의존성을 새로 설치한 뒤 배포합니다.
+
+필수 운영 환경변수 예:
+
+```text
+HOWTOM_ADMIN_EMAIL=
+HOWTOM_ADMIN_PASSWORD=
+HOWTOM_ADMIN_NAME=관리자
+JWT_SECRET=
+HOWTOM_DATA_DIR=/data
+META_ACCESS_TOKEN=
+VITE_REPOSITORY_MODE=api
+```
+
+Railway Volume은 `/data`에 마운트하는 것을 권장합니다.
+
+## 12. 아직 상용 SaaS 출시 전 반드시 남은 구조 작업
+
+이번 버전은 12개 성과 데이터 완료조건을 중심으로 실제 API 파이프라인을 통일했습니다. 하지만 외부 광고주에게 유료 판매하는 멀티테넌트 SaaS의 최종 데이터 기반은 아직 아닙니다.
+
+다음 P0는:
+
+1. JSON 저장소 → PostgreSQL 실제 Source of Truth 전환
+2. `tenant / users / tenant_members / RBAC` 실제 인증·데이터 격리
+3. 광고 API Credential의 암호화 저장 및 Secret 관리
+4. 자동 수집 Worker/Scheduler + 재시도/장애 모니터링
+5. 구독·Entitlement·결제·사용량 관리
+6. Object Storage 기반 자산/보고서 파일 저장
 
 ---
 
-**버전:** 1.1.0  
-**기준:** 2026-08-11  
-**상태:** Zero State / Railway backend / Blog Production v1
-
-## UI/UX 업데이트 (2026-08-19)
-
-- 공통 기간 선택에 `최근 14일`을 포함해 오늘, 어제, 최근 7/14/30/60/90일, 지난달, 이번달, 기간 직접 선택 흐름을 정리했습니다.
-- 상단 광고주 필터는 `검색창 + 광고주 목록`만 남기고 중복 빠른선택 광고주 버튼을 제거했습니다.
-- `광고 데이터 > 매체 성과`는 임베디드 전용 반응형 레이아웃으로 변경해 부모 화면 폭을 넘지 않도록 했습니다.
-- 매체 성과 탭은 현재 선택 광고주를 이어받으며 데스크톱/태블릿/모바일에서 필터, KPI, 차트, 상세 카드가 자동 재배치됩니다.
+**버전:** 1.2.0  
+**기준:** 2026-08-19  
+**상태:** Central Metrics / Meta + Naver actual API pipeline / Zero State

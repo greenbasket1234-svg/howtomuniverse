@@ -1,13 +1,15 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, CircleDollarSign, Eye, Gauge, MousePointerClick, Sparkles, Target, TrendingDown, TrendingUp, Users, WalletCards } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
-import { derived, formatMetric, loadPerformanceDataset, metricValue, pctChange, sumRows, type PerformanceMetric } from '../analytics/integratedPerformance';
+import type { Campaign } from '../types/operations';
+import { derived, formatMetric, performanceDatasetFromMetricRows, metricValue, pctChange, sumRows, type PerformanceMetric, type PerformanceDataset } from '../analytics/integratedPerformance';
 import { MEDIA_COLORS } from '../analytics/mediaAnalysis';
 import { advertiserDailySeries, advertiserFunnel, advertiserMediaRows, buildAdvertiserComparison, comparisonRange, detectAdvertiserAnomalies, inRange, rangeFor, type AdvertiserComparisonRow, type AdvertiserStatus } from '../analytics/advertiserAnalysis';
-import { useDbDataRevision } from '../hooks/useDbDataRevision';
+import { useMetricRows } from '../hooks/useMetrics';
+import type { DailyMetricRow } from '../types/metrics';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
 
-const periodOptions=['오늘','어제','최근 7일','최근 14일','최근 30일','이번 달','지난달'];
 const comparisonOptions=['직전 동일기간','전월','전년 동기간','비교 안 함'];
 const statusOptions=['전체','우수','정상','주의','개선 필요','KPI 미설정'] as const;
 const trendMetrics:PerformanceMetric[]=['spend','clicks','leads','cpa','revenue','roas','ctr'];
@@ -22,10 +24,10 @@ function actualKpiDisplay(row:AdvertiserComparisonRow){return formatMetric(row.p
 function projectedLabel(row:AdvertiserComparisonRow){if(!row.goal?.monthlyTargetValue||row.monthKpiProjection===undefined)return '목표 데이터 없음';return `${Math.round(row.monthKpiProjection).toLocaleString()} / 목표 ${Math.round(row.goal.monthlyTargetValue).toLocaleString()}`;}
 
 export function AdvertiserPerformancePage(){
-  const dbRevision=useDbDataRevision();
-  const data=useMemo(()=>loadPerformanceDataset(),[dbRevision]);
+  const {rows:metricRows}=useMetricRows<DailyMetricRow>('/metrics/daily');
+  const data=useMemo(()=>performanceDatasetFromMetricRows(metricRows),[metricRows]);
+  const {range}=useMetricsQuery();
   const [params,setParams]=useSearchParams();
-  const [period,setPeriod]=useState(params.get('period')||'최근 30일');
   const [comparison,setComparison]=useState(params.get('compare')||'직전 동일기간');
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||'');
   const [status,setStatus]=useState<(typeof statusOptions)[number]>((params.get('status') as typeof statusOptions[number])||'전체');
@@ -36,7 +38,7 @@ export function AdvertiserPerformancePage(){
   const [sortDir,setSortDir]=useState<'asc'|'desc'>('desc');
   const [tableStatus,setTableStatus]=useState('');
 
-  const [start,end]=rangeFor(period,data.latestDate);const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
+  const [start,end]=[range.from,range.to];const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
   const allRows=useMemo(()=>buildAdvertiserComparison(data,start,end,prevStart,prevEnd),[data,start,end,prevStart,prevEnd]);
   const filteredRows=useMemo(()=>allRows.filter(row=>{
     if(status!=='전체'&&row.status!==status)return false;
@@ -68,13 +70,14 @@ export function AdvertiserPerformancePage(){
   return <div className="advertiser-analysis-page">
     <header className="aap-head"><div><span>인사이트</span><h1>{selected?`광고주별 분석 · ${selected.name}`:'광고주별 분석'}</h1><p>광고주별 KPI 목표, 예산 집행, 매체 기여도와 관리 우선순위를 한눈에 분석합니다.</p></div><div className="aap-data-badge">데이터 기준 <b>{data.latestDate||'-'}</b></div></header>
 
+    <MetricsDateBar compact/>
+
     <section className="aap-filter-card">
-      <label>기간<select value={period} onChange={e=>{setPeriod(e.target.value);syncParams({period:e.target.value})}}>{periodOptions.map(v=><option key={v}>{v}</option>)}</select></label>
       <label>비교기간<select value={comparison} onChange={e=>{setComparison(e.target.value);syncParams({compare:e.target.value})}}>{comparisonOptions.map(v=><option key={v}>{v}</option>)}</select></label>
       <label>광고주<select value={advertiser} onChange={e=>chooseAdvertiser(e.target.value)}><option value="">전체 광고주</option>{data.advertisers.map(v=><option key={v}>{v}</option>)}</select></label>
       <label>대표 KPI<select value={kpiFilter} onChange={e=>{setKpiFilter(e.target.value);syncParams({kpi:e.target.value==='전체'?'':e.target.value})}}><option>전체</option><option>CPA</option><option>ROAS</option><option value="미설정">KPI 미설정</option></select></label>
       <label>상태<select value={status} onChange={e=>{const value=e.target.value as typeof status;setStatus(value);syncParams({status:value==='전체'?'':value})}}>{statusOptions.map(v=><option key={v}>{v}</option>)}</select></label>
-      <button className="aap-reset" onClick={()=>{setPeriod('최근 30일');setComparison('직전 동일기간');setAdvertiser('');setStatus('전체');setKpiFilter('전체');setParams({}, {replace:true})}}>필터 초기화</button>
+      <button className="aap-reset" onClick={()=>{setComparison('직전 동일기간');setAdvertiser('');setStatus('전체');setKpiFilter('전체');setParams({}, {replace:true})}}>필터 초기화</button>
     </section>
 
     {selected?<SelectedAdvertiserSummary row={selected} data={data} start={start} end={end} prevStart={prevStart} prevEnd={prevEnd} trendMetric={trendMetric} setTrendMetric={setTrendMetric}/>:<>
@@ -124,16 +127,16 @@ function AdvertiserMatrix({rows,choose}:{rows:AdvertiserComparisonRow[];choose:(
   return <article className="aap-panel aap-matrix"><div className="aap-panel-head"><div><h2>광고비 vs KPI 달성률</h2><p>오른쪽 아래일수록 광고비는 크지만 KPI 성과가 낮아 우선 점검 대상입니다.</p></div></div><div className="aap-matrix-wrap"><span className="zone z1">확대 가능성</span><span className="zone z2">핵심 성장</span><span className="zone z3">관찰</span><span className="zone z4">최우선 개선</span><i className="vline"/><i className="hline"/>{points.map(row=>{const x=8+row.current.spend/maxSpend*84;const y=88-(row.kpiAchievement??0)/maxAch*76;return <button key={row.name} className="matrix-dot" style={{left:`${x}%`,top:`${y}%`,background:hashColor(row.name)}} onClick={()=>choose(row.name)} title={`${row.name} · 광고비 ${formatMetric('spend',row.current.spend)} · KPI ${row.kpiAchievement?.toFixed(0)}%`}><span>{row.name}</span></button>})}</div><div className="aap-axis"><span>KPI 달성률 ↑</span><span>광고비 →</span></div></article>;
 }
 
-function AdvertiserTrend({rows,data,start,end,metric,onMetric}:{rows:AdvertiserComparisonRow[];data:ReturnType<typeof loadPerformanceDataset>;start:string;end:string;metric:PerformanceMetric;onMetric:(m:PerformanceMetric)=>void}){
+function AdvertiserTrend({rows,data,start,end,metric,onMetric}:{rows:AdvertiserComparisonRow[];data:PerformanceDataset;start:string;end:string;metric:PerformanceMetric;onMetric:(m:PerformanceMetric)=>void}){
   const top=[...rows].sort((a,b)=>(b.kpiAchievement??b.current.spend)-(a.kpiAchievement??a.current.spend)).slice(0,5);
   const dates=[...new Set(data.totals.filter(row=>inRange(row.date,start,end)).map(row=>row.date))].sort();
   return <article className="aap-panel"><div className="aap-panel-head"><div><h2>광고주별 성과 추이</h2><p>TOP 5 광고주 또는 KPI 설정 광고주의 흐름을 비교합니다.</p></div><div className="aap-tabs">{trendMetrics.map(m=><button key={m} className={metric===m?'active':''} onClick={()=>onMetric(m)}>{metricNames[m]}</button>)}</div></div><svg viewBox="0 0 100 82" preserveAspectRatio="none" className="aap-line-chart"><line x1="8" y1="72" x2="100" y2="72"/>{top.map(row=>{const series=dates.map(date=>derived(sumRows(data.totals.filter(item=>item.advertiser===row.name&&item.date===date))));return <polyline key={row.name} style={{stroke:hashColor(row.name)}} points={poly(series.map(day=>metricValue(day,metric)))}/>})}</svg><div className="aap-legend">{top.map(row=><span key={row.name}><i style={{background:hashColor(row.name)}}/>{row.name}</span>)}</div></article>;
 }
 
-function SelectedAdvertiserSummary({row,data,start,end,prevStart,prevEnd,trendMetric,setTrendMetric}:{row:AdvertiserComparisonRow;data:ReturnType<typeof loadPerformanceDataset>;start:string;end:string;prevStart:string;prevEnd:string;trendMetric:PerformanceMetric;setTrendMetric:(m:PerformanceMetric)=>void}){
+function SelectedAdvertiserSummary({row,data,start,end,prevStart,prevEnd,trendMetric,setTrendMetric}:{row:AdvertiserComparisonRow;data:PerformanceDataset;start:string;end:string;prevStart:string;prevEnd:string;trendMetric:PerformanceMetric;setTrendMetric:(m:PerformanceMetric)=>void}){
   const currentRows=data.totals.filter(item=>item.advertiser===row.name&&inRange(item.date,start,end));const prevRows=data.totals.filter(item=>item.advertiser===row.name&&inRange(item.date,prevStart,prevEnd));
   const now=derived(sumRows(currentRows)),prev=derived(sumRows(prevRows));const daily=advertiserDailySeries(data,row.name,start,end),previousDaily=advertiserDailySeries(data,row.name,prevStart,prevEnd);const mediaRows=advertiserMediaRows(data,row.name,start,end);const funnel=advertiserFunnel(now,row.reportType);
-  const linked=ADVERTISERS.find(a=>a.name===row.name);const campaigns=linked?MOCK_CAMPAIGNS.filter(c=>c.advertiserId===linked.id):[];
+  const campaigns:Campaign[]=[];
   const detailMetrics:PerformanceMetric[]=['spend',row.reportType==='revenue'?'revenue':row.reportType==='lead'?'leads':'clicks','cpa','roas'];
   return <>
     <section className="aap-detail-kpis">{detailMetrics.map(metric=>{const n=metricValue(now,metric),p=metricValue(prev,metric),change=pctChange(n,p);return <article key={metric}><span>{metricNames[metric]}</span><strong>{formatMetric(metric,n)}</strong><small className={changeTone(metric,change)}>{change>=0?<ArrowUpRight size={12}/>:<ArrowDownRight size={12}/>} {Math.abs(change).toFixed(1)}% <em>vs 비교기간</em></small></article>})}<article><span>KPI 달성률</span><strong>{row.kpiAchievement===undefined?'-':`${row.kpiAchievement.toFixed(0)}%`}</strong><small className={tone(row.status)}>{row.status}</small></article><article><span>건강 / 위험</span><strong>{row.healthScore===undefined?'평가 보류':`${row.healthScore}점`}</strong><small className={row.riskScore>=70?'bad':row.riskScore>=50?'warning':'neutral'}>위험 {row.riskScore}점</small></article></section>

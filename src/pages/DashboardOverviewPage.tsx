@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, CalendarDays, Check, ChevronDown, RefreshCw, Search, ShieldCheck, X, ArrowUpRight, AlertTriangle, Sparkles } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricRows } from '../hooks/useMetrics';
+import type { DailyMetricRow as CentralDailyMetricRow, CreativeMetricRow, KeywordMetricRow } from '../types/metrics';
 import { computeMetric, enumerateDates, sumFields, type RawFields, type BrandReportConfig, type BrandDailyData } from '../types/brandReport';
 import { getBudgetStatus } from '../types/common';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useAdvertisers } from '../hooks/useAdvertisers';
-import { apiFetch } from '../hooks/useApi';
 
-// 매체 계정 연동에서 실제로 동기화된 dailyMetrics를, 이 화면이 원래 쓰던 BRAND_REPORTS와
+// 매체 계정 연동에서 실제로 동기화된 dailyMetrics를, 이 화면이 원래 쓰던 liveReports와
 // 같은 모양({config, data})으로 변환합니다. 아래 로직은 전부 그대로 재사용합니다.
-type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number };
+type DailyMetricRow = CentralDailyMetricRow;
 const CHANNEL_LABELS: Record<string, string> = { meta: '메타', naver: '네이버', google: '구글', daangn: '당근', tiktok: '틱톡', kakao: '카카오' };
 function buildLiveBrandReports(advertisers: { id: string; name: string; monthlyBudget: number }[], rows: DailyMetricRow[]): { config: BrandReportConfig; data: BrandDailyData }[] {
   return advertisers.map(adv => {
@@ -54,13 +55,7 @@ const CHANNEL_COLORS: Record<string,string> = {
   tiktok:MEDIA_COLORS.틱톡,kakao_keyword:MEDIA_COLORS.카카오,kakao_plus_friend:MEDIA_COLORS.카카오,
   kakao_channel_add:MEDIA_COLORS.카카오
 };
-type Preset='today'|'yesterday'|'7d'|'14d'|'30d'|'60d'|'90d';
-const PRESETS:{key:Preset;label:string;days:number}[]=[
-  {key:'today',label:'오늘',days:1},{key:'yesterday',label:'어제',days:1},{key:'7d',label:'7일',days:7},
-  {key:'14d',label:'14일',days:14},{key:'30d',label:'30일',days:30},{key:'60d',label:'60일',days:60},{key:'90d',label:'90일',days:90}
-];
 const money=(v:number)=>`₩${Math.round(v).toLocaleString()}`;
-const dateOffset=(date:string,days:number)=>{const d=new Date(`${date}T00:00:00`);d.setDate(d.getDate()+days);return d.toISOString().slice(0,10)};
 const datesOf=(data:Record<string,Record<string,RawFields>>)=>Array.from(new Set(Object.values(data).flatMap(v=>Object.keys(v)))).sort();
 const aggregate=(data:Record<string,Record<string,RawFields>>,key:string,dates:string[])=>sumFields(dates.map(d=>data[key]?.[d]??{}));
 const platformName=(key:string)=>key.includes('facebook')||key==='meta'?'메타':key.includes('naver')||key==='gfa'?'네이버':key.includes('google')||key==='youtube'?'구글':key.includes('danggeun')?'당근':key.includes('tiktok')?'틱톡':key.includes('kakao')?'카카오':'기타';
@@ -77,16 +72,14 @@ export function DashboardOverviewPage(){
   const {brandId}=useParams(); const navigate=useNavigate();
   const { filterValue } = useAdvertiserFilter();
   const [advertisers]=useAdvertisers();
-  const [metricRows,setMetricRows]=useState<DailyMetricRow[]>([]);
-  useEffect(()=>{apiFetch<{rows:DailyMetricRow[]}>('/daily-metrics').then(r=>setMetricRows(r.rows||[])).catch(()=>setMetricRows([]));},[]);
-  const BRAND_REPORTS=useMemo(()=>buildLiveBrandReports(advertisers,metricRows),[advertisers,metricRows]);
-  // '우수 광고' 카드에 실제 소재명·키워드명을 보여주기 위해 함께 불러옵니다.
-  const [creativeRows,setCreativeRows]=useState<{advertiserId:string;channel:string;adId:string;adName:string;spend:number}[]>([]);
-  const [keywordRows,setKeywordRows]=useState<{advertiserId:string;channel:string;keyword:string;spend:number}[]>([]);
-  useEffect(()=>{
-    apiFetch<{rows:typeof creativeRows}>('/creative-metrics').then(r=>setCreativeRows(r.rows||[])).catch(()=>setCreativeRows([]));
-    apiFetch<{rows:typeof keywordRows}>('/keyword-metrics').then(r=>setKeywordRows(r.rows||[])).catch(()=>setKeywordRows([]));
-  },[]);
+  const dailyMetrics=useMetricRows<DailyMetricRow>('/metrics/daily');
+  const creativeMetrics=useMetricRows<CreativeMetricRow>('/metrics/creatives');
+  const keywordMetrics=useMetricRows<KeywordMetricRow>('/metrics/keywords');
+  const metricRows=dailyMetrics.rows;
+  const creativeRows=creativeMetrics.rows;
+  const keywordRows=keywordMetrics.rows;
+  const range=dailyMetrics.range;
+  const liveReports=useMemo(()=>buildLiveBrandReports(advertisers,metricRows),[advertisers,metricRows]);
   const topItemForChannel=(channelName:string,advertiserName:string):{itemType:'소재'|'키워드';itemName:string}|null=>{
     const channelKey=CHANNEL_KEY_MAP[channelName];
     const advertiserId=advertisers.find(a=>a.name===advertiserName)?.id;
@@ -99,19 +92,16 @@ export function DashboardOverviewPage(){
     const best=creativeRows.filter(r=>r.channel===channelKey&&r.advertiserId===advertiserId).sort((a,b)=>b.spend-a.spend)[0];
     return best?{itemType:'소재',itemName:best.adName}:null;
   };
-  const selectedId=brandId&&BRAND_REPORTS.some(r=>r.config.brandId===brandId)?brandId:'all';
+  const selectedId=brandId&&liveReports.some(r=>r.config.brandId===brandId)?brandId:'all';
   // URL로 특정 브랜드가 지정된 경우엔 그 브랜드를 우선하고,
   // 그렇지 않으면(전체 대시보드) 상단 전역 검색 필터를 브랜드명 기준 부분 검색으로 적용합니다.
   // 이전에는 이 페이지가 URL 파라미터만 보고 상단 검색창 입력을 완전히 무시했습니다.
   const selectedReports=useMemo(()=>{
-    if(selectedId!=='all')return BRAND_REPORTS.filter(r=>r.config.brandId===selectedId);
-    if(filterValue.trim())return BRAND_REPORTS.filter(r=>matchesAdvertiserFilter(r.config.brandName,filterValue));
-    return BRAND_REPORTS;
-  },[selectedId,filterValue,BRAND_REPORTS]);
+    if(selectedId!=='all')return liveReports.filter(r=>r.config.brandId===selectedId);
+    if(filterValue.trim())return liveReports.filter(r=>matchesAdvertiserFilter(r.config.brandName,filterValue));
+    return liveReports;
+  },[selectedId,filterValue,liveReports]);
   const allDates=useMemo(()=>Array.from(new Set(selectedReports.flatMap(r=>datesOf(r.data)))).sort(),[selectedReports]);
-  const maxDate=(allDates.length?allDates[allDates.length-1]:new Date().toISOString().slice(0,10));
-  const [preset,setPreset]=useState<Preset>('7d');
-  const [range,setRange]=useState<DateRange>({from:dateOffset(maxDate,-6),to:maxDate});
 
   const [modal,setModal]=useState<{title:string;body:React.ReactNode}|null>(null);
   const [mode,setMode]=useState<'media'|'account'|'period'>('media');
@@ -155,8 +145,6 @@ export function DashboardOverviewPage(){
     const max=perfRangeMax?Number(perfRangeMax):Infinity;
     return list.filter(item=>{const v=perfValueOf(nameOf(item),rawOf(item)) as number;return v>=min&&v<=max;});
   };
-
-  useEffect(()=>{setRange({from:dateOffset(maxDate,-6),to:maxDate});setPreset('7d')},[selectedId,maxDate]);
 
 
   const dates=useMemo(()=>enumerateDates(range.from,range.to),[range]);
@@ -321,7 +309,6 @@ export function DashboardOverviewPage(){
     return {name:report.config.brandName,spend,budget,pct,status:getBudgetStatus({monthlyBudget:budget,currentSpend:spend}),channels};
   });
 
-  const applyPreset=(p:typeof PRESETS[number])=>{setPreset(p.key);const end=maxDate;if(p.key==='today')setRange({from:end,to:end});else if(p.key==='yesterday'){const y=dateOffset(end,-1);setRange({from:y,to:y})}else setRange({from:dateOffset(end,-(p.days-1)),to:end})};
   const open=(title:string,body:React.ReactNode)=>setModal({title,body});
   const aiText=`선택 기간 광고비는 ${money(periodSpend)}, 전환은 ${conversions.toLocaleString()}건입니다. ${roas!=null?`통합 ROAS는 ${roas.toFixed(0)}%입니다.`:'매출 추적 데이터가 부족합니다.'}`;
 
@@ -335,8 +322,7 @@ export function DashboardOverviewPage(){
 
     <section className="dashboard-toolbar card">
       {filterValue&&<div className="footnote" style={{marginBottom:8,width:'100%'}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경) · {selectedReports.length}개 브랜드 표시 중</div>}
-      <div className="preset-group">{PRESETS.map(p=><button key={p.key} className={preset===p.key?'active':''} onClick={()=>applyPreset(p)}>{p.label}</button>)}</div>
-      <div className="toolbar-range"><CalendarDays size={15}/><DateRangePicker value={range} onChange={r=>{setRange(r);setPreset('30d')}}/></div>
+      <MetricsDateBar compact/>
       <div className="toolbar-summary"><span>{range.from}</span><b>~</b><span>{range.to}</span></div>
     </section>
 

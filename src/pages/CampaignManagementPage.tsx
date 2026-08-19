@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
-import { ADVERTISERS, MOCK_CAMPAIGNS } from '../data/operationsMock';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey } from '../types/operations';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
@@ -13,33 +13,15 @@ import { apiFetch } from '../hooks/useApi';
 const statusLabel: Record<CampaignStatus,string> = {on:'운영 중',off:'중지',scheduled:'예약 대기',review:'심사 중',error:'오류',unsupported:'지원 불가'};
 const statusTone: Record<CampaignStatus,'success'|'warning'|'danger'|'neutral'|'accent'> = {on:'success',off:'neutral',scheduled:'accent',review:'warning',error:'danger',unsupported:'neutral'};
 const platforms = Object.entries(PLATFORM_LABEL) as [PlatformKey,string][];
-const CAMPAIGN_STORAGE_KEY = 'howtom-campaign-management-v2';
-function loadCampaignRows(): Campaign[] {
-  try {
-    const stored = JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY) || 'null');
-    return Array.isArray(stored) && stored.length ? stored : MOCK_CAMPAIGNS;
-  } catch {
-    return MOCK_CAMPAIGNS;
-  }
-}
-
 export function CampaignManagementPage() {
-  const [rows,setRows] = useState<Campaign[]>(loadCampaignRows);
-  // 설정 > 매체 계정 연동에서 연결된 실제 Meta 캠페인을 불러와, 기존(업로드로 추가된) 목록과 합칩니다.
-  useEffect(() => {
-    apiFetch<Campaign[]>('/campaigns').then(live => {
-      if (!live.length) return;
-      setRows(prev => {
-        const existingIds = new Set(prev.map(c => c.id));
-        const merged = [...prev, ...live.filter(c => !existingIds.has(c.id))];
-        // 이미 같은 id로 있던 캠페인은 최신 상태(예산·상태)로 갱신합니다.
-        return merged.map(c => live.find(l => l.id === c.id) ?? c);
-      });
-    }).catch(() => { /* 연결된 계정이 없으면 조용히 무시합니다. */ });
-  }, []);
+  const [rows,setRows] = useState<Campaign[]>([]);
+  const [campaignError,setCampaignError]=useState('');
+  const [advertisers]=useAdvertisers();
+  const reloadCampaigns=()=>{setCampaignError('');apiFetch<Campaign[]>('/campaigns').then(live=>setRows(live||[])).catch(error=>{setRows([]);setCampaignError(error instanceof Error?error.message:String(error))});};
+  useEffect(()=>{reloadCampaigns();},[]);
   // 상단 전역 광고주 검색과 연결합니다 (화면마다 따로 있던 광고주 선택 드롭다운을 없애고 하나로 통일).
   const { filterValue } = useAdvertiserFilter();
-  const matchedAdvertiser = ADVERTISERS.find(a => matchesAdvertiserFilter(a.name, filterValue));
+  const matchedAdvertiser = advertisers.find(a => matchesAdvertiserFilter(a.name, filterValue));
   const [platform,setPlatform] = useState<'all'|PlatformKey>('all');
   const [query,setQuery] = useState('');
   const [showUpload,setShowUpload] = useState(false);
@@ -50,7 +32,7 @@ export function CampaignManagementPage() {
 
   const filtered = useMemo(()=>{
     const list = rows.filter(r => {
-      const advertiserName = ADVERTISERS.find(a => a.id === r.advertiserId)?.name;
+      const advertiserName = advertisers.find(a => a.id === r.advertiserId)?.name;
       return matchesAdvertiserFilter(advertiserName, filterValue) &&
         (platform==='all'||r.platform===platform) &&
         r.name.toLowerCase().includes(query.toLowerCase());
@@ -61,7 +43,7 @@ export function CampaignManagementPage() {
       const diff = String(av).localeCompare(String(bv), undefined, { numeric: true });
       return sortDir==='asc' ? diff : -diff;
     });
-  },[rows,filterValue,platform,query,sortKey,sortDir]);
+  },[rows,advertisers,filterValue,platform,query,sortKey,sortDir]);
   const toggleSort = (key: SortKey) => { if (sortKey===key) setSortDir(sortDir==='asc'?'desc':'asc'); else { setSortKey(key); setSortDir('asc'); } };
   const sortArrow = (key: SortKey) => sortKey===key ? (sortDir==='asc'?' ▲':' ▼') : '';
 
@@ -73,7 +55,8 @@ export function CampaignManagementPage() {
   };
 
   function toggle(id:string) {
-    setRows(prev=>{ const next=prev.map(r=>r.id===id && r.capability.toggle ? {...r,status:(r.status==='on'?'off':'on') as CampaignStatus} : r); try { localStorage.setItem(CAMPAIGN_STORAGE_KEY, JSON.stringify(next)); } catch {} return next; });
+    const row=rows.find(r=>r.id===id); if(!row?.capability.toggle)return;
+    apiFetch('/campaigns',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:row.status==='on'?'off':'on'})}).then(()=>reloadCampaigns()).catch(error=>setCampaignError(error instanceof Error?error.message:String(error)));
   }
 
   const scheduleTarget = rows.find(r=>r.id===showSchedule);
@@ -82,6 +65,7 @@ export function CampaignManagementPage() {
     <PageHeader title="캠페인 관리" description="매체별 캠페인을 한 곳에서 업로드하고, ON/OFF 및 날짜·시간 예약을 관리합니다."
       action={<div className="toolbar-actions"><button className="btn" onClick={()=>setShowUpload(true)}><FileSpreadsheet size={15}/>대량 업로드</button><button className="btn btn-primary" onClick={()=>setShowUpload(true)}><Plus size={15}/>캠페인 업로드</button></div>} />
 
+    {campaignError&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{campaignError}</div>}
     <div className="summary-grid summary-grid-compact">
       <div className="summary-card"><div className="summary-card-label">전체 캠페인</div><div className="summary-card-value">{stats.total}</div></div>
       <div className="summary-card"><div className="summary-card-label">운영 중</div><div className="summary-card-value text-success">{stats.on}</div></div>
@@ -94,7 +78,7 @@ export function CampaignManagementPage() {
         {matchedAdvertiser && <span className="footnote" style={{margin:0}}>광고주 필터: <b>{matchedAdvertiser.name}</b> (상단 검색에서 변경)</span>}
         <select value={platform} onChange={e=>setPlatform(e.target.value as any)} className="select-control"><option value="all">전체 매체</option>{platforms.map(([k,l])=><option key={k} value={k}>{l}</option>)}</select>
         <div className="campaign-search-box"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="캠페인명 검색"/></div>
-        <button className="btn"><RefreshCw size={14}/>동기화</button>
+        <button className="btn" onClick={reloadCampaigns}><RefreshCw size={14}/>동기화</button>
       </div>
     </div>
 
@@ -119,7 +103,6 @@ export function CampaignManagementPage() {
             const next = prev.map(r=>r.id===scheduleTarget.id
               ? {...r,status: (labels.length ? 'scheduled' : r.status) as CampaignStatus,schedule: labels.length ? {...r.schedule, repeat: labels[0], rules: [...labels]} : undefined}
               : r);
-            try { localStorage.setItem(CAMPAIGN_STORAGE_KEY, JSON.stringify(next)); } catch {}
             return next;
           });
           setShowSchedule(null);
