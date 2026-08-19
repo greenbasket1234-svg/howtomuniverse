@@ -143,6 +143,11 @@ if (DATABASE_URL) {
   try {
     const pgModule = await import('pg');
     const pg = pgModule.default || pgModule;
+    // pg 드라이버는 기본적으로 NUMERIC(소수 가능한 숫자) 컬럼을 문자열로 돌려줍니다.
+    // 이걸 그대로 두면 "1000" + "2000" 같은 덧셈이 3000이 아니라 "10002000"(문자열 이어붙이기)이 되어버려서,
+    // 반드시 실제 숫자(float)로 파싱하도록 설정해야 합니다.
+    pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val))); // 1700 = NUMERIC OID
+    pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10))); // 20 = BIGINT OID (노출수/클릭수 등)
     pgPool = new pg.Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
   } catch (error) {
     console.error('[오류] DATABASE_URL이 설정됐지만 pg 패키지를 불러오지 못했습니다:', error?.message || error);
