@@ -432,16 +432,19 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   if (!ids.length) return [];
   const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
   const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
+  // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
+  // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
+  const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
   const fetchRange = async (rangeSince, rangeUntil) => {
     let data = await naverApiRequest('GET', '/stats', {
-      ids,
+      ...idParams,
       fields: JSON.stringify(FULL_FIELDS),
       timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
       timeIncrement: '1',
     }, credentials).catch(() => null);
     if (!data) {
       data = await naverApiRequest('GET', '/stats', {
-        ids,
+        ...idParams,
         fields: JSON.stringify(BASIC_FIELDS),
         timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
         timeIncrement: '1',
@@ -473,18 +476,14 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
 }
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
-  const ads = (await naverFetchAdMasters(credentials)).slice(0, 500);
-  const ids = ads.map(a => a.nccAdId).filter(Boolean);
-  if (!ids.length) return [];
+  const ads = (await naverFetchAdMasters(credentials)).slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
-  for (let i = 0; i < ids.length; i += 100) {
-    const chunk = ids.slice(i, i + 100);
-    const stats = await naverStatsForIdsDaily(credentials, chunk, since, until);
+  for (const ad of ads) {
+    const stats = await naverStatsForIdsDaily(credentials, [ad.nccAdId], since, until);
     for (const row of stats) {
-      const adId = row.id || row.nccAdId;
-      const ad = master.get(adId);
-      if (!adId || !ad) continue;
+      const adId = row.id || row.nccAdId || ad.nccAdId;
+      if (!master.has(adId)) continue;
       rows.push({
         date: row.date,
         campaignId: ad.campaignId || '',
@@ -506,7 +505,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         cta: '',
       });
     }
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 120));
   }
   return rows;
 }
@@ -527,19 +526,14 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
     if (Array.isArray(rows)) keywords.push(...rows);
     await new Promise(r => setTimeout(r, 120));
   }
-  const selected = keywords.slice(0, 500);
-  const ids = selected.map(k => k.nccKeywordId).filter(Boolean);
-  const master = new Map(selected.map(k => [k.nccKeywordId, k]));
+  const selected = keywords.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const result = [];
-  for (let i = 0; i < ids.length; i += 100) {
-    const chunk = ids.slice(i, i + 100);
-    const stats = await naverStatsForIdsDaily(credentials, chunk, since, until);
+  for (const kw of selected) {
+    const adgroupId = kw.nccAdgroupId || '';
+    const campaignId = adgroupCampaignMap.get(adgroupId) || '';
+    const stats = await naverStatsForIdsDaily(credentials, [kw.nccKeywordId], since, until);
     for (const row of stats) {
-      const keywordId = row.id || row.nccKeywordId;
-      const kw = master.get(keywordId);
-      if (!keywordId || !kw) continue;
-      const adgroupId = kw.nccAdgroupId || '';
-      const campaignId = adgroupCampaignMap.get(adgroupId) || '';
+      const keywordId = row.id || row.nccKeywordId || kw.nccKeywordId;
       result.push({
         date: row.date,
         campaignId,
@@ -555,7 +549,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         revenue: Number(row.convAmt || 0),
       });
     }
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 120));
   }
   return result;
 }
@@ -1127,15 +1121,43 @@ async function handleApi(req, res, pathname) {
         const userId = userRes.rows[0].id;
         await pgPool.query(`INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1,$2,'owner') ON CONFLICT DO NOTHING`, [tenantId, userId]);
 
+        // 예전에 마이그레이션을 여러 번 눌러서 생긴 중복 광고주를 정리합니다.
+        // 같은 이름이 여러 개면, 실제 성과 데이터(daily_metrics)가 가장 많이 붙어있는 것만 남기고 나머지는 지웁니다.
+        const dupRes = await pgPool.query(
+          `SELECT a.id, a.name, COUNT(dm.id) as metric_count
+           FROM advertisers a LEFT JOIN daily_metrics dm ON dm.advertiser_id = a.id
+           WHERE a.tenant_id = $1 GROUP BY a.id, a.name ORDER BY a.name, metric_count DESC`,
+          [tenantId]
+        );
+        const seenNames = new Set(); const toDelete = [];
+        for (const row of dupRes.rows) {
+          if (seenNames.has(row.name)) toDelete.push(row.id); else seenNames.add(row.name);
+        }
+        if (toDelete.length) {
+          await pgPool.query(`DELETE FROM advertisers WHERE id = ANY($1::uuid[])`, [toDelete]);
+          log.push(`중복 광고주 ${toDelete.length}개 정리`);
+        }
+
         log.push('광고주 및 매체 연동 정보를 옮깁니다...');
         const advertiserIdMap = new Map();
         for (const adv of json.advertisers || []) {
-          const advRes = await pgPool.query(
-            `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-            [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
-          );
-          const newAdvId = advRes.rows[0].id;
+          // 같은 이름의 광고주가 이미 있으면 새로 만들지 않고 그 광고주를 그대로 씁니다(중복 생성 방지).
+          const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
+          let newAdvId;
+          if (existing.rows[0]) {
+            newAdvId = existing.rows[0].id;
+            await pgPool.query(
+              `UPDATE advertisers SET monthly_budget=$3, brand_color=$4, industry=$5, website=$6, phone=$7, address=$8, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+              [newAdvId, tenantId, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+            );
+          } else {
+            const advRes = await pgPool.query(
+              `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+              [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+            );
+            newAdvId = advRes.rows[0].id;
+          }
           advertiserIdMap.set(adv.id, newAdvId);
           for (const acc of adv.accounts || []) {
             await pgPool.query(
