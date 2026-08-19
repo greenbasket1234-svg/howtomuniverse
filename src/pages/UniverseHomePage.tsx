@@ -104,7 +104,7 @@ export function UniverseHomePage() {
         <article className="home-dashboard-card insight-card"><div className="home-card-head home-card-head-compact"><div><h2>AI 추천 인사이트</h2></div></div><div className="home-empty-data"><Bot size={26}/><b>분석할 데이터가 없습니다.</b><span>실제 성과 데이터가 쌓이면 추천 인사이트를 생성할 수 있습니다.</span></div></article>
       </section>
 
-      <nav className="home-quick-menu home-quick-menu-v14" aria-label="빠른 메뉴"><strong>빠른 메뉴</strong><Link to="/reports"><FileText size={17}/> 광고 데이터</Link><Link to="/kpi-goals"><CheckCircle2 size={17}/> KPI 관리</Link><Link to="/campaigns"><Megaphone size={17}/> 캠페인 관리</Link><Link to="/creatives/library"><Sparkles size={17}/> 소재 관리</Link><Link to="/keywords"><Search size={17}/> 키워드 관리</Link><Link to="/content/blog"><FileText size={17}/> 블로그 제작</Link><Link to="/automation/overview"><Bot size={17}/> AI 자동화</Link></nav>
+      <nav className="home-quick-menu home-quick-menu-v14" aria-label="빠른 메뉴"><Link to="/dashboard"><TrendingUp size={17}/> 전체 대시보드</Link><Link to="/reports"><FileText size={17}/> 광고 데이터</Link><Link to="/kpi-goals"><CheckCircle2 size={17}/> KPI 관리</Link><Link to="/campaigns"><Megaphone size={17}/> 캠페인 관리</Link><Link to="/creatives/library"><Sparkles size={17}/> 소재 관리</Link><Link to="/keywords"><Search size={17}/> 키워드 관리</Link><Link to="/content/blog"><FileText size={17}/> 블로그 제작</Link><Link to="/automation/overview"><Bot size={17}/> AI 자동화</Link></nav>
 
       <section className="home-bottom-grid home-bottom-grid-v14">
         <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2></div></div><div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div></article>
