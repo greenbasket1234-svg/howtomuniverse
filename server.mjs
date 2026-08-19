@@ -1424,59 +1424,77 @@ async function handleApi(req, res, pathname) {
     // 이 한 곳만 읽습니다.
     function metricNumber(value) { return Number(value || 0) || 0; }
     async function upsertDailyMetrics(tenantId, advertiserId, channel, rows) {
-      for (const r of (rows || []).filter(r => r.date)) {
-        await pgPool.query(
-          `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
-             impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
-             db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
-          [tenantId, advertiserId, channel, r.date, metricNumber(r.impressions), metricNumber(r.clicks), metricNumber(r.spend), metricNumber(r.dbCount), metricNumber(r.purchases), metricNumber(r.revenue)]
-        );
-      }
+      const valid = (rows || []).filter(r => r.date);
+      if (!valid.length) return;
+      await pgPool.query(
+        `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue)
+         SELECT $1, $2, $3, d, imp, clk, sp, dbc, pur, rev
+         FROM UNNEST($4::date[], $5::bigint[], $6::bigint[], $7::numeric[], $8::bigint[], $9::bigint[], $10::numeric[]) AS t(d, imp, clk, sp, dbc, pur, rev)
+         ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
+           impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.date), valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)),
+         valid.map(r => metricNumber(r.spend)), valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+      );
     }
     async function upsertCampaignDailyMetrics(tenantId, advertiserId, channel, rows) {
-      for (const r of (rows || []).filter(r => r.date && r.campaignId)) {
-        await pgPool.query(
-          `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, date, impressions, clicks, spend, db_count, purchases, revenue)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-           ON CONFLICT (advertiser_id, channel, campaign_id, date) DO UPDATE SET
-             campaign_name=EXCLUDED.campaign_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
-             spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
-          [tenantId, advertiserId, channel, String(r.campaignId), r.campaignName || String(r.campaignId), r.date, metricNumber(r.impressions), metricNumber(r.clicks), metricNumber(r.spend), metricNumber(r.dbCount), metricNumber(r.purchases), metricNumber(r.revenue)]
-        );
-      }
+      const valid = (rows || []).filter(r => r.date && r.campaignId);
+      if (!valid.length) return;
+      await pgPool.query(
+        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, date, impressions, clicks, spend, db_count, purchases, revenue)
+         SELECT $1, $2, $3, cid, cname, d, imp, clk, sp, dbc, pur, rev
+         FROM UNNEST($4::text[], $5::text[], $6::date[], $7::bigint[], $8::bigint[], $9::numeric[], $10::bigint[], $11::bigint[], $12::numeric[]) AS t(cid, cname, d, imp, clk, sp, dbc, pur, rev)
+         ON CONFLICT (advertiser_id, channel, campaign_id, date) DO UPDATE SET
+           campaign_name=EXCLUDED.campaign_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
+           spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => String(r.campaignId)), valid.map(r => r.campaignName || String(r.campaignId)), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+      );
     }
     async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
-      for (const r of (rows || []).filter(r => r.date && r.adId)) {
-        await pgPool.query(
-          `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, title, body, description, cta)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-           ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
-             campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id,
-             ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
-             db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
-             thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, title=EXCLUDED.title,
-             body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, updated_at=now()`,
-          [tenantId, advertiserId, channel, r.campaignId || '', r.campaignName || '', r.adgroupId || '', String(r.adId), r.adName || String(r.adId), r.date,
-           metricNumber(r.impressions), metricNumber(r.clicks), metricNumber(r.spend), metricNumber(r.dbCount), metricNumber(r.purchases), metricNumber(r.revenue),
-           r.thumbnailUrl || null, r.mediaType || null, r.title || '', r.body || '', r.description || '', r.cta || '']
-        );
-      }
+      const valid = (rows || []).filter(r => r.date && r.adId);
+      if (!valid.length) return;
+      await pgPool.query(
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, title, body, description, cta)
+         SELECT $1, $2, $3, cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, ttl, bdy, desc_, cta_
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::date[], $10::bigint[], $11::bigint[], $12::numeric[], $13::bigint[], $14::bigint[], $15::numeric[], $16::text[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[])
+           AS t(cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, ttl, bdy, desc_, cta_)
+         ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id,
+           ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, title=EXCLUDED.title,
+           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''),
+         valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.title || ''),
+         valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || '')]
+      );
     }
     async function upsertKeywordDailyMetrics(tenantId, advertiserId, channel, rows) {
-      for (const r of (rows || []).filter(r => r.date && (r.keywordId || r.keyword))) {
-        await pgPool.query(
-          `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-           ON CONFLICT (advertiser_id, channel, keyword_id, keyword, date) DO UPDATE SET
-             campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id,
-             impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
-             db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
-          [tenantId, advertiserId, channel, r.campaignId || '', r.campaignName || '', r.adgroupId || '', r.keywordId || '', r.keyword || r.keywordId, r.date,
-           metricNumber(r.impressions), metricNumber(r.clicks), metricNumber(r.spend), metricNumber(r.dbCount), metricNumber(r.purchases), metricNumber(r.revenue)]
-        );
-      }
+      const valid = (rows || []).filter(r => r.date && (r.keywordId || r.keyword));
+      if (!valid.length) return;
+      await pgPool.query(
+        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue)
+         SELECT $1, $2, $3, cid, cname, agid, kwid, kw, d, imp, clk, sp, dbc, pur, rev
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::date[], $10::bigint[], $11::bigint[], $12::numeric[], $13::bigint[], $14::bigint[], $15::numeric[])
+           AS t(cid, cname, agid, kwid, kw, d, imp, clk, sp, dbc, pur, rev)
+         ON CONFLICT (advertiser_id, channel, keyword_id, keyword, date) DO UPDATE SET
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id,
+           impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''),
+         valid.map(r => r.keywordId || ''), valid.map(r => r.keyword || r.keywordId), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+      );
     }
     function aggregateMetricRows(rows) {
       return (rows || []).reduce((a, r) => ({ impressions: a.impressions + metricNumber(r.impressions), clicks: a.clicks + metricNumber(r.clicks), spend: a.spend + metricNumber(r.spend), dbCount: a.dbCount + metricNumber(r.dbCount), purchases: a.purchases + metricNumber(r.purchases), revenue: a.revenue + metricNumber(r.revenue) }), { impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 });
