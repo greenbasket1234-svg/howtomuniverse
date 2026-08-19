@@ -1584,7 +1584,7 @@ export function AdvertiserDailyReportPage() {
         </section>
       )}
 
-      {tab === 'media' && <MediaPerformancePage />}
+      {tab === 'media' && <div className="daily-report-media-tab-shell"><MediaPerformancePage embedded defaultAdvertiser={advertiserName} /></div>}
 
       {tab === 'data' && (
         <div className="data-method-picker">

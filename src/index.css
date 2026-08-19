@@ -2620,3 +2620,51 @@ body{font-size:15.5px;line-height:1.55}
   .action-row,.ops-toolbar,.dashboard-toolbar-actions{flex-wrap:wrap}
   .page-header-top{gap:12px}
 }
+
+
+/* ===== 광고 데이터 UI/UX 정리 · 2026-08-19 ===== */
+/* 상단 광고주 필터는 검색 + 목록 선택 두 컨트롤만 유지합니다. */
+.global-advertiser-filter{align-items:center;justify-content:flex-start}
+.global-advertiser-filter-main{width:100%;min-width:0;display:grid;grid-template-columns:minmax(240px,420px) minmax(170px,230px);gap:10px;align-items:center}
+.global-advertiser-search{width:100%;max-width:none}
+.global-advertiser-select{width:100%;min-width:0}
+.global-advertiser-filter-meta,.global-advertiser-quick-list{display:none!important}
+
+/* 광고 데이터의 컨트롤은 고정 폭 대신 화면 폭에 따라 자연스럽게 재배치합니다. */
+.daily-report-control-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.daily-report-tabs.simplified{display:flex;gap:6px;overflow-x:auto;scrollbar-width:thin;white-space:nowrap}
+.daily-report-tabs.simplified button{flex:0 0 auto}
+.daily-report-summary-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+
+/* 독립 인사이트 화면을 광고 데이터 안에 삽입할 때 부모 폭을 넘지 않도록 임베디드 전용 레이아웃을 사용합니다. */
+.daily-report-media-tab-shell{width:100%;min-width:0;max-width:100%;overflow:hidden}
+.media-analysis-page.embedded{width:100%;max-width:none;min-width:0;margin:0;gap:12px;overflow:hidden}
+.media-analysis-page.embedded .map-filter-card{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));min-width:0}
+.media-analysis-page.embedded .map-custom-range-field{grid-column:1/-1}
+.media-analysis-page.embedded .map-media-tabs{grid-template-columns:repeat(auto-fit,minmax(105px,1fr));min-width:0}
+.media-analysis-page.embedded .map-kpi-grid{grid-template-columns:repeat(auto-fit,minmax(145px,1fr));min-width:0}
+.media-analysis-page.embedded .map-main-grid{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));min-width:0}
+.media-analysis-page.embedded .map-mid-grid,
+.media-analysis-page.embedded .map-selected-grid{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));min-width:0}
+.media-analysis-page.embedded .map-bottom-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));min-width:0}
+.media-analysis-page.embedded .map-panel,
+.media-analysis-page.embedded .table-scroll{min-width:0;max-width:100%}
+.map-custom-range-field{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:2px;color:#667085;font-size:12px;font-weight:700}
+.map-custom-range-field .dr-trigger{min-height:38px}
+
+@media(max-width:760px){
+  .global-advertiser-filter-main{grid-template-columns:1fr}
+  .global-advertiser-filter{padding:10px 14px}
+  .daily-report-control-grid,.daily-report-summary-grid{grid-template-columns:1fr}
+  .media-analysis-page.embedded .map-filter-card,
+  .media-analysis-page.embedded .map-media-tabs,
+  .media-analysis-page.embedded .map-kpi-grid,
+  .media-analysis-page.embedded .map-main-grid,
+  .media-analysis-page.embedded .map-mid-grid,
+  .media-analysis-page.embedded .map-selected-grid,
+  .media-analysis-page.embedded .map-bottom-grid{grid-template-columns:1fr}
+  .media-analysis-page.embedded .map-summary{grid-template-columns:auto 1fr}
+  .media-analysis-page.embedded .map-summary>a{grid-column:2}
+}
+
+.map-embedded-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:2px 2px 0}.map-embedded-head h2{margin:0;font-size:18px;color:#172033}.map-embedded-head p{margin:4px 0 0;font-size:12px;color:#738096}@media(max-width:640px){.map-embedded-head{align-items:flex-start;flex-direction:column}}

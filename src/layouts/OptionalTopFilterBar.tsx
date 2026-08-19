@@ -48,32 +48,13 @@ export function OptionalTopFilterBar() {
           value={knownAdvertisers.includes(filterValue) ? filterValue : ''}
           onChange={e => setFilter(e.target.value)}
         >
-          <option value="">광고주 목록 전체</option>
+          <option value="">광고주 목록</option>
           {knownAdvertisers.map(name => (
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
       </div>
 
-      <div className="global-advertiser-filter-meta">
-        <span>
-          {filterValue
-            ? `선택 광고주 데이터만 표시: ${filterValue}`
-            : '광고주를 검색하거나 선택하면 해당 광고주 데이터만 표시됩니다.'}
-        </span>
-        <div className="global-advertiser-quick-list" aria-label="광고주 빠른 선택">
-          {knownAdvertisers.slice(0, 8).map(name => (
-            <button
-              key={name}
-              type="button"
-              className={filterValue === name ? 'active' : ''}
-              onClick={() => setFilter(filterValue === name ? '' : name)}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

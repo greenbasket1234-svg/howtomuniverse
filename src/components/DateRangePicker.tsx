@@ -7,6 +7,8 @@ const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSta
 const fromISO = (s: string) => new Date(s + 'T00:00:00');
 const addDays = (d: Date, n: number) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 const startOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
+const endOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+const previousMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() - 1, 1);
 
 function presets(): { key: string; label: string; range: () => DateRange }[] {
   const today = new Date();
@@ -14,8 +16,12 @@ function presets(): { key: string; label: string; range: () => DateRange }[] {
     { key: 'today', label: '오늘', range: () => ({ from: toISO(today), to: toISO(today) }) },
     { key: 'yesterday', label: '어제', range: () => { const y = addDays(today, -1); return { from: toISO(y), to: toISO(y) }; } },
     { key: '7d', label: '최근 7일', range: () => ({ from: toISO(addDays(today, -6)), to: toISO(today) }) },
+    { key: '14d', label: '최근 14일', range: () => ({ from: toISO(addDays(today, -13)), to: toISO(today) }) },
     { key: '30d', label: '최근 30일', range: () => ({ from: toISO(addDays(today, -29)), to: toISO(today) }) },
-    { key: 'this_month', label: '이번 달', range: () => ({ from: toISO(startOfMonth(today)), to: toISO(today) }) },
+    { key: '60d', label: '최근 60일', range: () => ({ from: toISO(addDays(today, -59)), to: toISO(today) }) },
+    { key: '90d', label: '최근 90일', range: () => ({ from: toISO(addDays(today, -89)), to: toISO(today) }) },
+    { key: 'last_month', label: '지난달', range: () => { const m = previousMonth(today); return { from: toISO(startOfMonth(m)), to: toISO(endOfMonth(m)) }; } },
+    { key: 'this_month', label: '이번달', range: () => ({ from: toISO(startOfMonth(today)), to: toISO(today) }) },
   ];
 }
 

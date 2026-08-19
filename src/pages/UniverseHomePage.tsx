@@ -13,14 +13,17 @@ const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSta
 const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + n); return toISO(d); };
 const todayISO = () => toISO(new Date());
 
-type PeriodPreset = 'today' | 'yesterday' | '7d' | '30d' | '60d' | '90d' | 'custom';
-const PERIOD_PRESETS: { key: PeriodPreset; label: string; days: number }[] = [
+type PeriodPreset = 'today' | 'yesterday' | '7d' | '14d' | '30d' | '60d' | '90d' | 'last_month' | 'this_month' | 'custom';
+const PERIOD_PRESETS: { key: Exclude<PeriodPreset, 'custom'>; label: string; days?: number }[] = [
   { key: 'today', label: '오늘', days: 1 },
   { key: 'yesterday', label: '어제', days: 1 },
   { key: '7d', label: '최근 7일', days: 7 },
+  { key: '14d', label: '최근 14일', days: 14 },
   { key: '30d', label: '최근 30일', days: 30 },
   { key: '60d', label: '최근 60일', days: 60 },
   { key: '90d', label: '최근 90일', days: 90 },
+  { key: 'last_month', label: '지난달' },
+  { key: 'this_month', label: '이번달' },
 ];
 
 type DailyMetricRow = { advertiserId: string; channel: string; date: string; impressions: number; clicks: number; spend: number; dbCount: number; revenue?: number; purchases?: number };
@@ -41,7 +44,13 @@ export function UniverseHomePage() {
     const end = todayISO();
     if (p.key === 'today') setRange({ from: end, to: end });
     else if (p.key === 'yesterday') { const y = addDays(end, -1); setRange({ from: y, to: y }); }
-    else setRange({ from: addDays(end, -(p.days - 1)), to: end });
+    else if (p.key === 'this_month') setRange({ from: `${end.slice(0, 7)}-01`, to: end });
+    else if (p.key === 'last_month') {
+      const d = new Date(`${end}T00:00:00`);
+      const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      const last = new Date(d.getFullYear(), d.getMonth(), 0);
+      setRange({ from: toISO(first), to: toISO(last) });
+    } else setRange({ from: addDays(end, -((p.days ?? 1) - 1)), to: end });
   };
 
   // 매체 계정 연동(설정 > 매체 계정 연동)에서 연결·동기화된 실제 데이터를 읽어옵니다.
