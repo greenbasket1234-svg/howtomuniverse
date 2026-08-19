@@ -1,24 +1,41 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Folder, PencilLine, Plus, Search, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { apiFetch } from '../hooks/useApi';
 
 const won=(n:number)=>`₩${Math.round(n).toLocaleString()}`;
-const SPEND:Record<string,number>={dabang:1716335,alrim:12480000,ales:3420000};
+type KpiBrandLite={name:string;goalType:'CPA'|'ROAS'|'CPC';goalTarget:number};
+function loadKpiBrandsLite():KpiBrandLite[]{
+  try{const raw=localStorage.getItem('adcc-kpi-brands-v1');const parsed=raw?JSON.parse(raw):null;return Array.isArray(parsed)?parsed:[]}catch{return []}
+}
+const goalLabelOf=(k:KpiBrandLite)=>k.goalType==='ROAS'?`ROAS ${k.goalTarget}% (광고 수익률)`:k.goalType==='CPC'?`CPC ₩${k.goalTarget.toLocaleString()} (클릭당 비용)`:`전환당 ₩${k.goalTarget.toLocaleString()} (CPA)`;
+const businessTypeOf=(k?:KpiBrandLite)=>!k?'목표 미설정':k.goalType==='ROAS'?'쇼핑몰 구매전환형':k.goalType==='CPC'?'브랜딩 트래픽형':'오프라인 예약 방문형';
 
 export function BrandsBudgetPage(){
  const [advertisers,setAdvertisers]=useAdvertisers(); const { filterValue } = useAdvertiserFilter(); const [query,setQuery]=useState(''); const [editing,setEditing]=useState<string|null>(null); const [budget,setBudget]=useState(''); const [toast,setToast]=useState('');
- const rows=useMemo(()=>advertisers.filter(a=>matchesAdvertiserFilter(a.name,filterValue)&&a.name.includes(query.trim())).map((a,i)=>{
-   const spend=SPEND[a.id]??Math.round(a.monthlyBudget*(.08+i*.04));
-   const BUSINESS_TYPES=['오프라인 예약 방문형','쇼핑몰 구매전환형','브랜딩 회원가입형'] as const;
-   const KPI_LABELS=['예약당 ₩18,000 (CPA)','ROAS 400% (광고 수익률)','잠재고객 DB당 ₩12,000 (CPL)'] as const;
-   const groupIndex=i%3;
-   const businessType=BUSINESS_TYPES[groupIndex];
-   const kpiLabel=KPI_LABELS[groupIndex];
-   return {...a,spend,rate:a.monthlyBudget?spend/a.monthlyBudget*100:0,projection:Math.round(spend*3.1),businessType,kpiLabel};
- }),[advertisers,query,filterValue]);
+ // 실제 매체 API에서 가져온 이번 달 광고비를 씁니다 (예전엔 임의 공식으로 지어낸 값이었습니다).
+ const [metricRows,setMetricRows]=useState<{advertiserName:string;date:string;spend:number}[]>([]);
+ useEffect(()=>{
+   const until=new Date().toISOString().slice(0,10);
+   const since=`${until.slice(0,7)}-01`;
+   apiFetch<{rows:{advertiserName:string;date:string;spend:number}[]}>(`/metrics/daily?from=${since}&to=${until}`)
+     .then(r=>setMetricRows(r.rows||[])).catch(()=>setMetricRows([]));
+ },[]);
+ const kpiBrands=useMemo(()=>loadKpiBrandsLite(),[]);
+ const daysElapsed=new Date().getDate();
+ const daysInMonth=new Date(new Date().getFullYear(),new Date().getMonth()+1,0).getDate();
+ const rows=useMemo(()=>advertisers.filter(a=>matchesAdvertiserFilter(a.name,filterValue)&&a.name.includes(query.trim())).map((a)=>{
+   const spend=metricRows.filter(r=>matchesAdvertiserFilter(r.advertiserName,a.name)).reduce((sum,r)=>sum+(r.spend||0),0);
+   const kpi=kpiBrands.find(k=>matchesAdvertiserFilter(k.name,a.name));
+   const businessType=businessTypeOf(kpi);
+   const kpiLabel=kpi?goalLabelOf(kpi):'KPI 관리에서 목표를 설정하세요';
+   // 월말 예상 소진액: 지금까지의 일평균 소진 속도를 이번 달 전체 일수로 단순 환산합니다.
+   const projection=daysElapsed>0?Math.round(spend/daysElapsed*daysInMonth):0;
+   return {...a,spend,rate:a.monthlyBudget?spend/a.monthlyBudget*100:0,projection,businessType,kpiLabel};
+ }),[advertisers,query,filterValue,metricRows,kpiBrands,daysElapsed,daysInMonth]);
 
  type GroupBy='none'|'advertiser'|'type'|'kpi';
  const [groupBy,setGroupBy]=useState<GroupBy>('none');
@@ -45,7 +62,18 @@ export function BrandsBudgetPage(){
  const [openFolders,setOpenFolders]=useState<Set<string>>(new Set());
  const toggleFolder=(label:string)=>setOpenFolders(prev=>{const next=new Set(prev);if(next.has(label))next.delete(label);else next.add(label);return next;});
  const current=advertisers.find(a=>a.id===editing);
- const save=()=>{if(!current)return;setAdvertisers(prev=>prev.map(a=>a.id===current.id?{...a,monthlyBudget:Number(budget)||a.monthlyBudget}:a));setEditing(null);setToast('월 예산을 저장했습니다.');setTimeout(()=>setToast(''),2200)};
+ const save=async()=>{
+   if(!current)return;
+   const newBudget=Number(budget)||current.monthlyBudget;
+   try{
+     await apiFetch(`/advertisers/${encodeURIComponent(current.id)}`,{method:'PATCH',body:JSON.stringify({monthly_budget:newBudget})});
+     setAdvertisers(prev=>prev.map(a=>a.id===current.id?{...a,monthlyBudget:newBudget}:a));
+     setToast('월 예산을 저장했습니다.');
+   }catch(error){
+     setToast(error instanceof Error?error.message:'저장에 실패했습니다.');
+   }
+   setEditing(null);setTimeout(()=>setToast(''),2200);
+ };
 
  return <><PageHeader title="브랜드 예산" description="사업 유형별 목표 KPI와 월 예산, 소진률을 관리합니다." action={<button className="btn primary" onClick={()=>alert('광고계정 연동에서 광고주를 먼저 등록하세요.')}><Plus size={15}/> 브랜드 추가</button>}/>
  <div className="brand-budget-toolbar"><div className="account-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="브랜드 이름 검색"/></div><span>등록 브랜드 {rows.length}개</span>

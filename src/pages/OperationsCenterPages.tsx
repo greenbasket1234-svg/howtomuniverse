@@ -7,6 +7,7 @@ import { buildDailyReportDocument, downloadReportCsv, downloadReportXlsx, openRe
 import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter, filterByAdvertiser } from '../utils/advertiserMatch';
+import { apiFetch } from '../hooks/useApi';
 
 const advertisers:string[] = [];
 
@@ -17,13 +18,14 @@ function AdvertiserToolbar({value,onChange}:{value:string;onChange:(v:string)=>v
 function Stat({label,value,sub}:{label:string;value:string;sub?:string}){return <div className="ops-stat"><span>{label}</span><strong>{value}</strong>{sub&&<small>{sub}</small>}</div>}
 
 type KpiRangeKey = 'today' | 'yesterday' | '7d' | '14d' | '30d' | '60d' | '90d';
-type KpiGoalType = 'CPA' | 'ROAS';
+type KpiGoalType = 'CPA' | 'ROAS' | 'CPC';
 
 type KpiDailyRow = {
   date: string;
   spend: number;
   conversions?: number;
   sales?: number;
+  clicks?: number;
 };
 
 type KpiBrandConfig = {
@@ -78,16 +80,18 @@ function computeKpiSummary(config: KpiBrandConfig, range: KpiRangeKey) {
   const totalSales = visibleRows.reduce((acc, row) => acc + (row.sales ?? 0), 0);
   const dayCount = visibleRows.length || 1;
 
-  if (config.goalType === 'CPA') {
-    const actualMetric = totalConversions > 0 ? spend / totalConversions : 0;
+  if (config.goalType === 'CPA' || config.goalType === 'CPC') {
+    const isClick = config.goalType === 'CPC';
+    const totalPrimary = isClick ? visibleRows.reduce((acc, row) => acc + (row.clicks ?? 0), 0) : totalConversions;
+    const actualMetric = totalPrimary > 0 ? spend / totalPrimary : 0;
     const attainment = actualMetric > 0 ? (config.goalTarget / actualMetric) * 100 : 0;
     return {
       rows: visibleRows,
       spend,
-      primaryValue: totalConversions,
+      primaryValue: totalPrimary,
       actualMetric,
       attainment,
-      dailyAverage: totalConversions / dayCount,
+      dailyAverage: totalPrimary / dayCount,
       monthlyProgress: config.monthlyTargetValue > 0 ? (config.monthlyCurrentValue / config.monthlyTargetValue) * 100 : 0,
       status: actualMetric > 0 && attainment >= 100 ? '목표 달성' : '추가 개선 필요',
     };
@@ -152,17 +156,17 @@ function GoalEditModal({
             <input value={brand.goalType} readOnly />
           </label>
           <label className="field-label">
-            {brand.goalType === 'CPA' ? '목표 CPA (원)' : '목표 ROAS (%)'}
+            {brand.goalType === 'ROAS' ? '목표 ROAS (%)' : brand.goalType === 'CPC' ? '목표 CPC (원)' : '목표 CPA (원)'}
             <input value={goalTarget} onChange={(e) => setGoalTarget(e.target.value.replace(/[^0-9]/g, ''))} />
           </label>
           <label className="field-label">
-            {brand.goalType === 'CPA' ? '월 목표 전환/예약 수' : '월 목표 매출 (원)'}
+            {brand.goalType === 'ROAS' ? '월 목표 매출 (원)' : brand.goalType === 'CPC' ? '월 목표 클릭 수' : '월 목표 전환/예약 수'}
             <input value={monthlyTargetValue} onChange={(e) => setMonthlyTargetValue(e.target.value.replace(/[^0-9]/g, ''))} />
           </label>
-          <label className="field-label">
-            {brand.goalType === 'CPA' ? '이번 달 누적 전환/예약 수' : '이번 달 누적 매출 (원)'}
-            <input value={monthlyCurrentValue} onChange={(e) => setMonthlyCurrentValue(e.target.value.replace(/[^0-9]/g, ''))} />
-          </label>
+          <div className="field-label">
+            이번 달 누적 실적
+            <div className="api-help" style={{marginTop:4}}>실제 매체 API 데이터에서 자동으로 계산됩니다 (직접 입력하지 않습니다).</div>
+          </div>
         </div>
         <div className="modal-actions">
           <button className="btn danger" onClick={() => { if (window.confirm(`"${brand.name}"의 KPI 목표를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) onDelete(); }}><Trash2 size={15} /> 삭제</button>
@@ -198,18 +202,20 @@ function NewGoalModal({ onClose, onCreate, existingCount }: { onClose: () => voi
   const create = () => {
     if (!name.trim()) return;
     const color = KPI_GOAL_COLORS[existingCount % KPI_GOAL_COLORS.length];
+    const goalLabel = goalType === 'ROAS' ? '매출성장 (ROAS)' : goalType === 'CPC' ? '트래픽 확보 (CPC)' : '잠재고객 확보 (CPA)';
+    const defaultTarget = goalType === 'ROAS' ? 300 : goalType === 'CPC' ? 500 : 20000;
     const brand: KpiBrandConfig = {
       id: `kpi-${Date.now()}`,
       name: name.trim(),
       color,
       goalType,
-      goalLabel: goalType === 'CPA' ? '잠재고객 확보 (CPA)' : '매출성장 (ROAS)',
-      goalTarget: Number(goalTarget) || (goalType === 'CPA' ? 20000 : 300),
-      monthlyTargetLabel: goalType === 'CPA' ? '월 목표 전환률 (이번 달 누적)' : '월 목표 매출 (이번 달 누적)',
+      goalLabel,
+      goalTarget: Number(goalTarget) || defaultTarget,
+      monthlyTargetLabel: goalType === 'ROAS' ? '월 목표 매출 (이번 달 누적)' : goalType === 'CPC' ? '월 목표 클릭 수 (이번 달 누적)' : '월 목표 전환률 (이번 달 누적)',
       monthlyTargetValue: Number(monthlyTargetValue) || 0,
       monthlyCurrentValue: Number(monthlyCurrentValue) || 0,
-      periodPrimaryLabel: goalType === 'CPA' ? '기간 전환/예약' : '기간 매출',
-      dailyAverageLabel: goalType === 'CPA' ? '일 평균 건수' : '일 평균 매출',
+      periodPrimaryLabel: goalType === 'ROAS' ? '기간 매출' : goalType === 'CPC' ? '기간 클릭 수' : '기간 전환/예약',
+      dailyAverageLabel: goalType === 'ROAS' ? '일 평균 매출' : goalType === 'CPC' ? '일 평균 클릭 수' : '일 평균 건수',
       rows: [],
     };
     onCreate(brand);
@@ -232,10 +238,11 @@ function NewGoalModal({ onClose, onCreate, existingCount }: { onClose: () => voi
             <select value={goalType} onChange={(e) => setGoalType(e.target.value as KpiGoalType)}>
               <option value="CPA">잠재고객 확보 (CPA)</option>
               <option value="ROAS">매출성장 (ROAS)</option>
+              <option value="CPC">트래픽 확보 (CPC)</option>
             </select>
           </label>
-          <label className="field-label">{goalType === 'CPA' ? '목표 CPA (원)' : '목표 ROAS (%)'}<input value={goalTarget} onChange={(e) => setGoalTarget(e.target.value.replace(/[^0-9]/g, ''))} placeholder={goalType === 'CPA' ? '예: 18000' : '예: 400'}/></label>
-          <label className="field-label">{goalType === 'CPA' ? '월 목표 전환/예약 수' : '월 목표 매출 (원)'}<input value={monthlyTargetValue} onChange={(e) => setMonthlyTargetValue(e.target.value.replace(/[^0-9]/g, ''))}/></label>
+          <label className="field-label">{goalType === 'ROAS' ? '목표 ROAS (%)' : goalType === 'CPC' ? '목표 CPC (원)' : '목표 CPA (원)'}<input value={goalTarget} onChange={(e) => setGoalTarget(e.target.value.replace(/[^0-9]/g, ''))} placeholder={goalType === 'ROAS' ? '예: 400' : goalType === 'CPC' ? '예: 500' : '예: 18000'}/></label>
+          <label className="field-label">{goalType === 'ROAS' ? '월 목표 매출 (원)' : goalType === 'CPC' ? '월 목표 클릭 수' : '월 목표 전환/예약 수'}<input value={monthlyTargetValue} onChange={(e) => setMonthlyTargetValue(e.target.value.replace(/[^0-9]/g, ''))}/></label>
         </div>
         <div className="modal-actions">
           <button className="btn secondary" onClick={onClose}>취소</button>
@@ -261,29 +268,32 @@ function KpiBrandSection({
   const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
   const toggleSort=(key:DailySortKey)=>{if(sortKey===key)setSortDir(sortDir==='asc'?'desc':'asc');else{setSortKey(key);setSortDir('asc')}};
   const sortArrow=(key:DailySortKey)=>sortKey===key?(sortDir==='asc'?' ▲':' ▼'):'';
+  const isRoas = brand.goalType === 'ROAS';
+  const isClick = brand.goalType === 'CPC';
+  const unitWord = isClick ? '회' : '건';
   const sortedRows = useMemo(() => [...summary.rows].sort((a, b) => {
     const valueOf = (row: typeof a) => {
       if (sortKey === 'date') return row.date;
       if (sortKey === 'spend') return row.spend;
-      const primary = brand.goalType === 'CPA' ? row.conversions ?? 0 : row.sales ?? 0;
+      const primary = isRoas ? row.sales ?? 0 : isClick ? row.clicks ?? 0 : row.conversions ?? 0;
       if (sortKey === 'primary') return primary;
-      const metric = brand.goalType === 'CPA' ? (primary > 0 ? row.spend / primary : 0) : (row.spend > 0 ? (primary / row.spend) * 100 : 0);
+      const metric = isRoas ? (row.spend > 0 ? (primary / row.spend) * 100 : 0) : (primary > 0 ? row.spend / primary : 0);
       if (sortKey === 'metric') return metric;
-      return brand.goalType === 'CPA' ? (metric > 0 ? (brand.goalTarget / metric) * 100 : 0) : (brand.goalTarget > 0 ? (metric / brand.goalTarget) * 100 : 0);
+      return isRoas ? (brand.goalTarget > 0 ? (metric / brand.goalTarget) * 100 : 0) : (metric > 0 ? (brand.goalTarget / metric) * 100 : 0);
     };
     const av = valueOf(a), bv = valueOf(b);
     if (typeof av === 'string' || typeof bv === 'string') return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
     return sortDir === 'asc' ? (av as number) - (bv as number) : (bv as number) - (av as number);
-  }), [summary.rows, sortKey, sortDir, brand.goalType, brand.goalTarget]);
-  const metricLabel = brand.goalType === 'CPA' ? 'CPA 달성률 (낮을수록 좋음)' : '평균 ROAS 달성률';
-  const actualMetricLabel = brand.goalType === 'CPA' ? '평균 CPA' : '평균 ROAS';
+  }), [summary.rows, sortKey, sortDir, brand.goalType, brand.goalTarget, isRoas, isClick]);
+  const metricLabel = isRoas ? '평균 ROAS 달성률' : isClick ? 'CPC 달성률 (낮을수록 좋음)' : 'CPA 달성률 (낮을수록 좋음)';
+  const actualMetricLabel = isRoas ? '평균 ROAS' : isClick ? '평균 CPC' : '평균 CPA';
   const monthlyProgressLabel = brand.monthlyTargetLabel;
-  const periodPrimaryValue = brand.goalType === 'CPA' ? `${summary.primaryValue}건` : formatWon(summary.primaryValue);
-  const dailyAverageValue = brand.goalType === 'CPA' ? `${summary.dailyAverage.toFixed(1)}건` : formatWon(summary.dailyAverage);
-  const actualMetricValue = brand.goalType === 'CPA' ? formatWon(summary.actualMetric) : formatPercent(summary.actualMetric);
-  const goalTargetValue = brand.goalType === 'CPA' ? formatWon(brand.goalTarget) : formatPercent(brand.goalTarget);
-  const monthlyCurrentValue = brand.goalType === 'CPA' ? `${Math.round(brand.monthlyCurrentValue)}건` : formatWon(brand.monthlyCurrentValue);
-  const monthlyTargetValue = brand.goalType === 'CPA' ? `${Math.round(brand.monthlyTargetValue)}건` : formatWon(brand.monthlyTargetValue);
+  const periodPrimaryValue = isRoas ? formatWon(summary.primaryValue) : `${summary.primaryValue}${unitWord}`;
+  const dailyAverageValue = isRoas ? formatWon(summary.dailyAverage) : `${summary.dailyAverage.toFixed(1)}${unitWord}`;
+  const actualMetricValue = isRoas ? formatPercent(summary.actualMetric) : formatWon(summary.actualMetric);
+  const goalTargetValue = isRoas ? formatPercent(brand.goalTarget) : formatWon(brand.goalTarget);
+  const monthlyCurrentValue = isRoas ? formatWon(brand.monthlyCurrentValue) : `${Math.round(brand.monthlyCurrentValue)}${unitWord}`;
+  const monthlyTargetValue = isRoas ? formatWon(brand.monthlyTargetValue) : `${Math.round(brand.monthlyTargetValue)}${unitWord}`;
 
   return (
     <section className="card ops-card kpi-section-card">
@@ -343,35 +353,35 @@ function KpiBrandSection({
             <tr>
               <th style={{cursor:'pointer'}} onClick={()=>toggleSort('date')}>날짜{sortArrow('date')}</th>
               <th style={{cursor:'pointer'}} onClick={()=>toggleSort('spend')}>광고비{sortArrow('spend')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('primary')}>{brand.goalType === 'CPA' ? '전환/예약' : '매출'}{sortArrow('primary')}</th>
-              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('metric')}>{brand.goalType === 'CPA' ? 'CPA' : 'ROAS'}{sortArrow('metric')}</th>
+              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('primary')}>{isRoas ? '매출' : isClick ? '클릭 수' : '전환/예약'}{sortArrow('primary')}</th>
+              <th style={{cursor:'pointer'}} onClick={()=>toggleSort('metric')}>{isRoas ? 'ROAS' : isClick ? 'CPC' : 'CPA'}{sortArrow('metric')}</th>
               <th style={{cursor:'pointer'}} onClick={()=>toggleSort('attainment')}>일 달성률{sortArrow('attainment')}</th>
             </tr>
           </thead>
           <tbody>
             {sortedRows.map((row) => {
-              const primary = brand.goalType === 'CPA' ? row.conversions ?? 0 : row.sales ?? 0;
-              const metric = brand.goalType === 'CPA'
-                ? primary > 0
-                  ? row.spend / primary
-                  : 0
-                : row.spend > 0
+              const primary = isRoas ? row.sales ?? 0 : isClick ? row.clicks ?? 0 : row.conversions ?? 0;
+              const metric = isRoas
+                ? row.spend > 0
                   ? (primary / row.spend) * 100
-                  : 0;
-              const attainment = brand.goalType === 'CPA'
-                ? metric > 0
-                  ? (brand.goalTarget / metric) * 100
                   : 0
-                : brand.goalTarget > 0
+                : primary > 0
+                  ? row.spend / primary
+                  : 0;
+              const attainment = isRoas
+                ? brand.goalTarget > 0
                   ? (metric / brand.goalTarget) * 100
+                  : 0
+                : metric > 0
+                  ? (brand.goalTarget / metric) * 100
                   : 0;
               const toneClass = attainment >= 100 ? 'positive' : attainment >= 70 ? 'warning-bar' : 'negative';
               return (
                 <tr key={`${brand.id}-${row.date}`}>
                   <td>{row.date}</td>
                   <td>{formatWon(row.spend)}</td>
-                  <td>{brand.goalType === 'CPA' ? `${primary}건` : formatWon(primary)}</td>
-                  <td>{brand.goalType === 'CPA' ? (primary > 0 ? formatWon(metric) : '-') : (row.spend > 0 ? formatPercent(metric) : '0%')}</td>
+                  <td>{isRoas ? formatWon(primary) : `${primary}${unitWord}`}</td>
+                  <td>{isRoas ? (row.spend > 0 ? formatPercent(metric) : '0%') : (primary > 0 ? formatWon(metric) : '-')}</td>
                   <td>
                     <div className="kpi-attainment-cell">
                       <div className="kpi-progress-track compact">
@@ -394,7 +404,50 @@ export function KpiGoalsPage(){
  const [range,setRange]=useState<KpiRangeKey>('7d');
  const [brands,setBrands]=useState<KpiBrandConfig[]>(() => loadKpiBrands());
  const { filterValue } = useAdvertiserFilter();
- const visibleBrandsRaw = filterByAdvertiser(brands, filterValue, b => b.name);
+
+ // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
+ // 목표값(target)은 계속 사용자가 설정하지만, 실적(현재 값)은 이 실제 데이터로 자동 계산됩니다.
+ const [liveRows,setLiveRows]=useState<{advertiserName:string;date:string;spend:number;dbCount:number;revenue:number;clicks:number}[]>([]);
+ useEffect(()=>{
+   const until=new Date().toISOString().slice(0,10);
+   const sinceDate=new Date(); sinceDate.setDate(sinceDate.getDate()-89);
+   const since=sinceDate.toISOString().slice(0,10);
+   apiFetch<{rows:{advertiserName:string;date:string;spend:number;dbCount:number;revenue:number;clicks:number}[]}>(`/metrics/daily?from=${since}&to=${until}`)
+     .then(r=>setLiveRows(r.rows||[])).catch(()=>setLiveRows([]));
+ },[]);
+ /** 광고주명이 일치하는 실제 매체 데이터를, 최근 90일치 "일별 행" 배열로 만듭니다 (index 0 = 오늘, getRowsForRange가 이 순서를 전제로 합니다). */
+ const buildLiveRowsFor=(brandName:string):KpiDailyRow[]=>{
+   const matched=liveRows.filter(r=>matchesAdvertiserFilter(r.advertiserName,brandName));
+   const byDate=new Map<string,{spend:number;conversions:number;sales:number;clicks:number}>();
+   for(const r of matched){
+     const cur=byDate.get(r.date)||{spend:0,conversions:0,sales:0,clicks:0};
+     cur.spend+=r.spend||0; cur.conversions+=r.dbCount||0; cur.sales+=r.revenue||0; cur.clicks+=r.clicks||0;
+     byDate.set(r.date,cur);
+   }
+   const out:KpiDailyRow[]=[];
+   for(let i=0;i<90;i++){
+     const d=new Date(); d.setDate(d.getDate()-i);
+     const iso=d.toISOString().slice(0,10);
+     const v=byDate.get(iso)||{spend:0,conversions:0,sales:0,clicks:0};
+     out.push({date:iso,spend:v.spend,conversions:v.conversions,sales:v.sales,clicks:v.clicks});
+   }
+   return out;
+ };
+ const nowMonth=new Date().toISOString().slice(0,7);
+ /** 이번 달 누적 실적을 실제 데이터로 계산합니다 (목표 유형에 따라 전환수/매출/클릭수). */
+ const computeMonthlyCurrent=(brand:KpiBrandConfig, liveRowsForBrand:KpiDailyRow[]):number=>{
+   const monthRows=liveRowsForBrand.filter(r=>r.date.startsWith(nowMonth));
+   if(brand.goalType==='ROAS') return monthRows.reduce((a,r)=>a+(r.sales??0),0);
+   if(brand.goalType==='CPC') return monthRows.reduce((a,r)=>a+(r.clicks??0),0);
+   return monthRows.reduce((a,r)=>a+(r.conversions??0),0);
+ };
+ // 화면에 쓸 "실데이터가 채워진" 브랜드 목록. 목표값은 그대로 두고, rows·monthlyCurrentValue만 실제 데이터로 덮어씁니다.
+ const liveBrands=useMemo(()=>brands.map(b=>{
+   const rows=buildLiveRowsFor(b.name);
+   return {...b, rows, monthlyCurrentValue: computeMonthlyCurrent(b, rows)};
+ }),[brands,liveRows]);
+
+ const visibleBrandsRaw = filterByAdvertiser(liveBrands, filterValue, b => b.name);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
