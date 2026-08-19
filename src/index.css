@@ -1783,7 +1783,7 @@ body{font-size:15.5px;line-height:1.55}
 .home-quick-menu{
   min-height:62px;
   display:grid;
-  grid-template-columns:112px repeat(8,minmax(112px,1fr));
+  grid-template-columns:repeat(8,minmax(0,1fr));
   align-items:stretch;
   overflow:hidden;
   border:1px solid #e0e6ef;
@@ -1791,9 +1791,12 @@ body{font-size:15.5px;line-height:1.55}
   background:#fff;
 }
 .home-quick-menu>strong{display:flex;align-items:center;padding-left:18px;color:#27364c;font-size:14px}
-.home-quick-menu>a{display:flex;align-items:center;justify-content:center;gap:8px;padding:0 8px;color:#38465d;font-size:13.5px;font-weight:750}
+.home-quick-menu>a{display:flex;align-items:center;justify-content:center;gap:6px;padding:0 6px;color:#38465d;font-size:13px;font-weight:750;white-space:nowrap;border-right:1px solid #eef1f6}
+.home-quick-menu>a:last-child{border-right:none}
 .home-quick-menu>a:hover{background:#f8faff;color:#315fe5}
-.home-quick-menu>a svg{color:#315fe5}
+.home-quick-menu>a svg{color:#315fe5;flex-shrink:0}
+@media(max-width:1180px){.home-quick-menu{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:640px){.home-quick-menu{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .home-module-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 .home-module-card{
   min-width:0;
@@ -2548,6 +2551,11 @@ body{font-size:15.5px;line-height:1.55}
 @media(max-width:1280px){.blog26-workspace{grid-template-columns:270px minmax(440px,1fr)}.blog26-review{grid-column:1/-1;position:static;max-height:none}.blog26-kpis{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:900px){.blog26-workspace{grid-template-columns:1fr}.blog26-setup,.blog26-review{position:static;max-height:none}.blog26-kpis{grid-template-columns:repeat(2,1fr)}.blog26-bottom-grid{grid-template-columns:1fr}.blog26-dashboard-toolbar{flex-direction:column;align-items:stretch}.blog26-modal-form,.blog26-asset-form{grid-template-columns:1fr}.blog26-asset-picker{grid-template-columns:1fr 1fr}.blog26-setup input,.blog26-setup select,.blog26-setup textarea,.blog26-editor input,.blog26-editor textarea,.blog26-review input,.blog26-review select,.blog26-modal input,.blog26-modal textarea,.blog26-asset-form input,.blog26-search input{font-size:16px}}
 .home-empty-data{min-height:250px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#94a3b8;text-align:center;padding:20px}.home-empty-data b{color:#475569}.home-empty-data span{font-size:12px;max-width:360px}.home-empty-data.small{min-height:120px}
+.home-sync-list{display:flex;flex-direction:column;gap:6px;padding:6px 4px 4px;max-height:250px;overflow-y:auto}
+.home-sync-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:9px;background:#f8faff}
+.home-sync-chip{font-size:11.5px;font-weight:750;padding:2px 9px;border-radius:999px;background:#e8edff;color:#3355d8;flex-shrink:0}
+.home-sync-chip.naver{background:#e6f7ee;color:#16a34a}
+.home-sync-time{font-size:12.5px;color:#64748b;white-space:nowrap}
 .blog26-workflow-row{display:grid;grid-template-columns:180px 1fr;gap:10px;margin:0 0 14px}.blog26-workflow-row label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;color:#475569}.blog26-workflow-row select,.blog26-workflow-row input{height:38px;border:1px solid #dbe2ea;border-radius:9px;padding:0 10px;background:#fff;color:#0f172a}.blog26-resource-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:16px}.blog26-resource-summary span{padding:12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc;font-size:12px;color:#64748b}.blog26-resource-summary b{display:block;margin-top:4px;color:#0f172a;font-size:18px}.blog26-mini-calendar{margin-top:8px}.blog26-calendar-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.blog26-calendar-head b{font-size:14px}.blog26-calendar-head span{font-size:11px;color:#94a3b8;word-spacing:12px}.blog26-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid #e8edf3;border-left:1px solid #e8edf3}.blog26-calendar-grid>.day,.blog26-calendar-grid>.blank{min-height:78px;border-right:1px solid #e8edf3;border-bottom:1px solid #e8edf3;padding:6px;background:#fff}.blog26-calendar-grid>.blank{background:#f8fafc}.blog26-calendar-grid>.day>strong{display:block;font-size:11px;color:#64748b;margin-bottom:4px}.blog26-calendar-grid>.day button{width:100%;border:0;background:#eff6ff;color:#1d4ed8;border-radius:5px;padding:3px 4px;margin:1px 0;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;cursor:pointer}@media(max-width:1100px){.blog26-workflow-row{grid-template-columns:1fr}.blog26-resource-summary{grid-template-columns:1fr}.blog26-calendar-grid>.day,.blog26-calendar-grid>.blank{min-height:60px}}
 
 /* ===== 모바일 반응형 — 사이드바를 오프캔버스 드로어로 전환 ===== */
@@ -2678,3 +2686,11 @@ body{font-size:15.5px;line-height:1.55}
 @media(max-width:900px){.metrics-date-bar{align-items:stretch;flex-direction:column}.metrics-date-bar .date-range-picker{width:100%}}
 @media(max-width:640px){.metrics-date-bar{margin-inline:0;padding:8px}.metrics-date-presets{width:100%}.metrics-date-bar .date-range-picker{font-size:16px}.metrics-date-bar .date-range-picker input{font-size:16px}}
 .actual-creative-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}.actual-creative-grid .library-thumb-square img{width:100%;height:100%;object-fit:cover}
+
+/* 통합 성과 분석 등 "중앙 Metrics API" 화면들의 KPI 요약 카드 (홈 화면 카드와 같은 톤) */
+.kpi-card-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.kpi-card-grid article{min-width:0;display:grid;align-content:center;gap:6px;padding:16px 17px;border:1px solid #e0e6ef;border-radius:13px;background:#fff;box-shadow:0 3px 15px rgba(25,43,70,.03)}
+.kpi-card-grid article>span{color:#5d6a80;font-size:13px;font-weight:700}
+.kpi-card-grid article>strong{font-size:21px;font-weight:800;color:#172033;letter-spacing:-.02em}
+@media(max-width:1100px){.kpi-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.kpi-card-grid{grid-template-columns:1fr}}
