@@ -68,7 +68,8 @@ export function AdAccountsPage() {
 
   /** 계정을 선택해 실제로 저장하고, 곧바로 최근 데이터를 동기화합니다. */
   const connect = async () => {
-    if (!connectTarget || !metaSelected) return;
+    if (!connectTarget) { showToast('연결 대상 정보가 없습니다. 창을 닫고 다시 열어주세요.'); return; }
+    if (!metaSelected) { showToast('광고계정을 먼저 선택해주세요.'); return; }
     const { channel, adId } = connectTarget;
     const channelKey = CH_KEY_MAP[channel];
     const picked = metaAccounts.find(a => a.account_id === metaSelected);
@@ -278,6 +279,7 @@ export function AdAccountsPage() {
                   <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
                   <button className="btn primary" onClick={connect} disabled={!metaSelected}>연결 및 데이터 동기화</button>
                 </div>
+                {!metaSelected && <div className="footnote" style={{marginTop:6}}>⚠ 광고계정을 선택해야 버튼이 활성화됩니다. {!metaAccounts.length && '먼저 "연결된 계정 불러오기"를 눌러주세요.'}</div>}
               </>
             )}
           </div>
