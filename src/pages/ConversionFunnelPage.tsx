@@ -5,6 +5,7 @@ import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useMetricRows } from '../hooks/useMetrics';
+import { useSortableRows } from '../hooks/useSortableRows';
 import type { DailyMetricRow } from '../types/metrics';
 
 // 이 화면의 광고 성과 Source of Truth는 /api/metrics/funnel 하나입니다.
@@ -49,6 +50,8 @@ export function ConversionFunnelPage(){
   }),{impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0}),[visibleRows]);
 
   const connectionByChannel=useMemo(()=>new Map((meta?.connections||[]).map(c=>[c.channel,c])),[meta]);
+  const visibleWithMetrics=useMemo(()=>visibleRows.map(row=>({...row,cpa:row.dbCount?row.spend/row.dbCount:0,roas:row.spend?row.revenue/row.spend*100:0})),[visibleRows]);
+  const {sorted:sortedRows,toggleSort,arrow}=useSortableRows(visibleWithMetrics,'spend',(r,k)=>(r as any)[k]);
   const advertiserGroups=useMemo(()=>{
     const map=new Map<string,{clicks:number;dbCount:number;purchases:number;color:string}>();
     visibleRows.forEach((row,index)=>{
@@ -86,8 +89,19 @@ export function ConversionFunnelPage(){
     </div>
 
     <section className="card" style={{padding:0,marginBottom:16}}>
-      <div className="table-scroll"><table className="data-table"><thead><tr><th>매체</th><th>연동 상태</th><th className="num">광고비</th><th className="num">노출</th><th className="num">클릭</th><th className="num">DB/전환</th><th className="num">구매</th><th className="num">매출</th><th className="num">CPA</th><th className="num">ROAS</th></tr></thead><tbody>
-        {visibleRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);const cpa=row.dbCount?row.spend/row.dbCount:0;const roas=row.spend?row.revenue/row.spend*100:0;return <tr key={`${row.channel}-${i}`}><td><b>{row.channel}</b></td><td>{statusLabel(connection?.status)}</td><td className="num">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{row.dbCount.toLocaleString()}</td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{money(row.revenue)}</td><td className="num">{row.dbCount?money(cpa):'-'}</td><td className="num">{row.revenue?`${roas.toFixed(1)}%`:'-'}</td></tr>})}
+      <div className="table-scroll"><table className="data-table"><thead><tr>
+        <th className="sortable-th" onClick={()=>toggleSort('channel')}>매체{arrow('channel')}</th>
+        <th>연동 상태</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('dbCount')}>DB/전환{arrow('dbCount')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('purchases')}>구매{arrow('purchases')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('revenue')}>매출{arrow('revenue')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
+      </tr></thead><tbody>
+        {sortedRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);return <tr key={`${row.channel}-${i}`}><td><b>{row.channel}</b></td><td>{statusLabel(connection?.status)}</td><td className="num metric-emphasis">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num"><b>{row.dbCount.toLocaleString()}</b></td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{money(row.revenue)}</td><td className="num">{row.dbCount?money(row.cpa):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td></tr>})}
         {!loading&&visibleRows.length===0&&<tr><td colSpan={10} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 퍼널 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
     </section>

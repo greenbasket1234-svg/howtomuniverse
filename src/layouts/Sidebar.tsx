@@ -169,7 +169,7 @@ export function Sidebar() {
                   aria-pressed={activeSectionKey === group.key}
                 >
                   <PlanetIcon planet={group.planet} />
-                  {!railMode && <span className="universe-group-label">{group.label}</span>}
+                  <span className="universe-group-label">{group.label}</span>
                 </button>
               </div>
             );

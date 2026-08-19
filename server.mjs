@@ -358,22 +358,28 @@ async function metaFetchLevelInsights(accountId, since, until, level) {
   const identityFields = level === 'campaign'
     ? 'campaign_id,campaign_name'
     : 'campaign_id,campaign_name,ad_id,ad_name';
-  let rows = [];
-  let after;
-  for (let page = 0; page < 40; page++) {
-    const data = await metaGraphGet(`/${id}/insights`, {
-      time_range: JSON.stringify({ since, until }),
-      fields: `${identityFields},impressions,clicks,spend,actions,action_values,date_start,date_stop`,
-      time_increment: '1',
-      level,
-      limit: '500',
-      ...(after ? { after } : {}),
-    });
-    rows = rows.concat(Array.isArray(data.data) ? data.data : []);
-    after = data.paging?.cursors?.after;
-    if (!after || !data.paging?.next) break;
+  const allRows = [];
+  // 캠페인/소재가 많은 계정은 90일치를 한 번에 요청하면 응답이 너무 커져서 Meta가
+  // "Service temporarily unavailable"로 거부하는 경우가 있어, 30일 단위로 나눠서 요청합니다.
+  for (const range of splitIntoChunks(since, until, 30)) {
+    let rows = [];
+    let after;
+    for (let page = 0; page < 40; page++) {
+      const data = await metaGraphGet(`/${id}/insights`, {
+        time_range: JSON.stringify({ since: range.since, until: range.until }),
+        fields: `${identityFields},impressions,clicks,spend,actions,action_values,date_start,date_stop`,
+        time_increment: '1',
+        level,
+        limit: '500',
+        ...(after ? { after } : {}),
+      });
+      rows = rows.concat(Array.isArray(data.data) ? data.data : []);
+      after = data.paging?.cursors?.after;
+      if (!after || !data.paging?.next) break;
+    }
+    allRows.push(...rows);
   }
-  return rows.map(row => ({
+  return allRows.map(row => ({
     date: row.date_start,
     campaignId: row.campaign_id || '',
     campaignName: row.campaign_name || '(이름 없음)',

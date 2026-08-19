@@ -8,6 +8,7 @@ import { KEYWORD_PLATFORMS, type KeywordAnalysisGrade, type KeywordPlatform } fr
 import { getPlatformColor } from '../utils/platformColors';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { useMetricRows } from '../hooks/useMetrics';
+import { useSortableRows } from '../hooks/useSortableRows';
 import type { KeywordMetricRow } from '../types/metrics';
 
 type KeywordPlatformFilter = '전체' | KeywordPlatform;
@@ -63,7 +64,9 @@ export function KeywordAnalysisPage(){
     impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount,revenue:m.revenue||0,status:'active' as const,
     grade:gradeOf({impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount})
   }));
-  const filteredRows=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade));
+  const filteredRowsBase=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade));
+  const filteredRowsWithMetrics=filteredRowsBase.map(row=>({...row,cpm:row.impressions?row.spend/row.impressions*1000:0,cpc:row.clicks?row.spend/row.clicks:0,cvr:row.clicks?row.conversions/row.clicks:0,cpa:row.conversions?row.spend/row.conversions:0,roas:row.spend?row.revenue/row.spend*100:0,ctr:row.impressions?row.clicks/row.impressions:0}));
+  const {sorted:filteredRows,toggleSort,arrow}=useSortableRows(filteredRowsWithMetrics,'spend',(r,k)=>(r as any)[k]);
   const high=allRows.filter(r=>r.grade==='high_performance'),waste=allRows.filter(r=>r.grade==='waste'),exclude=allRows.filter(r=>r.grade==='exclude_candidate'),expansion=allRows.filter(r=>r.grade==='expansion_candidate');
   const connections=(meta?.connections||[]).filter(c=>c.advertiserId===brandId&&['naver','google','kakao','daangn'].includes(c.channel));
 
@@ -81,8 +84,24 @@ export function KeywordAnalysisPage(){
       <div className="summary-card"><div className="summary-card-label">확장 후보</div><div className="summary-card-value">{expansion.length}개</div></div>
     </div>
     <div className="keyword-toolbar"><select className="form-select keyword-platform-select" value={platform} onChange={e=>setPlatform(e.target.value as KeywordPlatformFilter)}><option value="전체">전체</option>{KEYWORD_PLATFORMS.map(item=><option key={item}>{item}</option>)}</select><div className="search-input-wrap" style={{marginBottom:0}}><Search size={15}/><input className="search-input" placeholder="키워드 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div><select className="form-select" value={grade} onChange={e=>setGrade(e.target.value as typeof grade)}><option value="all">전체 분석 등급</option><option value="high_performance">고성과</option><option value="stable">안정</option><option value="waste">비용 낭비</option><option value="exclude_candidate">제외 후보</option><option value="expansion_candidate">확장 후보</option></select></div>
-    <div className="card" style={{padding:0}}><div className="table-scroll"><table className="data-table keyword-analysis-table"><thead><tr><th>매체</th><th>키워드</th><th>캠페인</th><th>광고그룹</th><th className="num">노출</th><th className="num">클릭</th><th className="num">CTR</th><th className="num">CPC</th><th className="num">CPM</th><th className="num">광고비</th><th className="num">전환</th><th className="num">전환율</th><th className="num">CPA</th><th className="num">전환매출</th><th className="num">ROAS</th><th>분석</th></tr></thead><tbody>
-      {filteredRows.map(row=>{const cpm=row.impressions?row.spend/row.impressions*1000:0;const roas=row.spend?row.revenue/row.spend*100:0;return <tr key={row.id}><td><Badge tone="accent" style={{background:`${getPlatformColor(row.platform)}1a`,color:getPlatformColor(row.platform),border:`1px solid ${getPlatformColor(row.platform)}55`}}>{row.platform}</Badge></td><td><strong>{row.keyword}</strong></td><td>{row.campaign}</td><td>{row.adGroup}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{pct(row.clicks,row.impressions)}</td><td className="num">{row.clicks?currency(row.spend/row.clicks):'-'}</td><td className="num">{row.impressions?currency(cpm):'-'}</td><td className="num">{currency(row.spend)}</td><td className="num">{row.conversions.toLocaleString()}</td><td className="num">{pct(row.conversions,row.clicks)}</td><td className="num">{row.conversions?currency(row.spend/row.conversions):'-'}</td><td className="num">{row.revenue?currency(row.revenue):'-'}</td><td className="num">{row.revenue?`${roas.toFixed(1)}%`:'-'}</td><td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td></tr>})}
+    <div className="card" style={{padding:0}}><div className="table-scroll"><table className="data-table keyword-analysis-table"><thead><tr>
+      <th>매체</th>
+      <th className="sortable-th" onClick={()=>toggleSort('keyword')}>키워드{arrow('keyword')}</th>
+      <th>캠페인</th><th>광고그룹</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('ctr')}>CTR{arrow('ctr')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('cpc')}>CPC{arrow('cpc')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('cpm')}>CPM{arrow('cpm')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('conversions')}>전환{arrow('conversions')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('cvr')}>전환율{arrow('cvr')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
+      <th>분석</th>
+    </tr></thead><tbody>
+      {filteredRows.map(row=><tr key={row.id}><td><Badge tone="accent" style={{background:`${getPlatformColor(row.platform)}1a`,color:getPlatformColor(row.platform),border:`1px solid ${getPlatformColor(row.platform)}55`}}>{row.platform}</Badge></td><td><strong>{row.keyword}</strong></td><td>{row.campaign}</td><td>{row.adGroup}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{pct(row.clicks,row.impressions)}</td><td className="num">{row.clicks?currency(row.spend/row.clicks):'-'}</td><td className="num">{row.impressions?currency(row.cpm):'-'}</td><td className="num metric-emphasis">{currency(row.spend)}</td><td className="num"><b>{row.conversions.toLocaleString()}</b></td><td className="num">{pct(row.conversions,row.clicks)}</td><td className="num">{row.conversions?currency(row.spend/row.conversions):'-'}</td><td className="num">{row.revenue?currency(row.revenue):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td><td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td></tr>)}
       {!loading&&filteredRows.length===0&&<tr><td colSpan={16} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 키워드 데이터가 없습니다. 미연동 매체는 0으로 생성하지 않습니다.</td></tr>}
     </tbody></table></div></div>
     <div className="keyword-analysis-cards"><div className="card"><div className="card-title">고성과 키워드</div>{high.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.keyword}</Badge> 전환율 {pct(r.conversions,r.clicks)}</p>)}</div><div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> 클릭 대비 전환 0건</p>)}</div><div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map(r=><p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> 노출 대비 클릭 0건</p>)}</div><div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map(r=><p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> CTR {pct(r.clicks,r.impressions)}</p>)}</div></div>

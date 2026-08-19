@@ -1527,12 +1527,14 @@ body{font-size:15.5px;line-height:1.55}
 
 /* ---------- HOWTOM Universe v0.8 : 고정형 이중 사이드바 ---------- */
 .universe-primary-sidebar{flex:0 0 auto;z-index:30}
-.universe-primary-sidebar.is-collapsed{width:84px!important;padding-inline:10px!important}
-.universe-primary-sidebar.is-collapsed .universe-brand-row{flex-direction:column!important;align-items:center!important;gap:8px!important}
-.universe-primary-sidebar.is-collapsed .universe-brand-image-link{width:58px!important;overflow:hidden!important}
-.universe-primary-sidebar.is-collapsed .universe-brand-logo-image{width:58px!important;max-width:none!important}
-.universe-primary-sidebar.is-collapsed .universe-group-button{justify-content:center!important;padding:8px!important}
-.universe-primary-sidebar.is-collapsed .universe-group-label{display:none!important}
+.universe-primary-sidebar.is-collapsed{width:168px!important;padding-inline:10px!important}
+.universe-primary-sidebar.is-collapsed .universe-brand-row{flex-direction:row!important;align-items:center!important;gap:8px!important}
+.universe-primary-sidebar.is-collapsed .universe-brand-image-link{width:36px!important;overflow:hidden!important}
+.universe-primary-sidebar.is-collapsed .universe-brand-logo-image{width:36px!important;max-width:none!important}
+.universe-primary-sidebar.is-collapsed .universe-group-button{justify-content:flex-start!important;padding:8px 9px!important;gap:9px!important}
+/* 접혀도 행성 아이콘 옆에 메뉴명을 한 줄로 계속 보여줍니다 - 아이콘만으로는 어떤 메뉴인지 찾기 어렵기 때문입니다. */
+.universe-primary-sidebar.is-collapsed .universe-group-label{display:block!important;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.universe-primary-sidebar.is-collapsed .universe-planet-icon{width:24px!important;height:24px!important;flex-basis:24px!important}
 .universe-secondary-sidebar{
   width:252px;
   flex:0 0 252px;
@@ -2514,7 +2516,8 @@ body{font-size:15.5px;line-height:1.55}
 
 
 /* v0.9.4b — 라벨 접힘 & 본문 전환 */
-/* 메인메뉴 라벨: display:none 으로 툭 사라지지 않고 폭과 함께 접힙니다. */
+/* 메인메뉴 라벨: 접혀도 사라지지 않고, 작은 글씨로 아이콘 옆에 한 줄로 계속 보입니다
+   (아이콘만 있으면 어떤 메뉴인지 다시 찾아야 해서, 항상 라벨을 보이게 합니다). */
 .universe-primary-sidebar .universe-group-label{
   display:block!important;
   max-width:180px;
@@ -2524,13 +2527,16 @@ body{font-size:15.5px;line-height:1.55}
 }
 .universe-primary-sidebar.is-collapsed .universe-group-label{
   display:block!important;
-  flex:0 0 auto;
-  max-width:0;
-  opacity:0;
-  transition-delay:0s;
+  flex:1 1 auto;
+  max-width:110px;
+  opacity:1;
+  font-size:12.5px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .universe-primary-sidebar .universe-group-button{gap:12px}
-.universe-primary-sidebar.is-collapsed .universe-group-button{gap:0}
+.universe-primary-sidebar.is-collapsed .universe-group-button{gap:8px}
 
 /* 본문: 메뉴 이동 시 살짝 떠오르며 교체됩니다. */
 .main-area{min-width:0;transition:none}
@@ -2717,3 +2723,18 @@ body{font-size:15.5px;line-height:1.55}
 .home-quick-menu-v14>a svg{color:#315fe5;flex-shrink:0}
 @media(max-width:1180px){.home-quick-menu-v14{grid-template-columns:repeat(4,1fr)}.home-quick-menu-v14>a:nth-child(4){border-right:none}}
 @media(max-width:640px){.home-quick-menu-v14{grid-template-columns:repeat(2,1fr)}.home-quick-menu-v14>a:nth-child(2n){border-right:none}}
+
+/* 통합 홈 하단 성과 패널 순위 배지 (1~5위) */
+.home-mini-row{gap:8px}
+.home-rank-badge{flex-shrink:0;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;background:#eef1f6;color:#64748b}
+.home-rank-badge.r1{background:#fef3c7;color:#b45309}
+.home-rank-badge.r2{background:#e2e8f0;color:#475569}
+.home-rank-badge.r3{background:#fde3d1;color:#c2410c}
+
+/* 공용: 클릭해서 정렬하는 테이블 헤더 + 핵심 성과 지표 강조 색상 */
+.sortable-th{cursor:pointer;user-select:none;white-space:nowrap}
+.sortable-th:hover{color:#2f5bd6}
+.metric-positive{color:#16a34a;font-weight:800}
+.metric-negative{color:#dc2626;font-weight:700}
+.metric-warning{color:#c2410c;font-weight:700}
+.metric-emphasis{color:#2f5bd6;font-weight:800}

@@ -6,6 +6,7 @@ import html2canvas from 'html2canvas';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 import { MediaPerformancePage } from './MediaPerformancePage';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
@@ -208,6 +209,7 @@ function ReportGrid({ advertiserName, month, rows, editable, onCellChange, onDel
 
 export function AdvertiserDailyReportPage() {
   const { filterValue, setFilter } = useAdvertiserFilter();
+  const [realAdvertisers] = useAdvertisers(); // 실제(Postgres) 광고주 목록 - 상단 필터와 자동 연동하기 위해 사용합니다.
   const [tab, setTab] = useState<ReportTab>('preview');
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0,7));
   const [profiles, setProfiles] = useState<Record<string, DailyReportProfile>>(() => loadProfiles());
@@ -218,7 +220,7 @@ export function AdvertiserDailyReportPage() {
   }
   const [advertiserName, setAdvertiserName] = useState(() => resolveInitialAdvertiser(filterValue));
   const [extraAdvertisers, setExtraAdvertisers] = useState<string[]>(() => loadExtraAdvertisers());
-  const allAdvertisers = useMemo(() => Array.from(new Set([...BASE_ADVERTISERS, ...extraAdvertisers])), [extraAdvertisers]);
+  const allAdvertisers = useMemo(() => Array.from(new Set([...BASE_ADVERTISERS, ...realAdvertisers.map(a=>a.name), ...extraAdvertisers])), [extraAdvertisers, realAdvertisers]);
   const [newReportModalOpen, setNewReportModalOpen] = useState(false);
   const [newReportAdvertiser, setNewReportAdvertiser] = useState('');
   const [newReportType, setNewReportType] = useState<ReportType>('lead');
@@ -286,7 +288,7 @@ export function AdvertiserDailyReportPage() {
     // (예전엔 filterValue를 그대로 advertiserName에 넣어서, "서울"만 쳐도 광고주명이 "서울"이 되어버렸습니다.)
     const matches = allAdvertisers.filter(name => matchesAdvertiserFilter(name, filterValue));
     if (matches.length === 1 && matches[0] !== advertiserName) { setSampleContext(false); setReportSource('manual'); setAdvertiserName(matches[0]); }
-  }, [filterValue]);
+  }, [filterValue, allAdvertisers]);
 
   const rawProfile = sampleProfileOverride ?? profiles[advertiserName] ?? defaultProfileFor(advertiserName);
   const profile = sanitizeReportProfile(rawProfile);
@@ -461,7 +463,7 @@ export function AdvertiserDailyReportPage() {
   // 그 광고주에 저장된 실제 보고서가 있으면(같은 달 중 가장 최근 것) 그 값을, 없으면 데모
   // 원본으로 근사합니다 — 매체별 시각화의 다른 도넛들과 같은 계산 원칙(저장 데이터 우선)입니다.
   const advertiserSpendBreakdown = useMemo(() => {
-    const names = Array.from(new Set([...BASE_ADVERTISERS, ...loadExtraAdvertisers()]));
+    const names = allAdvertisers;
     return names.map(name => {
       const savedForMonth = generatedReports
         .filter(r => r.advertiserName === name && r.month === month && r.source !== 'demo' && r.rows?.length)
@@ -473,7 +475,7 @@ export function AdvertiserDailyReportPage() {
       }
       return { platform: name, spend };
     }).filter(item => item.spend > 0).sort((a, b) => b.spend - a.spend);
-  }, [generatedReports, month]);
+  }, [generatedReports, month, allAdvertisers]);
 
   const channelBreakdown = useMemo(() => {
     const indexes = visibleDayIndexes ?? allMonthDays.map((_, i) => i);
