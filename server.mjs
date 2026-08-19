@@ -248,7 +248,11 @@ function metaConfigured() {
   return Boolean(META_ACCESS_TOKEN);
 }
 
-async function metaGraphGet(path, params = {}) {
+/**
+ * Meta 그래프 API 호출. 에러코드 2("Service temporarily unavailable")나 4(rate limit) 같은
+ * Meta 쪽의 일시적인 문제는 몇 초 대기 후 최대 3번까지 자동으로 재시도합니다.
+ */
+async function metaGraphGet(path, params = {}, attempt = 1) {
   if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
   const url = new URL(`${META_GRAPH_BASE}${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
@@ -256,6 +260,12 @@ async function metaGraphGet(path, params = {}) {
   const res = await fetch(url.toString());
   const data = await res.json();
   if (!res.ok || data.error) {
+    const code = data?.error?.code;
+    const retryable = code === 1 || code === 2 || code === 4 || code === 17 || res.status >= 500;
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+      return metaGraphGet(path, params, attempt + 1);
+    }
     const message = data?.error?.message || `Meta API HTTP ${res.status}`;
     throw new Error(message);
   }
@@ -413,17 +423,15 @@ async function naverFetchAdMasters(credentials) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const adgroups = [];
-  for (const c of campaigns) {
+  await mapWithConcurrency(campaigns, 4, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
     if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '' })));
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   const ads = [];
-  for (const ag of adgroups) {
+  await mapWithConcurrency(adgroups, 4, async ag => {
     const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []);
     if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, adgroupId: ag.nccAdgroupId })));
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   return ads;
 }
 
@@ -479,7 +487,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   const ads = (await naverFetchAdMasters(credentials)).slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
-  for (const ad of ads) {
+  await mapWithConcurrency(ads, 4, async ad => {
     const stats = await naverStatsForIdsDaily(credentials, [ad.nccAdId], since, until);
     for (const row of stats) {
       const adId = row.id || row.nccAdId || ad.nccAdId;
@@ -505,8 +513,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         cta: '',
       });
     }
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   return rows;
 }
 
@@ -514,21 +521,19 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const adgroups = [];
-  for (const c of campaigns) {
+  await mapWithConcurrency(campaigns, 4, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
     if (Array.isArray(rows)) adgroups.push(...rows);
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
   const keywords = [];
-  for (const agid of adgroups.map(a => a.nccAdgroupId).filter(Boolean)) {
+  await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 4, async agid => {
     const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(() => []);
     if (Array.isArray(rows)) keywords.push(...rows);
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   const selected = keywords.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const result = [];
-  for (const kw of selected) {
+  await mapWithConcurrency(selected, 4, async kw => {
     const adgroupId = kw.nccAdgroupId || '';
     const campaignId = adgroupCampaignMap.get(adgroupId) || '';
     const stats = await naverStatsForIdsDaily(credentials, [kw.nccKeywordId], since, until);
@@ -549,8 +554,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         revenue: Number(row.convAmt || 0),
       });
     }
-    await new Promise(r => setTimeout(r, 120));
-  }
+  });
   return result;
 }
 
@@ -638,6 +642,24 @@ async function naverApiRequest(method, uri, params, credentials, body, attempt =
 async function naverFetchCampaigns(credentials) {
   const data = await naverApiRequest('GET', '/ncc/campaigns', {}, credentials);
   return Array.isArray(data) ? data : [];
+}
+
+/**
+ * items를 하나씩(one-by-one) 처리하되, 최대 concurrency개까지는 동시에 실행합니다.
+ * 네이버 /stats는 "여러 id를 한 요청에 묶으면" 형식 오류가 나서 개별 요청이 필수인데,
+ * 이 함수로 "개별 요청 여러 개를 동시에" 보내 순수 순차 처리보다 훨씬 빠르게 만듭니다.
+ */
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function runNext() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runNext));
+  return results;
 }
 
 /** 92일 제한이 있어 기간을 나눠서 요청합니다. */
@@ -729,7 +751,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   if (!campaignIds.length) return [];
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const rowsOut = [];
-  for (const campaignId of campaignIds) {
+  await mapWithConcurrency(campaignIds, 4, async campaignId => {
     const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
     for (const row of rows) {
       rowsOut.push({
@@ -744,8 +766,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
         revenue: Number(row.convAmt || 0),
       });
     }
-    await new Promise(r => setTimeout(r, 150));
-  }
+  });
   return rowsOut;
 }
 
