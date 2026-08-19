@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import pg from 'pg';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -133,6 +134,40 @@ function sendJson(res, status, payload) {
      HOWTOM_ADMIN_EMAIL, HOWTOM_ADMIN_PASSWORD, JWT_SECRET 3개가 필요합니다.
    ======================================================================== */
 const JWT_SECRET = process.env.JWT_SECRET || '';
+
+/* ========================================================================
+   PostgreSQL (멀티테넌트 SaaS 전환용) — 이 단계에서는 "그림자 저장소"입니다.
+   실제 서비스는 여전히 JSON 파일로 동작하고, Postgres에는 관리자가 마이그레이션을
+   실행했을 때만 데이터가 채워집니다. 다음 단계에서 실제 읽기/쓰기를 Postgres로 옮깁니다.
+   ======================================================================== */
+const DATABASE_URL = process.env.DATABASE_URL || '';
+const pgPool = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
+
+const ENCRYPTION_KEY_HEX = process.env.SECRET_ENCRYPTION_KEY || '';
+const ENCRYPTION_KEY = ENCRYPTION_KEY_HEX.length === 64 ? Buffer.from(ENCRYPTION_KEY_HEX, 'hex') : null;
+function encryptSecret(plaintext) {
+  if (!plaintext || !ENCRYPTION_KEY) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+function decryptSecret(encoded) {
+  if (!encoded || !ENCRYPTION_KEY) return null;
+  const buf = Buffer.from(encoded, 'base64');
+  const iv = buf.subarray(0, 12), authTag = buf.subarray(12, 28), encrypted = buf.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = await new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => err ? reject(err) : resolve(derived));
+  });
+  return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
 const ADMIN_EMAIL = process.env.HOWTOM_ADMIN_EMAIL || '';
 const ADMIN_PASSWORD = process.env.HOWTOM_ADMIN_PASSWORD || '';
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7일
@@ -727,19 +762,6 @@ async function callExternalBlogAi(brief) {
   throw new Error('BLOG_AI_PROVIDER가 설정되지 않았습니다.');
 }
 
-function ruleBasedBlogDraft(keyword, advertiser, region, advertiserRow) {
-  const prefix = region ? `${region} ${keyword}` : keyword;
-  const titles = [`${prefix}, 꼭 알아야 할 핵심 정보`, `${keyword} 알아보기: 증상·원인·관리 방법`, `${advertiser}가 알려드리는 ${keyword} 체크포인트`];
-  const blocks = [
-    { blockId: makeId('block'), type: 'paragraph', title: '도입', text: `${keyword}에 대해 궁금해하는 분들이 확인하면 좋은 기본 정보를 정리했습니다. 상황에 따라 필요한 판단이 달라질 수 있으므로 아래 내용을 참고해 주세요.` },
-    { blockId: makeId('block'), type: 'h2', title: `${keyword} 핵심 정보`, text: `${keyword}의 의미와 확인해야 할 핵심 포인트를 설명하는 영역입니다. 실제 발행 전 광고주 고유 정보와 객관적인 근거를 추가해 주세요.` },
-    { blockId: makeId('block'), type: 'h2', title: '확인해야 할 사항', text: `대상과 상황에 따라 고려할 사항이 달라질 수 있습니다. 과장된 단정 표현보다 확인 가능한 사실과 조건을 중심으로 작성하는 것이 좋습니다.` },
-    { blockId: makeId('block'), type: 'faq', title: '자주 묻는 질문', text: `${keyword}에 대해 자주 묻는 질문과 답변을 광고주 기준에 맞게 추가해 주세요.` },
-    { blockId: makeId('block'), type: 'cta', title: '안내', text: `${advertiser}의 공식 안내 채널${advertiserRow?.phone ? `(${advertiserRow.phone})` : ''}에서 자세한 내용을 확인해 주세요.` },
-  ];
-  return { titles, blocks };
-}
-
 function base64url(input) {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -925,6 +947,115 @@ async function handleApi(req, res, pathname) {
     // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
     if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+
+    // ---- PostgreSQL 마이그레이션 (SaaS 전환 1단계) --------------------------------------
+    // 원본 JSON 파일은 전혀 건드리지 않습니다. 몇 번을 실행해도 안전합니다(ON CONFLICT 처리).
+    if (req.method === 'GET' && pathname === '/api/admin/migration-status') {
+      return sendJson(res, 200, {
+        databaseConfigured: Boolean(pgPool),
+        encryptionKeyConfigured: Boolean(ENCRYPTION_KEY),
+      });
+    }
+    if (req.method === 'POST' && pathname === '/api/admin/migrate-to-postgres') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      if (!ENCRYPTION_KEY) return sendJson(res, 400, { error: 'SECRET_ENCRYPTION_KEY가 설정되지 않았습니다(64자 16진수).' });
+      try {
+        const json = readDb();
+        const log = [];
+
+        log.push('스키마를 생성합니다...');
+        const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
+        await pgPool.query(schemaSql);
+
+        log.push('테넌트(고객사)를 생성합니다...');
+        const tenantName = ADMIN_USER.name ? `${ADMIN_USER.name}의 회사` : '하우투엠';
+        const tenantRes = await pgPool.query(
+          `INSERT INTO tenants (name, slug, plan, max_advertisers, max_members, max_media_accounts, monthly_ai_limit, can_use_automation, can_use_client_portal)
+           VALUES ($1, 'howtom', 'agency', 999, 999, 999, 999999, true, true)
+           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+          [tenantName]
+        );
+        const tenantId = tenantRes.rows[0].id;
+
+        log.push('관리자 계정을 만듭니다...');
+        const passwordHash = await hashPassword(ADMIN_PASSWORD);
+        const userRes = await pgPool.query(
+          `INSERT INTO users (email, password_hash, name) VALUES ($1,$2,$3)
+           ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash RETURNING id`,
+          [ADMIN_EMAIL, passwordHash, ADMIN_USER.name || '관리자']
+        );
+        const userId = userRes.rows[0].id;
+        await pgPool.query(`INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1,$2,'owner') ON CONFLICT DO NOTHING`, [tenantId, userId]);
+
+        log.push('광고주 및 매체 연동 정보를 옮깁니다...');
+        const advertiserIdMap = new Map();
+        for (const adv of json.advertisers || []) {
+          const advRes = await pgPool.query(
+            `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+            [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+          );
+          const newAdvId = advRes.rows[0].id;
+          advertiserIdMap.set(adv.id, newAdvId);
+          for (const acc of adv.accounts || []) {
+            await pgPool.query(
+              `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted, last_synced_at, last_row_count, last_sync_error)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+               ON CONFLICT (advertiser_id, channel) DO UPDATE SET status = EXCLUDED.status`,
+              [tenantId, newAdvId, acc.channel, acc.status || 'connected', acc.account_id || null,
+               encryptSecret(acc.api_key), encryptSecret(acc.secret_key),
+               acc.last_synced_at || null, acc.last_row_count || null, acc.last_sync_error || null]
+            );
+          }
+        }
+        log.push(`광고주 ${advertiserIdMap.size}개 이전 완료`);
+
+        async function copyMetrics(rows, table, columns, valueFn) {
+          let count = 0;
+          for (const row of rows || []) {
+            const newAdvId = advertiserIdMap.get(row.advertiserId);
+            if (!newAdvId) continue;
+            const values = valueFn(row, newAdvId);
+            const placeholders = values.map((_, i) => `$${i + 1}`).join(',');
+            await pgPool.query(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, values);
+            count++;
+          }
+          return count;
+        }
+
+        const dmCount = await copyMetrics(json.dailyMetrics, 'daily_metrics',
+          ['tenant_id','advertiser_id','channel','date','impressions','clicks','spend','db_count','purchases','revenue'],
+          (r, advId) => [tenantId, advId, r.channel, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0]);
+        log.push(`일별 성과 ${dmCount}건`);
+
+        const cmCount = await copyMetrics(json.creativeMetrics, 'creative_metrics',
+          ['tenant_id','advertiser_id','channel','ad_id','ad_name','campaign_name','impressions','clicks','spend','db_count','revenue','thumbnail_url','media_type','title','body','description','cta'],
+          (r, advId) => [tenantId, advId, r.channel, r.adId, r.adName||null, r.campaignName||null, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.revenue||0, r.thumbnailUrl||null, r.mediaType||null, r.title||null, r.body||null, r.description||null, r.cta||null]);
+        log.push(`소재 성과 ${cmCount}건`);
+
+        const kmCount = await copyMetrics(json.keywordMetrics, 'keyword_metrics',
+          ['tenant_id','advertiser_id','channel','keyword','campaign_name','impressions','clicks','spend','db_count'],
+          (r, advId) => [tenantId, advId, r.channel, r.keyword, r.campaignName||null, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0]);
+        log.push(`키워드 성과 ${kmCount}건`);
+
+        for (const p of json.blogProjects || []) {
+          await pgPool.query(`INSERT INTO blog_projects (tenant_id, advertiser_id, data) VALUES ($1,$2,$3)`,
+            [tenantId, advertiserIdMap.get(p.advertiserId) || null, JSON.stringify(p)]);
+        }
+        for (const s of json.scheduleSlots || []) {
+          await pgPool.query(`INSERT INTO schedule_slots (tenant_id, data) VALUES ($1,$2)`, [tenantId, JSON.stringify(s)]);
+        }
+        for (const l of json.logs || []) {
+          await pgPool.query(`INSERT INTO activity_logs (tenant_id, action, data) VALUES ($1,$2,$3)`, [tenantId, l.action || 'unknown', JSON.stringify(l)]);
+        }
+        log.push(`블로그 ${json.blogProjects?.length ?? 0}건, 일정 ${json.scheduleSlots?.length ?? 0}건, 로그 ${json.logs?.length ?? 0}건`);
+
+        log.push('완료. 원본 JSON 파일은 그대로 남아있고, 서비스는 계속 정상 동작합니다.');
+        return sendJson(res, 200, { ok: true, tenantId, log });
+      } catch (error) {
+        return sendJson(res, 500, { error: error instanceof Error ? error.message : '마이그레이션에 실패했습니다.' });
+      }
+    }
 
     // 네이버 등 매체별 비밀키는 절대 브라우저로 보내지 않습니다 - accounts[].secret_key/api_key는 항상 가려서 응답합니다.
     function redactAdvertiser(adv) {
@@ -1429,29 +1560,22 @@ function recordSyncResult(advertiserId, channel, { ok, count, error }) {
     }
 
     if (req.method === 'POST' && pathname === '/api/blog/generate') {
-      const body = await readJson(req); const keyword = cleanText(body.primaryKeyword, 200); const advertiser = cleanText(body.advertiserName || '광고주', 120); const region = cleanText(body.region || '', 80); const advertiserRow = readDb().advertisers.find(x => String(x.id) === String(body.advertiserId || ''));
+      const body = await readJson(req); const keyword = cleanText(body.primaryKeyword, 200); const advertiser = cleanText(body.advertiserName || '광고주', 120); const region = cleanText(body.region || '', 80);
       if (!keyword) return sendJson(res, 400, { error: '메인 키워드를 입력하세요.' });
 
-      if (blogAiConfigured()) {
-        try {
-          const ai = await callExternalBlogAi({
-            advertiser, industry: body.industry, platform: body.platform, contentType: body.contentType,
-            keyword, secondaryKeywords: body.secondaryKeywords, region, targetLength: body.targetLength,
-            tone: body.tone, preferredPhrases: body.preferredPhrases, prohibitedPhrases: body.prohibitedPhrases, cta: body.cta,
-          });
-          return sendJson(res, 200, { generator: `external-ai:${BLOG_AI_PROVIDER}`, titles: ai.titles, blocks: ai.blocks });
-        } catch (error) {
-          const fallback = ruleBasedBlogDraft(keyword, advertiser, region, advertiserRow);
-          return sendJson(res, 200, {
-            generator: 'rule-based-fallback',
-            aiError: error instanceof Error ? error.message : '외부 AI 호출에 실패했습니다.',
-            titles: fallback.titles, blocks: fallback.blocks,
-          });
-        }
+      if (!blogAiConfigured()) {
+        return sendJson(res, 400, { error: '블로그 AI가 연결되지 않았습니다. 관리자가 외부 AI API를 연결해주세요.' });
       }
-
-      const fallback = ruleBasedBlogDraft(keyword, advertiser, region, advertiserRow);
-      return sendJson(res, 200, { generator: 'rule-based-backend', titles: fallback.titles, blocks: fallback.blocks });
+      try {
+        const ai = await callExternalBlogAi({
+          advertiser, industry: body.industry, platform: body.platform, contentType: body.contentType,
+          keyword, secondaryKeywords: body.secondaryKeywords, region, targetLength: body.targetLength,
+          tone: body.tone, preferredPhrases: body.preferredPhrases, prohibitedPhrases: body.prohibitedPhrases, cta: body.cta,
+        });
+        return sendJson(res, 200, { generator: `external-ai:${BLOG_AI_PROVIDER}`, titles: ai.titles, blocks: ai.blocks });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? `외부 AI 원고 생성에 실패했습니다: ${error.message}` : '외부 AI 원고 생성에 실패했습니다. 다시 시도해주세요.' });
+      }
     }
 
     const styleMatch = pathname.match(/^\/api\/blog\/styles\/([^/]+)$/);
