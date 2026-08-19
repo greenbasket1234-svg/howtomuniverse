@@ -231,8 +231,9 @@ CREATE INDEX IF NOT EXISTS idx_keyword_metrics_tenant ON keyword_metrics(tenant_
 -- ────────────────────────────────────────────────────────────
 -- 콘텐츠 / 운영 데이터 — 필드가 자주 바뀌는 영역이라 세부 내용은 JSONB로 유연하게 둡니다.
 -- ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS blog_projects (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+DROP TABLE IF EXISTS blog_projects CASCADE;
+CREATE TABLE blog_projects (
+  id TEXT PRIMARY KEY, -- 예: makeId('blog')로 만든 projectId를 그대로 씁니다.
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
   created_by UUID REFERENCES users(id),
@@ -249,15 +250,17 @@ CREATE TABLE IF NOT EXISTS blog_styles (
   PRIMARY KEY (tenant_id, advertiser_id)
 );
 
-CREATE TABLE IF NOT EXISTS blog_assets (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+DROP TABLE IF EXISTS blog_assets CASCADE;
+CREATE TABLE blog_assets (
+  id TEXT PRIMARY KEY, -- 예: makeId('asset')
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   data JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS schedule_slots (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+DROP TABLE IF EXISTS schedule_slots CASCADE;
+CREATE TABLE schedule_slots (
+  id TEXT PRIMARY KEY, -- 프론트에서 만든 슬롯 ID를 그대로 씁니다.
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   data JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
