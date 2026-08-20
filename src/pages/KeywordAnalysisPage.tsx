@@ -57,8 +57,8 @@ export function KeywordAnalysisPage(){
   const found=advertisers.find(a=>a.id===brandId);
   const {rows:metricRows,meta,loading,error}=useMetricRows<KeywordMetricRow>('/metrics/keywords',{advertiserId:brandId});
 
-  if(!found)return <div><Link className="breadcrumb-back" to="/keywords">← 광고주 목록으로</Link><PageHeader title="광고주를 찾을 수 없습니다" description="키워드 분석 대상 광고주가 존재하지 않습니다."/></div>;
-
+  // found가 아직 없을 때(광고주 목록이 비동기로 로딩 중일 때)도 훅 호출 순서가 항상 같아야 하므로,
+  // 조기 리턴(이 아래) 전에 필요한 훅을 전부 미리 호출해둡니다. (React 훅 규칙)
   const allRows=metricRows.filter(m=>platform==='전체'||CHANNEL_TO_PLATFORM[m.channel]===platform).map((m,i)=>({
     id:`${m.channel}-${m.keywordId||m.keyword}-${i}`,platform:CHANNEL_TO_PLATFORM[m.channel]??m.channel,keyword:m.keyword,campaign:m.campaignName||'-',adGroup:m.adgroupId||'-',
     impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount,revenue:m.revenue||0,status:'active' as const,
@@ -67,6 +67,9 @@ export function KeywordAnalysisPage(){
   const filteredRowsBase=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade));
   const filteredRowsWithMetrics=filteredRowsBase.map(row=>({...row,cpm:row.impressions?row.spend/row.impressions*1000:0,cpc:row.clicks?row.spend/row.clicks:0,cvr:row.clicks?row.conversions/row.clicks:0,cpa:row.conversions?row.spend/row.conversions:0,roas:row.spend?row.revenue/row.spend*100:0,ctr:row.impressions?row.clicks/row.impressions:0}));
   const {sorted:filteredRows,toggleSort,arrow}=useSortableRows(filteredRowsWithMetrics,'spend',(r,k)=>(r as any)[k]);
+
+  if(!found)return <div><Link className="breadcrumb-back" to="/keywords">← 광고주 목록으로</Link><PageHeader title="광고주를 찾을 수 없습니다" description="키워드 분석 대상 광고주가 존재하지 않습니다."/></div>;
+
   const high=allRows.filter(r=>r.grade==='high_performance'),waste=allRows.filter(r=>r.grade==='waste'),exclude=allRows.filter(r=>r.grade==='exclude_candidate'),expansion=allRows.filter(r=>r.grade==='expansion_candidate');
   const connections=(meta?.connections||[]).filter(c=>c.advertiserId===brandId&&['naver','google','kakao','daangn'].includes(c.channel));
 
