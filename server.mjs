@@ -426,15 +426,17 @@ async function metaFetchAdCreativeThumbnails(adIds) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
     try {
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url,video_id,object_type,title,body,call_to_action_type,object_story_spec}', thumbnail_width: '1080', thumbnail_height: '1080' });
+      // thumbnail_url의 가로/세로 크기는 최상위 파라미터가 아니라, 필드 안에 .width()/.height()로 지정해야
+      // 실제로 적용됩니다(최상위 파라미터로 보내면 무시되어 저화질 기본값이 반환될 수 있습니다).
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
-        if (!creative) continue;
+        if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
         // 캐러셀(여러 이미지) 광고는 image_url이 비어있는 경우가 많아, 첫 번째 카드 이미지를 대신 사용합니다.
         const carouselImage = linkData.child_attachments?.[0]?.picture || linkData.child_attachments?.[0]?.image_url || null;
         result[id] = {
-          // image_url(원본) > link_data.picture(연결된 원본 이미지) > 캐러셀 첫 이미지 > thumbnail_url(저화질 미리보기) 순으로 고화질을 우선합니다.
+          // image_url(원본) > link_data.picture(연결된 원본 이미지) > 캐러셀 첫 이미지 > thumbnail_url(1080 지정) 순으로 고화질을 우선합니다.
           thumbnailUrl: creative.image_url || linkData.picture || carouselImage || creative.thumbnail_url || null,
           mediaType: creative.video_id ? 'video' : 'image',
           videoId: creative.video_id || null,
@@ -446,8 +448,9 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         };
         if (creative.video_id) videoIds.push(creative.video_id);
       }
-    } catch { /* 썸네일 조회 실패는 조용히 넘어갑니다 - 성과 데이터 자체는 그대로 유지합니다. */ }
+    } catch (err) { console.error('[meta-creative 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
   }
+  console.log(`[meta-creative] 요청 ${adIds.length}개 중 ${Object.keys(result).length}개 소재 정보 확보, 영상 ${videoIds.length}개`);
   // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
   if (videoIds.length) {
     const videoInfo = {};
@@ -457,16 +460,20 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'source,picture' });
         for (const vid of chunk) {
           if (data?.[vid]) videoInfo[vid] = { source: data[vid].source || null, picture: data[vid].picture || null };
+          else console.error('[meta-video] 영상 정보 없음', vid);
         }
-      } catch { /* 영상 소스 조회 실패해도 썸네일은 그대로 유지합니다. */ }
+      } catch (err) { console.error('[meta-video 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
     }
+    let videoUrlFilled = 0;
     for (const id of Object.keys(result)) {
       const row = result[id];
       if (row.videoId && videoInfo[row.videoId]) {
         row.videoUrl = videoInfo[row.videoId].source;
         row.thumbnailUrl = videoInfo[row.videoId].picture || row.thumbnailUrl; // 영상 포스터가 더 고화질입니다.
+        if (row.videoUrl) videoUrlFilled++;
       }
     }
+    console.log(`[meta-video] videoUrl 채워짐: ${videoUrlFilled}/${videoIds.length}`);
   }
   return result;
 }
@@ -1675,7 +1682,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (adRows.length) {
-            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))]).catch(() => ({}));
+            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))]).catch(err => { console.error('[meta-creative 전체 실패]', err?.message || err); return {}; });
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
             await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, enrichedAdRows);
           }
