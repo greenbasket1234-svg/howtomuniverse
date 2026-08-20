@@ -8,6 +8,7 @@ import { apiFetch } from '../hooks/useApi';
 import { metricQuery } from '../hooks/useMetrics';
 import type { CreativeDailyMetricRow, CreativeMetricRow, MetricsMeta } from '../types/metrics';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { ModalPortal } from '../components/ModalPortal';
 
 type Response={rows:CreativeMetricRow[];dailyRows:CreativeDailyMetricRow[];meta:MetricsMeta};
 type FatigueRow=CreativeMetricRow&{score:number;cpm3Change:number|null;cpm7Change:number|null;ctr7Change:number|null;cpc7Change:number|null;activeDays:number};
@@ -32,7 +33,7 @@ export function CreativeFatiguePage(){
       {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
     </div>
     {error&&<div className="status-banner danger">{error}</div>}<div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?'실제 소재 일별 성과 기준입니다.':'연동된 소재 성과 매체가 없습니다.'} 빈도·도달 데이터는 현재 저장하지 않아 피로도 점수에 포함하지 않습니다.</div><div className="fatigue-stat-grid"><div><span>🔴 위험 (85+)</span><strong>{rows.filter(r=>r.score>=85).length}건</strong></div><div><span>🟡 주의 (70+)</span><strong>{rows.filter(r=>r.score>=70&&r.score<85).length}건</strong></div><div><span>🟢 정상</span><strong>{rows.filter(r=>r.score<70).length}건</strong></div></div><section className="card ops-card"><div className="table-scroll"><table className="ops-table fatigue-table"><thead><tr><th>소재</th><th>유형</th><th>매체</th><th>피로도</th><th>3일 CPM 변화</th><th>7일 CPM 변화</th><th>7일 CTR 변화</th><th>7일 CPC 변화</th><th>활성일</th><th>기간 광고비</th></tr></thead><tbody>{loading?<tr><td colSpan={10} className="empty-cell">불러오는 중...</td></tr>:rows.length===0?<tr><td colSpan={10} className="empty-cell">분석할 실제 소재 일별 데이터가 없습니다.</td></tr>:rows.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><button className="creative-name-cell" onClick={()=>setDetail(r)} style={{border:0,background:'transparent',cursor:'pointer',textAlign:'left'}}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td>{r.channel==='meta'?'Meta':r.channel==='naver'?'네이버':r.channel}</td><td><b>{r.score}</b>점</td><td>{fmt(r.cpm3Change)}</td><td>{fmt(r.cpm7Change)}</td><td>{fmt(r.ctr7Change,true)}</td><td>{fmt(r.cpc7Change)}</td><td>{r.activeDays}일</td><td>₩{Math.round(r.spend).toLocaleString()}</td></tr>)}</tbody></table></div><div className="footnote">점수는 선택 기간 안에서 소재별 일별 데이터가 충분한 경우에만 변화율을 계산합니다. 데이터가 없는 지표를 0으로 가장하지 않습니다.</div></section>
-    {detail&&<div className="modal-backdrop" onClick={()=>setDetail(null)}><div className="modal-card wide" onClick={e=>e.stopPropagation()}>
+    {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
       {detail.videoUrl
         ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
@@ -46,6 +47,6 @@ export function CreativeFatiguePage(){
         </div>
       )}
       <div className="detail-kpi-grid"><div><span>피로도</span><b>{detail.score}점</b></div><div><span>기간 광고비</span><b>{won(detail.spend)}</b></div><div><span>3일 CPM 변화</span><b>{fmt(detail.cpm3Change)}</b></div><div><span>7일 CPM 변화</span><b>{fmt(detail.cpm7Change)}</b></div><div><span>7일 CTR 변화</span><b>{fmt(detail.ctr7Change,true)}</b></div><div><span>활성일</span><b>{detail.activeDays}일</b></div></div>
-    </div></div>}
+    </ModalPortal>}
   </div>;
 }

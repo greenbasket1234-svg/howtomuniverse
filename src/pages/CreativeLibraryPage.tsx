@@ -5,6 +5,7 @@ import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
+import { ModalPortal } from '../components/ModalPortal';
 import type { CreativeMetricRow, KeywordMetricRow } from '../types/metrics';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
@@ -81,7 +82,7 @@ export function CreativeLibraryPage(){
       <th className="num sortable-th" onClick={()=>toggleSort('dbCount')}>전환{arrow('dbCount')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
     </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
-    {selected&&<div className="modal-backdrop" onClick={()=>setSelected(null)}><div className="modal-card wide" onClick={e=>e.stopPropagation()}>
+    {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
       <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
       {selected.videoUrl
         ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
@@ -95,6 +96,6 @@ export function CreativeLibraryPage(){
         </div>
       )}
       <div className="detail-kpi-grid"><div><span>광고비</span><b>{won(selected.spend)}</b></div><div><span>노출</span><b>{selected.impressions.toLocaleString()}</b></div><div><span>클릭</span><b>{selected.clicks.toLocaleString()}</b></div><div><span>전환</span><b>{selected.dbCount.toLocaleString()}</b></div><div><span>매출</span><b>{won(selected.revenue||0)}</b></div><div><span>ROAS</span><b className={roasClass(Number(selected.roas||0))}>{selected.spend?`${Number(selected.roas||0).toFixed(0)}%`:'-'}</b></div></div>
-    </div></div>}
+    </ModalPortal>}
   </div>;
 }

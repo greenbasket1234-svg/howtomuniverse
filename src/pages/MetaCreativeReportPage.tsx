@@ -5,6 +5,7 @@ import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import type { CreativeMetricRow } from '../types/metrics';
+import { ModalPortal } from '../components/ModalPortal';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
@@ -35,7 +36,7 @@ export function MetaCreativeReportPage(){
         {loading?<tr><td colSpan={15} className="empty-cell">불러오는 중...</td></tr>:filtered.length===0?<tr><td colSpan={15} className="empty-cell">선택 기간에 소재 성과가 없습니다. 매체 연결·동기화 상태를 확인해주세요.</td></tr>:filtered.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><button className="creative-name-cell" onClick={()=>setDetail(r)}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td>{r.channel==='meta'?'Meta':r.channel==='naver'?'네이버':r.channel}</td><td>{r.advertiserName||r.advertiserId}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td>{won(r.cpc||0)}</td><td>{won(r.cpm||0)}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{Number(r.cvr||0).toFixed(2)}%</td><td>{won(r.revenue)}</td><td>{r.dbCount?won(r.cpa||0):'-'}</td><td className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}
       </tbody></table></div>
     </section>
-    {detail&&<div className="modal-backdrop" onClick={()=>setDetail(null)}><div className="modal-card wide" onClick={e=>e.stopPropagation()}>
+    {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
       {detail.videoUrl
         ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
@@ -49,6 +50,6 @@ export function MetaCreativeReportPage(){
         </div>
       )}
       <div className="detail-kpi-grid"><div><span>광고비</span><b>{won(detail.spend)}</b></div><div><span>노출</span><b>{detail.impressions.toLocaleString()}</b></div><div><span>클릭</span><b>{detail.clicks.toLocaleString()}</b></div><div><span>전환</span><b>{detail.dbCount.toLocaleString()}</b></div><div><span>매출</span><b>{won(detail.revenue)}</b></div><div><span>ROAS</span><b className={roasClass(Number(detail.roas||0))}>{Number(detail.roas||0).toFixed(0)}%</b></div></div>
-    </div></div>}
+    </ModalPortal>}
   </>;
 }
