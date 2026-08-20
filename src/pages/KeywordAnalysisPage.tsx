@@ -51,6 +51,7 @@ export function KeywordAnalysisPage(){
   const [searchParams]=useSearchParams();
   const [query,setQuery]=useState('');
   const [grade,setGrade]=useState<'all'|KeywordAnalysisGrade>('all');
+  const [campaign,setCampaign]=useState('전체');
   const requested=searchParams.get('platform');
   const [platform,setPlatform]=useState<KeywordPlatformFilter>(requested&&(KEYWORD_PLATFORMS as string[]).includes(requested)?requested as KeywordPlatform:'전체');
   const [advertisers]=useAdvertisers();
@@ -60,11 +61,12 @@ export function KeywordAnalysisPage(){
   // found가 아직 없을 때(광고주 목록이 비동기로 로딩 중일 때)도 훅 호출 순서가 항상 같아야 하므로,
   // 조기 리턴(이 아래) 전에 필요한 훅을 전부 미리 호출해둡니다. (React 훅 규칙)
   const allRows=metricRows.filter(m=>platform==='전체'||CHANNEL_TO_PLATFORM[m.channel]===platform).map((m,i)=>({
-    id:`${m.channel}-${m.keywordId||m.keyword}-${i}`,platform:CHANNEL_TO_PLATFORM[m.channel]??m.channel,keyword:m.keyword,campaign:m.campaignName||'-',adGroup:m.adgroupId||'-',
+    id:`${m.channel}-${m.keywordId||m.keyword}-${i}`,platform:CHANNEL_TO_PLATFORM[m.channel]??m.channel,keyword:m.keyword,campaign:m.campaignName||'-',adGroup:m.adgroupName||m.adgroupId||'-',
     impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount,revenue:m.revenue||0,status:'active' as const,
     grade:gradeOf({impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount})
   }));
-  const filteredRowsBase=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade));
+  const filteredRowsBase=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade)&&(campaign==='전체'||r.campaign===campaign));
+  const campaigns=['전체',...new Set(allRows.map(r=>r.campaign).filter(c=>c&&c!=='-'))];
   const filteredRowsWithMetrics=filteredRowsBase.map(row=>({...row,cpm:row.impressions?row.spend/row.impressions*1000:0,cpc:row.clicks?row.spend/row.clicks:0,cvr:row.clicks?row.conversions/row.clicks:0,cpa:row.conversions?row.spend/row.conversions:0,roas:row.spend?row.revenue/row.spend*100:0,ctr:row.impressions?row.clicks/row.impressions:0}));
   const {sorted:filteredRows,toggleSort,arrow}=useSortableRows(filteredRowsWithMetrics,'spend',(r,k)=>(r as any)[k]);
 
@@ -86,7 +88,7 @@ export function KeywordAnalysisPage(){
       <div className="summary-card"><div className="summary-card-label">제외 후보</div><div className="summary-card-value">{exclude.length}개</div></div>
       <div className="summary-card"><div className="summary-card-label">확장 후보</div><div className="summary-card-value">{expansion.length}개</div></div>
     </div>
-    <div className="keyword-toolbar"><select className="form-select keyword-platform-select" value={platform} onChange={e=>setPlatform(e.target.value as KeywordPlatformFilter)}><option value="전체">전체</option>{KEYWORD_PLATFORMS.map(item=><option key={item}>{item}</option>)}</select><div className="search-input-wrap" style={{marginBottom:0}}><Search size={15}/><input className="search-input" placeholder="키워드 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div><select className="form-select" value={grade} onChange={e=>setGrade(e.target.value as typeof grade)}><option value="all">전체 분석 등급</option><option value="high_performance">고성과</option><option value="stable">안정</option><option value="waste">비용 낭비</option><option value="exclude_candidate">제외 후보</option><option value="expansion_candidate">확장 후보</option></select></div>
+    <div className="keyword-toolbar"><select className="form-select keyword-platform-select" value={platform} onChange={e=>setPlatform(e.target.value as KeywordPlatformFilter)}><option value="전체">전체</option>{KEYWORD_PLATFORMS.map(item=><option key={item}>{item}</option>)}</select><select className="form-select" value={campaign} onChange={e=>setCampaign(e.target.value)}>{campaigns.map(c=><option key={c} value={c}>{c==='전체'?'전체 캠페인':c}</option>)}</select><div className="search-input-wrap" style={{marginBottom:0}}><Search size={15}/><input className="search-input" placeholder="키워드 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div><select className="form-select" value={grade} onChange={e=>setGrade(e.target.value as typeof grade)}><option value="all">전체 분석 등급</option><option value="high_performance">고성과</option><option value="stable">안정</option><option value="waste">비용 낭비</option><option value="exclude_candidate">제외 후보</option><option value="expansion_candidate">확장 후보</option></select></div>
     <div className="card" style={{padding:0}}><div className="table-scroll"><table className="data-table keyword-analysis-table"><thead><tr>
       <th>매체</th>
       <th className="sortable-th" onClick={()=>toggleSort('keyword')}>키워드{arrow('keyword')}</th>

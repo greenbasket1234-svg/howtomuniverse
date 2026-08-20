@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   campaign_id TEXT,
   campaign_name TEXT,
   adgroup_id TEXT,
+  adgroup_name TEXT,
   ad_id TEXT NOT NULL,
   ad_name TEXT,
   date DATE NOT NULL,
@@ -147,8 +148,9 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(advertiser_id, channel, ad_id, date)
 );
--- 이미 만들어진 테이블에도 안전하게 컬럼을 추가합니다 (영상 실제 재생 URL).
+-- 이미 만들어진 테이블에도 안전하게 컬럼을 추가합니다 (영상 실제 재생 URL, 광고그룹명).
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS video_url TEXT;
+ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
 
@@ -160,6 +162,7 @@ CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
   campaign_id TEXT,
   campaign_name TEXT,
   adgroup_id TEXT,
+  adgroup_name TEXT,
   keyword_id TEXT NOT NULL DEFAULT '',
   keyword TEXT NOT NULL,
   date DATE NOT NULL,
@@ -172,6 +175,7 @@ CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(advertiser_id, channel, keyword_id, keyword, date)
 );
+ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant ON keyword_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_adv_date ON keyword_daily_metrics(advertiser_id, date);
 

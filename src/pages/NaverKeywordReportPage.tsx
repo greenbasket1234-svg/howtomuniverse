@@ -18,9 +18,11 @@ function stateLabel(s?:string){if(s==='connected')return '연동';if(s==='connec
 export function NaverKeywordReportPage(){
   const [channel,setChannel]=useState<Channel>('naver');
   const [query,setQuery]=useState('');
+  const [campaign,setCampaign]=useState('전체');
   const {filterValue}=useAdvertiserFilter();
   const {rows,meta,loading,error}=useMetricRows<KeywordMetricRow>('/metrics/keywords',{channel});
-  const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue)&&(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))).map(r=>({...r,cpm:r.impressions?r.spend/r.impressions*1000:0,cpc:r.clicks?r.spend/r.clicks:0,cpa:r.dbCount?r.spend/r.dbCount:0})),[rows,filterValue,query]);
+  const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue)&&(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(campaign==='전체'||r.campaignName===campaign)).map(r=>({...r,cpm:r.impressions?r.spend/r.impressions*1000:0,cpc:r.clicks?r.spend/r.clicks:0,cpa:r.dbCount?r.spend/r.dbCount:0})),[rows,filterValue,query,campaign]);
+  const campaigns=useMemo(()=>['전체',...new Set(rows.map(r=>r.campaignName).filter((c):c is string=>Boolean(c)))],[rows]);
   const {sorted:sortedVisible,toggleSort,arrow}=useSortableRows(visible,'spend',(r,k)=>(r as any)[k]);
   const totals=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,conv:a.conv+r.dbCount,revenue:a.revenue+r.revenue}),{spend:0,impressions:0,clicks:0,conv:0,revenue:0}),[visible]);
   const current=config[channel];
@@ -33,7 +35,7 @@ export function NaverKeywordReportPage(){
     {status!=='connected'&&<div className="card" style={{marginBottom:12}}><b>{current.label}: {stateLabel(status)}</b><p className="muted">연결되지 않았거나 커넥터가 구현되지 않은 매체는 0 성과를 생성하지 않습니다.</p></div>}
     {error&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{error}</div>}
     <section className="card media-report-card" style={{borderTop:`3px solid ${current.color}`}}>
-      <div className="media-report-toolbar"><div><b>{current.label} 키워드 {visible.length}개</b><span> · 광고비 {won(totals.spend)} · 클릭 {totals.clicks.toLocaleString()} · 전환 {totals.conv.toLocaleString()}</span></div><div className="media-report-actions"><div className="inline-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="키워드 검색"/></div></div></div>
+      <div className="media-report-toolbar"><div><b>{current.label} 키워드 {visible.length}개</b><span> · 광고비 {won(totals.spend)} · 클릭 {totals.clicks.toLocaleString()} · 전환 {totals.conv.toLocaleString()}</span></div><div className="media-report-actions"><select value={campaign} onChange={e=>setCampaign(e.target.value)}>{campaigns.map(c=><option key={c} value={c}>{c==='전체'?'전체 캠페인':c}</option>)}</select><div className="inline-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="키워드 검색"/></div></div></div>
       <div className="table-scroll"><table className="media-report-table"><thead><tr>
         <th className="sortable-th" onClick={()=>toggleSort('advertiserName')}>광고주{arrow('advertiserName')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('campaignName')}>캠페인{arrow('campaignName')}</th>
@@ -51,7 +53,7 @@ export function NaverKeywordReportPage(){
         <th className="sortable-th" onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
+        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
         {!loading&&sortedVisible.length===0&&<tr><td colSpan={15} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 실제 키워드 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
       <div className="footnote">모든 수치는 같은 from/to 기간으로 서버에서 집계됩니다. 미연동 매체는 빈 데이터와 상태로 구분됩니다.</div>
