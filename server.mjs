@@ -537,6 +537,11 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   const output = [];
   for (const range of splitIntoChunks(since, until, 90)) {
     const rows = await fetchRange(range.since, range.until);
+    // rows가 진짜 빈 배열이면(네이버가 "이 기간엔 데이터가 없습니다"라고 정상 응답한 것) 그대로
+    // 빈 결과로 처리합니다. 빈 배열에 대한 .some()은 항상 false라서, 이 케이스를 "날짜 필드가
+    // 안 나뉜 것"으로 잘못 판단하면 아래 else 분기(일별 재조회, 90일마다 최대 90번의 API 호출)를
+    // 데이터가 없는 기간마다 반복하게 되어 13개월 같은 긴 동기화가 시간 초과로 끊기는 원인이 됩니다.
+    if (rows.length === 0) continue;
     const hasDates = rows.some(row => row.dateStart || row.date);
     if (hasDates || range.since === range.until) {
       for (const row of rows) output.push({ ...row, date: row.dateStart || row.date || range.since });
