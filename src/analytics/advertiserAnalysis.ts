@@ -1,7 +1,7 @@
 import { derived, metricValue, pctChange, sumRows, type PerformanceDataset, type PerformanceMetric, type PerformancePoint } from './integratedPerformance';
 import { MEDIA_COLORS, MEDIA_ORDER, comparisonRange, dailySeries, inRange, rangeFor } from './mediaAnalysis';
 
-export type AdvertiserGoalType = 'CPA'|'ROAS';
+export type AdvertiserGoalType = 'CPA'|'ROAS'|'CPC';
 export type AdvertiserStatus = '우수'|'정상'|'주의'|'개선 필요'|'KPI 미설정';
 export type AdvertiserKpiConfig = {
   id?:string;
@@ -81,6 +81,7 @@ function reportTypeFor(rows:PerformancePoint[]){ return rows.find(row=>row.repor
 function primaryMetricFor(reportType?:string,goal?:AdvertiserKpiConfig):PerformanceMetric{
   if(goal?.goalType==='CPA') return 'cpa';
   if(goal?.goalType==='ROAS') return 'roas';
+  if(goal?.goalType==='CPC') return 'cpc';
   if(reportType==='revenue') return 'roas';
   if(reportType==='lead') return 'cpa';
   return 'clicks';
@@ -88,13 +89,16 @@ function primaryMetricFor(reportType?:string,goal?:AdvertiserKpiConfig):Performa
 function primaryLabel(metric:PerformanceMetric,goal?:AdvertiserKpiConfig){
   if(goal?.goalType==='CPA') return 'CPA';
   if(goal?.goalType==='ROAS') return 'ROAS';
+  if(goal?.goalType==='CPC') return 'CPC';
   if(metric==='clicks') return '클릭';
   if(metric==='leads') return 'DB';
   return metric.toUpperCase();
 }
+// CPA/CPC는 "낮을수록 좋은" 지표라 (목표 ÷ 실제)로, ROAS는 "높을수록 좋은" 지표라 (실제 ÷ 목표)로 달성률을 계산합니다.
 function goalAchievement(summary:ReturnType<typeof derived>,goal?:AdvertiserKpiConfig){
   if(!goal) return undefined;
   if(goal.goalType==='CPA') return summary.cpa>0?goal.goalTarget/summary.cpa*100:0;
+  if(goal.goalType==='CPC') return summary.cpc>0?goal.goalTarget/summary.cpc*100:0;
   return goal.goalTarget>0?summary.roas/goal.goalTarget*100:0;
 }
 function statusFromAchievement(value?:number):AdvertiserStatus{
