@@ -1639,7 +1639,10 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
       const channel = cleanText(body.channel || '', 40);
-      const days = Math.min(Math.max(Number(body.days || 90), 1), 180);
+      // Meta는 최대 37개월(공식 한도)까지, 네이버는 실제 데이터 보존 한계인 최대 24개월(730일)까지만 지원됩니다.
+      // (네이버는 저희 쪽 제한이 아니라 네이버 서버 자체가 그 이상 데이터를 보관하지 않습니다.)
+      const maxDays = channel === 'naver' ? 730 : 1110;
+      const days = Math.min(Math.max(Number(body.days || 90), 1), maxDays);
       if (!advertiserId || !channel) return sendJson(res, 400, { error: 'advertiserId, channel이 필요합니다.' });
 
       const tenantId = await getCurrentTenantId();
@@ -1654,10 +1657,14 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const until = new Date().toISOString().slice(0, 10);
           const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
+          // 소재별(ad) 일별 데이터는 광고 개수가 많으면 데이터량이 매우 커지므로, 아주 긴 기간을 요청해도
+          // 최근 90일까지만 세부 수집합니다. 계정/캠페인 단위 추이는 요청한 전체 기간(최대 37개월) 그대로 수집됩니다.
+          const adSinceDate = new Date(); adSinceDate.setDate(adSinceDate.getDate() - Math.min(89, days - 1));
+          const adSince = adSinceDate.toISOString().slice(0, 10);
           const [accountRows, campaignRows, adRows] = await Promise.all([
             metaFetchInsights(account.account_id, since, until),
             metaFetchCampaignInsights(account.account_id, since, until),
-            metaFetchAdInsights(account.account_id, since, until),
+            metaFetchAdInsights(account.account_id, adSince, until),
           ]);
           const dailyRows = aggregateDailyFromDetailed(campaignRows);
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
@@ -1684,13 +1691,18 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const until = new Date().toISOString().slice(0, 10);
           const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
+          // 소재별/키워드별 데이터는 항목 하나하나를 순회하며 조회하기 때문에(캠페인/계정 전체보다 훨씬 비쌈),
+          // 아주 긴 기간(예: 13개월)을 요청해도 최근 90일까지만 세부 수집합니다 - 그래야 동기화가 시간 안에 끝납니다.
+          // 캠페인/계정 단위 추이는 요청하신 전체 기간(최대 24개월) 그대로 수집됩니다.
+          const detailSinceDate = new Date(); detailSinceDate.setDate(detailSinceDate.getDate() - Math.min(89, days - 1));
+          const detailSince = detailSinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
           // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
           // 키워드처럼 단계가 많은(캠페인→광고그룹→키워드→통계) 항목이 조용히 비어버리는 경우가 있어,
           // 순서대로 하나씩 처리합니다.
           const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
-          const creativeRows = await naverFetchCreativeDailyMetrics(credentials, since, until);
-          const keywordRows = await naverFetchKeywordDailyMetrics(credentials, since, until);
+          const creativeRows = await naverFetchCreativeDailyMetrics(credentials, detailSince, until);
+          const keywordRows = await naverFetchKeywordDailyMetrics(credentials, detailSince, until);
           const dailyRows = aggregateDailyFromDetailed(campaignRows);
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);

@@ -67,12 +67,14 @@ export function AdAccountsPage() {
   };
 
   /** 계정을 선택해 실제로 저장하고, 곧바로 최근 데이터를 동기화합니다. */
+  const [metaConnecting, setMetaConnecting] = useState(false);
   const connect = async () => {
     if (!connectTarget) { showToast('연결 대상 정보가 없습니다. 창을 닫고 다시 열어주세요.'); return; }
     if (!metaSelected) { showToast('광고계정을 먼저 선택해주세요.'); return; }
     const { channel, adId } = connectTarget;
     const channelKey = CH_KEY_MAP[channel];
     const picked = metaAccounts.find(a => a.account_id === metaSelected);
+    setMetaConnecting(true);
     try {
       await apiFetch(`/advertisers/${encodeURIComponent(adId)}`, {
         method: 'PATCH',
@@ -84,6 +86,7 @@ export function AdAccountsPage() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : '연동에 실패했습니다.');
     } finally {
+      setMetaConnecting(false);
       setConnectTarget(null);
     }
   };
@@ -111,12 +114,13 @@ export function AdAccountsPage() {
     }
   };
 
+  const [syncDays,setSyncDays]=useState(90);
   const sync = async (channel: Channel) => {
     if (!selected) return;
     setSyncing(channel);
     try {
       const result = await apiFetch<{ ok: boolean; count: number }>('/integrations/sync', {
-        method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel] }),
+        method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel], days: syncDays }),
       });
       showToast(`${channel} 동기화 완료 · ${result.count}일치 데이터`);
       await reload();
@@ -205,6 +209,12 @@ export function AdAccountsPage() {
                       </p>
                     </div>
                     <div className="account-sync-actions">
+                      <select value={syncDays} onChange={e=>setSyncDays(Number(e.target.value))} title="수집 기간" style={{marginRight:6}}>
+                        <option value={90}>최근 90일</option>
+                        <option value={180}>최근 6개월</option>
+                        <option value={396}>최근 13개월</option>
+                        <option value={730}>최근 24개월</option>
+                      </select>
                       <button className="btn secondary" onClick={() => sync(channel)}>
                         <RefreshCw size={14} className={syncing === channel ? 'is-spinning' : ''} />
                         {syncing === channel ? '동기화 중' : '동기화'}
@@ -276,8 +286,8 @@ export function AdAccountsPage() {
                   System User Access Token은 서버 환경변수(META_ACCESS_TOKEN)로만 보관됩니다. 계정을 연결하면 즉시 최근 90일 데이터를 자동으로 가져옵니다.
                 </div>
                 <div className="modal-actions">
-                  <button className="btn secondary" onClick={() => setConnectTarget(null)}>취소</button>
-                  <button className="btn primary" onClick={connect} disabled={!metaSelected}>연결 및 데이터 동기화</button>
+                  <button className="btn secondary" onClick={() => setConnectTarget(null)} disabled={metaConnecting}>취소</button>
+                  <button className="btn primary" onClick={connect} disabled={!metaSelected || metaConnecting}>{metaConnecting ? '연결 및 동기화 중... (최대 1분 정도 걸릴 수 있어요)' : '연결 및 데이터 동기화'}</button>
                 </div>
                 {!metaSelected && <div className="footnote" style={{marginTop:6}}>⚠ 광고계정을 선택해야 버튼이 활성화됩니다. {!metaAccounts.length && '먼저 "연결된 계정 불러오기"를 눌러주세요.'}</div>}
               </>
