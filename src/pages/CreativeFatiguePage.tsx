@@ -23,6 +23,16 @@ const fmt=(n:number|null,reverse=false)=>n==null?'-':`${n>0?'+':''}${n.toFixed(1
 
 export function CreativeFatiguePage(){
   const {range}=useMetricsQuery();const {filterValue}=useAdvertiserFilter();const [data,setData]=useState<Response|null>(null);const [loading,setLoading]=useState(true);const [error,setError]=useState('');const [q,setQ]=useState('');const [kind,setKind]=useState<'전체'|'이미지'|'영상'|'키워드'>('전체');const [detail,setDetail]=useState<FatigueRow|null>(null);
+  const [previewUrl,setPreviewUrl]=useState<string|null>(null);
+  const [previewLoading,setPreviewLoading]=useState(false);
+  useEffect(()=>{
+    setPreviewUrl(null);
+    if(detail&&kindOf(detail)==='영상'&&detail.channel==='meta'&&detail.adId){
+      setPreviewLoading(true);
+      apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(detail.adId)}`)
+        .then(r=>setPreviewUrl(r.previewUrl)).catch(()=>setPreviewUrl(null)).finally(()=>setPreviewLoading(false));
+    }
+  },[detail?.adId]);
   useEffect(()=>{let alive=true;setLoading(true);setError('');apiFetch<Response>(`/metrics/creatives?${metricQuery(range)}`).then(r=>alive&&setData(r)).catch(e=>{if(alive){setData(null);setError(e instanceof Error?e.message:String(e))}}).finally(()=>alive&&setLoading(false));return()=>{alive=false}},[range.from,range.to]);
   const allRows=useMemo(()=>{if(!data)return[];return data.rows.map(base=>fatigue(base,data.dailyRows.filter(d=>d.advertiserId===base.advertiserId&&d.channel===base.channel&&d.adId===base.adId)))},[data]);
   const rows=useMemo(()=>allRows.filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(kind==='전체'||kindOf(r)===kind)&&`${r.adName} ${r.campaignName||''}`.toLowerCase().includes(q.trim().toLowerCase())).sort((a,b)=>b.score-a.score),[allRows,filterValue,kind,q]);
@@ -35,8 +45,14 @@ export function CreativeFatiguePage(){
     {error&&<div className="status-banner danger">{error}</div>}<div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?'실제 소재 일별 성과 기준입니다.':'연동된 소재 성과 매체가 없습니다.'} 빈도·도달 데이터는 현재 저장하지 않아 피로도 점수에 포함하지 않습니다.</div><div className="fatigue-stat-grid"><div><span>🔴 위험 (85+)</span><strong>{rows.filter(r=>r.score>=85).length}건</strong></div><div><span>🟡 주의 (70+)</span><strong>{rows.filter(r=>r.score>=70&&r.score<85).length}건</strong></div><div><span>🟢 정상</span><strong>{rows.filter(r=>r.score<70).length}건</strong></div></div><section className="card ops-card"><div className="table-scroll"><table className="ops-table fatigue-table"><thead><tr><th>소재</th><th>유형</th><th>매체</th><th>피로도</th><th>3일 CPM 변화</th><th>7일 CPM 변화</th><th>7일 CTR 변화</th><th>7일 CPC 변화</th><th>활성일</th><th>기간 광고비</th></tr></thead><tbody>{loading?<tr><td colSpan={10} className="empty-cell">불러오는 중...</td></tr>:rows.length===0?<tr><td colSpan={10} className="empty-cell">분석할 실제 소재 일별 데이터가 없습니다.</td></tr>:rows.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><button className="creative-name-cell" onClick={()=>setDetail(r)} style={{border:0,background:'transparent',cursor:'pointer',textAlign:'left'}}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td>{r.channel==='meta'?'Meta':r.channel==='naver'?'네이버':r.channel}</td><td><b>{r.score}</b>점</td><td>{fmt(r.cpm3Change)}</td><td>{fmt(r.cpm7Change)}</td><td>{fmt(r.ctr7Change,true)}</td><td>{fmt(r.cpc7Change)}</td><td>{r.activeDays}일</td><td>₩{Math.round(r.spend).toLocaleString()}</td></tr>)}</tbody></table></div><div className="footnote">점수는 선택 기간 안에서 소재별 일별 데이터가 충분한 경우에만 변화율을 계산합니다. 데이터가 없는 지표를 0으로 가장하지 않습니다.</div></section>
     {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
-      {detail.videoUrl
-        ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+      {kindOf(detail)==='영상'
+        ? previewLoading
+          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+          : previewUrl
+            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+            : detail.videoUrl
+              ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>
         : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>

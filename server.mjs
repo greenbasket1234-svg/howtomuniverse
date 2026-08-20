@@ -418,6 +418,18 @@ function ctaLabelKo(raw) {
   return CTA_LABEL_KO[raw] || raw;
 }
 
+/**
+ * 광고의 실제 원본 영상 파일(source)은 더 높은 권한이 필요해 (#10) 에러로 막히는 계정이 많습니다.
+ * 대신 Meta의 "광고 미리보기" 기능(광고관리자에서 보이는 것과 동일한 재생 가능한 미리보기)을 쓰면
+ * 지금 갖고 있는 권한(ads_read) 그대로 동작합니다. iframe 태그 하나만 돌려줍니다.
+ */
+async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
+  const data = await metaGraphGet(`/${adId}/previews`, { ad_format: adFormat });
+  const body = data?.data?.[0]?.body || '';
+  const srcMatch = body.match(/src="([^"]+)"/);
+  return srcMatch ? srcMatch[1].replace(/&amp;/g, '&') : null;
+}
+
 async function metaFetchAdCreativeThumbnails(adIds) {
   const result = {};
   const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
@@ -1820,6 +1832,20 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       }
       const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
+    }
+    // 소재 상세를 열 때만(목록 전체가 아니라) 그 순간 Meta 미리보기를 요청합니다 - 매번 전체 동기화에서
+    // 불러오면 API 호출이 너무 많아지고, 실제로 눌러본 소재만 필요하기 때문입니다.
+    if (req.method === 'GET' && pathname === '/api/creative-preview') {
+      const query = new URL(req.url, 'http://x').searchParams;
+      const adId = cleanText(query.get('adId') || '', 60);
+      if (!adId) return sendJson(res, 400, { error: 'adId가 필요합니다.' });
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      try {
+        const previewUrl = await metaFetchAdPreview(adId);
+        return sendJson(res, 200, { previewUrl });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : '미리보기 조회에 실패했습니다.' });
+      }
     }
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
       const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);

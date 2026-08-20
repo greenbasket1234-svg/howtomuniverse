@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Grid3X3, List, Search, X, Play } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
@@ -6,6 +6,7 @@ import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import { ModalPortal } from '../components/ModalPortal';
+import { apiFetch } from '../hooks/useApi';
 import type { CreativeMetricRow, KeywordMetricRow } from '../types/metrics';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
@@ -15,7 +16,7 @@ const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative
 
 type Kind='이미지'|'영상'|'키워드';
 type Item = {
-  key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string;
+  key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string; adId?:string;
   name:string; campaignName?:string; impressions:number; clicks:number; spend:number; dbCount:number;
   revenue?:number; roas?:number; thumbnailUrl?:string|null; videoUrl?:string|null;
   title?:string; body?:string; description?:string; cta?:string;
@@ -31,10 +32,24 @@ export function CreativeLibraryPage(){
   const [advertiser,setAdvertiser]=useState('전체');
   const [view,setView]=useState<'grid'|'list'>('grid');
   const [selected,setSelected]=useState<Item|null>(null);
+  const [previewUrl,setPreviewUrl]=useState<string|null>(null);
+  const [previewLoading,setPreviewLoading]=useState(false);
+  useEffect(()=>{
+    setPreviewUrl(null);
+    // 원본 영상 파일(source)은 매체 권한에 따라 막힐 수 있어, Meta가 직접 제공하는 재생 가능한
+    // 광고 미리보기(iframe)를 그 소재를 열 때만 불러옵니다.
+    if(selected?.kind==='영상'&&selected.channel==='meta'&&selected.adId){
+      setPreviewLoading(true);
+      apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(selected.adId)}`)
+        .then(r=>setPreviewUrl(r.previewUrl))
+        .catch(()=>setPreviewUrl(null))
+        .finally(()=>setPreviewLoading(false));
+    }
+  },[selected?.key]);
 
   const items:Item[]=useMemo(()=>[
     ...creativeRows.map((r):Item=>({
-      key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel,
+      key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
       name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount,
       revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl,
       title:r.title, body:r.body, description:r.description, cta:r.cta,
@@ -84,8 +99,14 @@ export function CreativeLibraryPage(){
     </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
     {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
       <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
-      {selected.videoUrl
-        ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+      {selected.kind==='영상'
+        ? previewLoading
+          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+          : previewUrl
+            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+            : selected.videoUrl
+              ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+              : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>
         : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
       {selected.kind!=='키워드'&&(selected.title||selected.body||selected.description||selected.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>

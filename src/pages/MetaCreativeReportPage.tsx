@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ExternalLink, Search, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
@@ -6,6 +6,7 @@ import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import type { CreativeMetricRow } from '../types/metrics';
 import { ModalPortal } from '../components/ModalPortal';
+import { apiFetch } from '../hooks/useApi';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
@@ -16,6 +17,16 @@ const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative
 export function MetaCreativeReportPage(){
   const {rows,meta,loading,error}=useMetricRows<CreativeMetricRow>('/metrics/creatives');
   const [query,setQuery]=useState('');const [channel,setChannel]=useState('all');const [kind,setKind]=useState<'전체'|'이미지'|'영상'|'키워드'>('전체');const [sortKey,setSortKey]=useState<SortKey>('spend');const [sortDir,setSortDir]=useState<'desc'|'asc'>('desc');const [detail,setDetail]=useState<CreativeMetricRow|null>(null);
+  const [previewUrl,setPreviewUrl]=useState<string|null>(null);
+  const [previewLoading,setPreviewLoading]=useState(false);
+  useEffect(()=>{
+    setPreviewUrl(null);
+    if(detail&&kindOf(detail)==='영상'&&detail.channel==='meta'&&detail.adId){
+      setPreviewLoading(true);
+      apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(detail.adId)}`)
+        .then(r=>setPreviewUrl(r.previewUrl)).catch(()=>setPreviewUrl(null)).finally(()=>setPreviewLoading(false));
+    }
+  },[detail?.adId]);
   const {filterValue}=useAdvertiserFilter();
   const channels=useMemo(()=>['all',...new Set(rows.map(r=>r.channel))],[rows]);
   const filtered=useMemo(()=>[...rows].filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(kind==='전체'||kindOf(r)===kind)&&(`${r.adName} ${r.campaignName||''} ${r.advertiserName||''}`).toLowerCase().includes(query.trim().toLowerCase())).sort((a,b)=>{const av=Number(a[sortKey]||0),bv=Number(b[sortKey]||0);return sortDir==='desc'?bv-av:av-bv}),[rows,filterValue,channel,kind,query,sortKey,sortDir]);
@@ -38,8 +49,14 @@ export function MetaCreativeReportPage(){
     </section>
     {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
-      {detail.videoUrl
-        ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+      {kindOf(detail)==='영상'
+        ? previewLoading
+          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+          : previewUrl
+            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+            : detail.videoUrl
+              ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>
         : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
