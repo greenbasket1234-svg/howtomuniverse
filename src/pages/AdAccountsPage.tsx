@@ -114,13 +114,13 @@ export function AdAccountsPage() {
     }
   };
 
-  const [syncDays,setSyncDays]=useState(90);
+  const [syncDaysByChannel,setSyncDaysByChannel]=useState<Record<string,number>>({});
   const sync = async (channel: Channel) => {
     if (!selected) return;
     setSyncing(channel);
     try {
       const result = await apiFetch<{ ok: boolean; count: number }>('/integrations/sync', {
-        method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel], days: syncDays }),
+        method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel], days: syncDaysByChannel[channel] || 90 }),
       });
       showToast(`${channel} 동기화 완료 · ${result.count}일치 데이터`);
       await reload();
@@ -209,7 +209,7 @@ export function AdAccountsPage() {
                       </p>
                     </div>
                     <div className="account-sync-actions">
-                      <select value={syncDays} onChange={e=>setSyncDays(Number(e.target.value))} title="수집 기간" style={{marginRight:6}}>
+                      <select value={syncDaysByChannel[channel]||90} onChange={e=>setSyncDaysByChannel(prev=>({...prev,[channel]:Number(e.target.value)}))} title="수집 기간" style={{marginRight:6}}>
                         <option value={90}>최근 90일</option>
                         <option value={180}>최근 6개월</option>
                         <option value={396}>최근 13개월</option>
