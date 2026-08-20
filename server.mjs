@@ -217,7 +217,7 @@ async function pgReadDb(tenantId) {
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE tenant_id=$1`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", title, body, description, cta FROM creative_daily_metrics WHERE tenant_id=$1`, [tenantId]),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta FROM creative_daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
@@ -402,9 +402,26 @@ async function metaFetchAdInsights(accountId, since, until) {
 }
 
 /** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
+// Meta의 call_to_action_type은 영어 enum이라, 화면에는 한국어로 번역해서 보여줍니다.
+const CTA_LABEL_KO = {
+  LEARN_MORE: '더 알아보기', SHOP_NOW: '지금 쇼핑하기', SIGN_UP: '가입하기', BOOK_TRAVEL: '예약하기',
+  CONTACT_US: '문의하기', DOWNLOAD: '다운로드', GET_QUOTE: '견적 받기', SUBSCRIBE: '구독하기',
+  WATCH_MORE: '더 보기', APPLY_NOW: '지금 신청하기', CALL_NOW: '전화하기', GET_DIRECTIONS: '길찾기',
+  MESSAGE_PAGE: '메시지 보내기', SEND_MESSAGE: '메시지 보내기', GET_OFFER: '혜택 받기', ORDER_NOW: '지금 주문하기',
+  BOOK_NOW: '지금 예약하기', LISTEN_NOW: '듣기', PLAY_GAME: '게임 플레이', INSTALL_MOBILE_APP: '앱 설치',
+  USE_APP: '앱 사용하기', OPEN_LINK: '링크 열기', GET_STARTED: '시작하기', REQUEST_TIME: '상담 예약',
+  SEE_MENU: '메뉴 보기', DONATE_NOW: '기부하기', RECORD_NOW: '녹화하기', VISIT_PROFILE: '프로필 방문',
+  FOLLOW_PAGE: '팔로우하기', SAVE: '저장하기', WHATSAPP_MESSAGE: '왓츠앱 메시지', NO_BUTTON: '버튼 없음',
+};
+function ctaLabelKo(raw) {
+  if (!raw) return '';
+  return CTA_LABEL_KO[raw] || raw;
+}
+
 async function metaFetchAdCreativeThumbnails(adIds) {
   const result = {};
   const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
+  const videoIds = [];
   for (let i = 0; i < adIds.length; i += chunkSize) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
@@ -414,17 +431,42 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         const creative = data?.[id]?.creative;
         if (!creative) continue;
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
+        // 캐러셀(여러 이미지) 광고는 image_url이 비어있는 경우가 많아, 첫 번째 카드 이미지를 대신 사용합니다.
+        const carouselImage = linkData.child_attachments?.[0]?.picture || linkData.child_attachments?.[0]?.image_url || null;
         result[id] = {
-          // image_url(원본) > link_data.picture(연결된 원본 이미지) > thumbnail_url(저화질 미리보기) 순으로 고화질을 우선합니다.
-          thumbnailUrl: creative.image_url || linkData.picture || creative.thumbnail_url || null,
+          // image_url(원본) > link_data.picture(연결된 원본 이미지) > 캐러셀 첫 이미지 > thumbnail_url(저화질 미리보기) 순으로 고화질을 우선합니다.
+          thumbnailUrl: creative.image_url || linkData.picture || carouselImage || creative.thumbnail_url || null,
           mediaType: creative.video_id ? 'video' : 'image',
+          videoId: creative.video_id || null,
+          videoUrl: null, // 아래에서 비디오 소스를 한 번 더 조회해 채웁니다.
           title: creative.title || linkData.name || '',
           body: creative.body || linkData.message || '', // 설명란(인스타그램 캡션에 해당하는 본문 텍스트)
           description: linkData.description || '', // 링크 하단 보조 설명
-          cta: creative.call_to_action_type || linkData.call_to_action?.type || '',
+          cta: ctaLabelKo(creative.call_to_action_type || linkData.call_to_action?.type || ''),
         };
+        if (creative.video_id) videoIds.push(creative.video_id);
       }
     } catch { /* 썸네일 조회 실패는 조용히 넘어갑니다 - 성과 데이터 자체는 그대로 유지합니다. */ }
+  }
+  // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
+  if (videoIds.length) {
+    const videoInfo = {};
+    for (let i = 0; i < videoIds.length; i += chunkSize) {
+      const chunk = [...new Set(videoIds.slice(i, i + chunkSize))];
+      try {
+        const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'source,picture' });
+        for (const vid of chunk) {
+          if (data?.[vid]) videoInfo[vid] = { source: data[vid].source || null, picture: data[vid].picture || null };
+        }
+      } catch { /* 영상 소스 조회 실패해도 썸네일은 그대로 유지합니다. */ }
+    }
+    for (const id of Object.keys(result)) {
+      const row = result[id];
+      if (row.videoId && videoInfo[row.videoId]) {
+        row.videoUrl = videoInfo[row.videoId].source;
+        row.thumbnailUrl = videoInfo[row.videoId].picture || row.thumbnailUrl; // 영상 포스터가 더 고화질입니다.
+      }
+    }
   }
   return result;
 }
@@ -517,7 +559,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         purchases: Number(row.ccnt || 0),
         revenue: Number(row.convAmt || 0),
         thumbnailUrl: null,
-        mediaType: 'image',
+        mediaType: 'text', // 네이버 파워링크는 이미지/영상 없이 제목+설명 텍스트로만 구성된 키워드 기반 소재입니다.
         title: ad.ad?.headline || '',
         body: ad.ad?.description || '',
         description: '',
@@ -533,15 +575,16 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const adgroups = [];
   await mapWithConcurrency(campaigns, 4, async c => {
-    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error('[naver-adgroups 실패]', c.nccCampaignId, err?.message || err); return []; });
     if (Array.isArray(rows)) adgroups.push(...rows);
   });
   const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
   const keywords = [];
   await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 4, async agid => {
-    const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(() => []);
+    const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(err => { console.error('[naver-keywords 목록 실패]', agid, err?.message || err); return []; });
     if (Array.isArray(rows)) keywords.push(...rows);
   });
+  console.log(`[naver-keywords] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 키워드 ${keywords.length}개 수집`);
   const selected = keywords.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const result = [];
   await mapWithConcurrency(selected, 4, async kw => {
@@ -1228,8 +1271,8 @@ async function handleApi(req, res, pathname) {
         log.push(`캠페인 일별 성과 ${cpmCount}건`);
 
         const cdmCount = await copyMetrics(json.creativeDailyMetrics, 'creative_daily_metrics',
-          ['tenant_id','advertiser_id','channel','campaign_id','campaign_name','adgroup_id','ad_id','ad_name','date','impressions','clicks','spend','db_count','purchases','revenue','thumbnail_url','media_type','title','body','description','cta'],
-          (r, advId) => [tenantId, advId, r.channel, r.campaignId||null, r.campaignName||null, r.adgroupId||null, r.adId, r.adName||null, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0, r.thumbnailUrl||null, r.mediaType||null, r.title||null, r.body||null, r.description||null, r.cta||null]);
+          ['tenant_id','advertiser_id','channel','campaign_id','campaign_name','adgroup_id','ad_id','ad_name','date','impressions','clicks','spend','db_count','purchases','revenue','thumbnail_url','media_type','video_url','title','body','description','cta'],
+          (r, advId) => [tenantId, advId, r.channel, r.campaignId||null, r.campaignName||null, r.adgroupId||null, r.adId, r.adName||null, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0, r.thumbnailUrl||null, r.mediaType||null, r.videoUrl||null, r.title||null, r.body||null, r.description||null, r.cta||null]);
         log.push(`소재 일별 성과 ${cdmCount}건`);
 
         const kdmCount = await copyMetrics(json.keywordDailyMetrics, 'keyword_daily_metrics',
@@ -1512,22 +1555,22 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, title, body, description, cta)
-         SELECT $1, $2, $3, cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, ttl, bdy, desc_, cta_
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::date[], $10::bigint[], $11::bigint[], $12::numeric[], $13::bigint[], $14::bigint[], $15::numeric[], $16::text[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[])
-           AS t(cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, ttl, bdy, desc_, cta_)
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta)
+         SELECT $1, $2, $3, cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::date[], $10::bigint[], $11::bigint[], $12::numeric[], $13::bigint[], $14::bigint[], $15::numeric[], $16::text[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[])
+           AS t(cid, cname, agid, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_)
          ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
            campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id,
            ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
            db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
-           thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, title=EXCLUDED.title,
+           thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, video_url=EXCLUDED.video_url, title=EXCLUDED.title,
            body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''),
          valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
-         valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.title || ''),
+         valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.videoUrl || null), valid.map(r => r.title || ''),
          valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || '')]
       );
     }
@@ -1642,11 +1685,12 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
-          const [campaignRows, creativeRows, keywordRows] = await Promise.all([
-            naverFetchCampaignDailyMetrics(credentials, since, until),
-            naverFetchCreativeDailyMetrics(credentials, since, until),
-            naverFetchKeywordDailyMetrics(credentials, since, until),
-          ]);
+          // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
+          // 키워드처럼 단계가 많은(캠페인→광고그룹→키워드→통계) 항목이 조용히 비어버리는 경우가 있어,
+          // 순서대로 하나씩 처리합니다.
+          const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
+          const creativeRows = await naverFetchCreativeDailyMetrics(credentials, since, until);
+          const keywordRows = await naverFetchKeywordDailyMetrics(credentials, since, until);
           const dailyRows = aggregateDailyFromDetailed(campaignRows);
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
