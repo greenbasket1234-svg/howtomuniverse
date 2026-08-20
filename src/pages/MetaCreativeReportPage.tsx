@@ -37,7 +37,7 @@ export function MetaCreativeReportPage(){
     </section>
     {detail&&<div className="modal-backdrop" onClick={()=>setDetail(null)}><div className="modal-card wide" onClick={e=>e.stopPropagation()}>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
-      {kindOf(detail)==='영상'&&detail.videoUrl
+      {detail.videoUrl
         ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
         : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(

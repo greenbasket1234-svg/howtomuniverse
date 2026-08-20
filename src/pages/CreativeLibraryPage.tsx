@@ -83,7 +83,7 @@ export function CreativeLibraryPage(){
     </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
     {selected&&<div className="modal-backdrop" onClick={()=>setSelected(null)}><div className="modal-card wide" onClick={e=>e.stopPropagation()}>
       <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
-      {selected.kind==='영상'&&selected.videoUrl
+      {selected.videoUrl
         ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
         : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
       {selected.kind!=='키워드'&&(selected.title||selected.body||selected.description||selected.cta)&&(
