@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   revenue NUMERIC NOT NULL DEFAULT 0,
   thumbnail_url TEXT,
   media_type TEXT,
+  video_url TEXT,
   title TEXT,
   body TEXT,
   description TEXT,
@@ -146,6 +147,8 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(advertiser_id, channel, ad_id, date)
 );
+-- 이미 만들어진 테이블에도 안전하게 컬럼을 추가합니다 (영상 실제 재생 URL).
+ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS video_url TEXT;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
 
