@@ -223,6 +223,12 @@ export function AdAccountsPage() {
                         연결 해제
                       </button>
                     </div>
+                    {channel === '네이버' && (syncDaysByChannel[channel] || 90) > 180 && (
+                      <div className="footnote" style={{marginTop:6}}>
+                        ⚠ 캠페인 목록은 선택하신 기간만큼 조회되지만, <b>일별 성과 수치(노출·클릭·비용)는 네이버 서버 자체가 보관하는 기간이 더 짧아</b>
+                        실제로는 최근 5~6개월 정도까지만 채워질 수 있습니다. 이건 저희 시스템이 아니라 네이버 API의 자체 제한입니다.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="account-empty-connect">
