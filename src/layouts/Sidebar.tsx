@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { ChevronLeft, ChevronRight, LogOut, Menu, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LogOut, Menu, Settings, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { activeUniverseGroup, isUniverseItemActive, universeMenuGroups, type UniverseMenuGroup } from '../data/universeMenu';
@@ -14,14 +14,37 @@ function PlanetIcon({ planet }: { planet: UniverseMenuGroup['planet'] }) {
 
 function SidebarFooter({ collapsed }: { collapsed: boolean }) {
   const { user, logout, isAdmin } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuOpen]);
   return (
-    <div className={`sidebar-footer ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-avatar">{(user?.name || '관').slice(0, 1)}</div>
+    <div className={`sidebar-footer ${collapsed ? 'collapsed' : ''}`} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="sidebar-avatar"
+        onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
+        aria-label="계정 메뉴"
+        aria-expanded={menuOpen}
+      >
+        {(user?.name || '관').slice(0, 1)}
+      </button>
       {!collapsed && (
         <div className="sidebar-footer-copy">
           <div className="sidebar-footer-name">{user?.name || user?.email || '사용자'}</div>
           <div className="sidebar-footer-role">{isAdmin ? '관리자' : '광고주'}</div>
-          <button type="button" className="sidebar-footer-logout" onClick={logout}>
+        </div>
+      )}
+      {menuOpen && (
+        <div className="sidebar-footer-menu" onClick={(e) => e.stopPropagation()}>
+          <div className="sidebar-footer-menu-name">{user?.name || user?.email || '사용자'} · {isAdmin ? '관리자' : '광고주'}</div>
+          <Link to="/settings" className="sidebar-footer-menu-item" onClick={() => setMenuOpen(false)}>
+            <Settings size={15} /> 설정
+          </Link>
+          <button type="button" className="sidebar-footer-menu-item danger" onClick={logout}>
             <LogOut size={15} /> 로그아웃
           </button>
         </div>
