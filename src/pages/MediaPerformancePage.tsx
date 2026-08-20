@@ -9,7 +9,7 @@ import type { DailyMetricRow } from '../types/metrics';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useMetricsQuery } from '../context/MetricsQueryContext';
 
-const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS'};
+const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS',cpc:'CPC'};
 const comparisonOptions=['직전 동일기간','전월','전년 동기간','비교 안 함'];
 const trendMetrics:PerformanceMetric[]=['spend','clicks','leads','cpa','revenue','roas','ctr'];
 const channelLabels=['전체 비교',...MEDIA_ORDER];

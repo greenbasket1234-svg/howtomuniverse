@@ -13,7 +13,7 @@ import { useMetricsQuery } from '../context/MetricsQueryContext';
 const comparisonOptions=['직전 동일기간','전월','전년 동기간','비교 안 함'];
 const statusOptions=['전체','우수','정상','주의','개선 필요','KPI 미설정'] as const;
 const trendMetrics:PerformanceMetric[]=['spend','clicks','leads','cpa','revenue','roas','ctr'];
-const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB/전환',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS'};
+const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB/전환',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS',cpc:'CPC'};
 
 function hashColor(value:string){let h=0;for(let i=0;i<value.length;i++)h=(h*31+value.charCodeAt(i))>>>0;const colors=['#4776ff','#8b5cf6','#0ea5e9','#10b981','#f59e0b','#ef4444','#14b8a6','#6366f1'];return colors[h%colors.length];}
 function poly(values:number[]){const max=Math.max(...values,1),min=Math.min(...values,0),span=max-min||1;return values.map((value,index)=>`${8+index/Math.max(1,values.length-1)*92},${72-(value-min)/span*58}`).join(' ');}
