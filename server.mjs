@@ -217,7 +217,7 @@ async function pgReadDb(tenantId) {
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE tenant_id=$1`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta FROM creative_daily_metrics WHERE tenant_id=$1`, [tenantId]),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE tenant_id=$1`, [tenantId]),
     pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
@@ -445,12 +445,20 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         const creative = data?.[id]?.creative;
         if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
-        // 캐러셀(여러 이미지) 광고는 image_url이 비어있는 경우가 많아, 첫 번째 카드 이미지를 대신 사용합니다.
-        const carouselImage = linkData.child_attachments?.[0]?.picture || linkData.child_attachments?.[0]?.image_url || null;
+        // 캐러셀(슬라이드) 광고는 child_attachments에 카드가 여러 장 들어있습니다. 각 카드의
+        // 이미지를 전부 모아서 슬라이드 미리보기에 쓸 수 있게 합니다(기존엔 첫 장만 쓰고 나머지는
+        // 버렸습니다).
+        const carouselCards = Array.isArray(linkData.child_attachments) ? linkData.child_attachments : [];
+        const carouselImages = carouselCards.map(c => c.picture || c.image_url).filter(Boolean);
+        const isCarousel = carouselImages.length > 0;
         result[id] = {
-          // image_url(원본) > link_data.picture(연결된 원본 이미지) > 캐러셀 첫 이미지 > thumbnail_url(1080 지정) 순으로 고화질을 우선합니다.
-          thumbnailUrl: creative.image_url || linkData.picture || carouselImage || creative.thumbnail_url || null,
-          mediaType: creative.video_id ? 'video' : 'image',
+          // thumbnail_url은 위에서 명시적으로 1080x1080을 요청했기 때문에 크기가 항상 보장됩니다.
+          // image_url(원본)은 소재마다 실제 업로드 크기가 제각각이라(작은 원본도 있음) 이걸
+          // 최우선으로 쓰면 소재별로 화질이 들쭉날쭉해집니다. 그래서 고정 크기가 보장되는
+          // thumbnail_url을 최우선으로 쓰고, 캐러셀은 대표 이미지로 첫 카드를 씁니다.
+          thumbnailUrl: creative.thumbnail_url || carouselImages[0] || creative.image_url || linkData.picture || null,
+          mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
+          carouselImages: isCarousel ? carouselImages : null,
           videoId: creative.video_id || null,
           videoUrl: null, // 아래에서 비디오 소스를 한 번 더 조회해 채웁니다.
           title: creative.title || linkData.name || '',
@@ -1186,6 +1194,16 @@ async function handleApi(req, res, pathname) {
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
     if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
 
+    // 데이터를 다루는 API(광고주·매체·키워드·소재 등)는 전부 Postgres(pgPool)를 직접 사용합니다.
+    // DATABASE_URL이 설정되지 않은 환경(예: 로컬에서 npm run dev만 실행한 경우)에서는 pgPool이
+    // null이라, 이 API들을 호출하면 "Cannot read properties of null (reading 'query')" 같은
+    // 알아보기 어려운 크래시로 죽습니다. 마이그레이션 상태 조회처럼 pgPool 없이도 응답해야 하는
+    // 극소수 엔드포인트만 예외로 남기고, 나머지 데이터 API는 여기서 미리 막아 이유를 알려줍니다.
+    const PG_OPTIONAL_PATHS = new Set(['/api/admin/migration-status', '/api/admin/migrate-to-postgres']);
+    if (!pgPool && !PG_OPTIONAL_PATHS.has(pathname)) {
+      return sendJson(res, 503, { error: 'DATABASE_URL이 설정되지 않았습니다. 로컬 개발 환경이라면 .env에 DATABASE_URL을 채우거나, Railway에 Postgres를 연결한 뒤 관리자 > 마이그레이션에서 데이터를 옮겨주세요.' });
+    }
+
     // ---- PostgreSQL 마이그레이션 (SaaS 전환 1단계) --------------------------------------
     // 원본 JSON 파일은 전혀 건드리지 않습니다. 몇 번을 실행해도 안전합니다(ON CONFLICT 처리).
     if (req.method === 'GET' && pathname === '/api/admin/migration-status') {
@@ -1584,23 +1602,24 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta)
-         SELECT $1, $2, $3, cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::numeric[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[])
-           AS t(cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_)
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images)
+         SELECT $1, $2, $3, cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::numeric[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[])
+           AS t(cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg)
          ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
            campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
            ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
            db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
            thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, video_url=EXCLUDED.video_url, title=EXCLUDED.title,
-           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, updated_at=now()`,
+           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, carousel_images=EXCLUDED.carousel_images, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
          valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
          valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.videoUrl || null), valid.map(r => r.title || ''),
-         valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || '')]
+         valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || ''),
+         valid.map(r => JSON.stringify(r.carouselImages || null))]
       );
     }
     async function upsertKeywordDailyMetrics(tenantId, advertiserId, channel, rows) {
@@ -1720,10 +1739,11 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const until = new Date().toISOString().slice(0, 10);
           const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
           const since = sinceDate.toISOString().slice(0, 10);
-          // 소재별/키워드별 데이터는 항목 하나하나를 순회하며 조회하기 때문에(캠페인/계정 전체보다 훨씬 비쌈),
-          // 아주 긴 기간(예: 13개월)을 요청해도 최근 90일까지만 세부 수집합니다 - 그래야 동기화가 시간 안에 끝납니다.
-          // 캠페인/계정 단위 추이는 요청하신 전체 기간(최대 24개월) 그대로 수집됩니다.
-          const detailSinceDate = new Date(); detailSinceDate.setDate(detailSinceDate.getDate() - Math.min(89, days - 1));
+          // 소재별/키워드별 데이터는 항목 하나하나를 순회하며 조회하기 때문에(캠페인/계정 전체보다 훨씬 비쌈)
+          // 예전엔 시간 초과를 피하려 최근 90일로 강제 제한했었습니다. 그 원인이었던
+          // naverStatsForIdsDaily의 빈 응답 재조회 낭비 버그를 고쳤으므로, 이제 캠페인/계정
+          // 단위와 동일하게 요청하신 전체 기간(최대 24개월)을 그대로 수집합니다.
+          const detailSinceDate = new Date(); detailSinceDate.setDate(detailSinceDate.getDate() - Math.max(0, days - 1));
           const detailSince = detailSinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
           // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
@@ -1832,8 +1852,8 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const grouped = new Map();
       for (const row of source) {
         const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
-        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
-        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
+        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
+        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
       }
       const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
@@ -1878,7 +1898,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});

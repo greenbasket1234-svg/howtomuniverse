@@ -2710,10 +2710,10 @@ body{font-size:15.5px;line-height:1.55}
 .home-mini-list{padding:0 16px 12px;display:flex;flex-direction:column}
 .home-mini-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #eef2f7}
 .home-mini-row:last-child{border-bottom:none}
-.home-mini-left{min-width:0;display:flex;flex-direction:column;gap:3px}
-.home-mini-left>b{font-size:13.5px;color:#1e293b;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.home-mini-left{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px;align-items:flex-start;text-align:left}
+.home-mini-left>b{font-size:13.5px;color:#1e293b;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;width:100%}
 .home-mini-left>small{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#8592a6}
-.home-mini-right{text-align:right;flex-shrink:0;display:flex;flex-direction:column;gap:3px}
+.home-mini-right{text-align:right;flex-shrink:0;min-width:92px;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
 .home-mini-spend{font-size:14px;font-weight:800;color:#2f5bd6}
 .home-mini-sub{font-size:11.5px;color:#8592a6}
 .home-mini-sub em{font-style:normal;font-weight:700;color:#334155}

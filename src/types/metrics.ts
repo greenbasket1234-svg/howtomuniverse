@@ -41,7 +41,8 @@ export type CampaignMetricRow = BaseMetricRow & { campaignId: string; campaignNa
 export type CampaignDailyMetricRow = CampaignMetricRow & { date: string };
 export type CreativeMetricRow = BaseMetricRow & {
   campaignId?: string; campaignName?: string; adgroupId?: string; adgroupName?: string;
-  adId: string; adName: string; thumbnailUrl?: string | null; mediaType?: 'image'|'video'|'text'|null; videoUrl?: string | null;
+  adId: string; adName: string; thumbnailUrl?: string | null; mediaType?: 'image'|'video'|'text'|'carousel'|null; videoUrl?: string | null;
+  carouselImages?: string[] | null;
   title?: string; body?: string; description?: string; cta?: string;
 };
 export type CreativeDailyMetricRow = CreativeMetricRow & { date: string };

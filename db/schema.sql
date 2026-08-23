@@ -148,9 +148,10 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(advertiser_id, channel, ad_id, date)
 );
--- 이미 만들어진 테이블에도 안전하게 컬럼을 추가합니다 (영상 실제 재생 URL, 광고그룹명).
+-- 이미 만들어진 테이블에도 안전하게 컬럼을 추가합니다 (영상 실제 재생 URL, 광고그룹명, 캐러셀 카드 이미지 목록).
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS video_url TEXT;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
+ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS carousel_images JSONB;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
 

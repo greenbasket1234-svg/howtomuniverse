@@ -1503,15 +1503,15 @@ export function AdvertiserDailyReportPage() {
                   </div>
                   {isIntegrated ? (
                     <>
-                      <TrendComboChart title="광고비 · 매출 추이" dates={dates} summary={[{ label: '기간 총 광고비', value: `₩${totalSpend.toLocaleString()}` }]} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="광고비 매출 추이" dates={dates} summary={[{ label: '기간 총 광고비', value: `₩${totalSpend.toLocaleString()}` }]} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'spend', name: '광고비', color: '#2563eb', type: 'bar', format: 'currency' },
                         { metric: 'revenue', name: '매출', color: '#16a34a', type: 'line', format: 'currency' },
                       ], chartPlatform)} />
-                      <TrendComboChart title="노출 · 도달 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="노출 도달 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'impressions', name: '노출수', color: '#f59e0b', type: 'bar', format: 'number' },
                         { metric: 'reach', name: '도달', color: '#0891b2', type: 'line', format: 'number' },
                       ], chartPlatform)} />
-                      <TrendComboChart title="클릭 · DB 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="클릭 DB 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'clicks', name: '클릭수', color: '#db2777', type: 'bar', format: 'number' },
                         { metric: 'leads', name: 'DB', color: '#16a34a', type: 'line', format: 'number' },
                       ], chartPlatform)} />
@@ -1523,11 +1523,11 @@ export function AdvertiserDailyReportPage() {
                         { metric: 'cpc', name: 'CPC', color: '#f97316', type: 'bar', format: 'currency' },
                         { metric: 'cpa', name: 'CPA', color: '#dc2626', type: 'line', format: 'currency' },
                       ], chartPlatform)} />
-                      <TrendComboChart title="매출 · ROAS 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="매출 ROAS 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'revenue', name: '매출', color: '#16a34a', type: 'bar', format: 'currency' },
                         { metric: 'roas', name: 'ROAS', color: '#f59e0b', type: 'line', format: 'percent', yAxisIndex: 1 },
                       ], chartPlatform)} />
-                      <TrendComboChart title="결제 · 환불 · 순매출 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      <TrendComboChart title="결제 환불 순매출 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'payments', name: '결제', color: '#0891b2', type: 'bar', format: 'currency' },
                         { metric: 'refunds', name: '환불', color: '#dc2626', type: 'line', format: 'currency' },
                         { metric: 'netRevenue', name: '순매출', color: '#16a34a', type: 'line', format: 'currency' },
@@ -1553,15 +1553,15 @@ export function AdvertiserDailyReportPage() {
                           { metric: 'leads', name: 'DB', color: '#16a34a', type: 'line', format: 'number', yAxisIndex: 1 },
                         ], chartPlatform)}
                       />
-                      {isRevenue && <TrendComboChart title="매출 · ROAS 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      {isRevenue && <TrendComboChart title="매출 ROAS 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'revenue', name: '매출', color: '#16a34a', type: 'bar', format: 'currency' },
                         { metric: 'roas', name: 'ROAS', color: '#f59e0b', type: 'line', format: 'percent', yAxisIndex: 1 },
                       ], chartPlatform)} />}
-                      {isRevenue && <TrendComboChart title="결제 · 환불 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      {isRevenue && <TrendComboChart title="결제 환불 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'payments', name: '결제', color: '#0891b2', type: 'bar', format: 'currency' },
                         { metric: 'refunds', name: '환불', color: '#dc2626', type: 'line', format: 'currency' },
                       ], chartPlatform)} />}
-                      {!isRevenue && <TrendComboChart title="클릭 · 전환 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
+                      {!isRevenue && <TrendComboChart title="클릭 전환 추이" dates={dates} series={buildDailyTrendData(rows, indexes, [
                         { metric: 'clicks', name: '클릭수', color: '#db2777', type: 'bar', format: 'number' },
                         { metric: 'leads', name: 'DB', color: '#16a34a', type: 'line', format: 'number' },
                       ], chartPlatform)} />}
@@ -1573,7 +1573,7 @@ export function AdvertiserDailyReportPage() {
           })()}
 
           <section className="card report-insight-card">
-            <div className="daily-report-section-head"><div><h3>분석 · 문제점 · 대응방안</h3><p>이 기간 실제 데이터를 기준으로 자동 생성된 인사이트입니다. 참고용이며 최종 판단은 담당자가 확인해 주세요.</p></div></div>
+            <div className="daily-report-section-head"><div><h3>분석 문제점 대응방안</h3><p>이 기간 실제 데이터를 기준으로 자동 생성된 인사이트입니다. 참고용이며 최종 판단은 담당자가 확인해 주세요.</p></div></div>
 
 
             <div className="report-insight-grid">

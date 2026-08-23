@@ -34,7 +34,7 @@ const SETTINGS_SECTIONS = [
   ['ai','AI 설정','AI 사용 정책, 비용 한도와 Provider 연결 준비 상태를 관리합니다.',Bot],
   ['automation','자동화 설정','자동화 기본 시간대, 승인과 실패 처리 정책을 관리합니다.',Workflow],
   ['storage','저장 공간','브라우저 자산과 향후 클라우드 저장 공간 사용량을 확인합니다.',HardDrive],
-  ['subscription','구독·결제','HOWTOM 사용 상품과 결제 연결 상태를 확인합니다.',WalletCards],
+  ['subscription','구독 결제','HOWTOM 사용 상품과 결제 연결 상태를 확인합니다.',WalletCards],
   ['security','보안','세션·민감정보·2FA·SSO 정책과 서버 전환 기준을 관리합니다.',ShieldCheck],
 ] as const;
 

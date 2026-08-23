@@ -14,11 +14,11 @@ const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
 const channelLabel=(v:string)=>v==='meta'?'Meta':v==='naver'?'네이버':v;
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
 
-type Kind='이미지'|'영상'|'키워드';
+type Kind='이미지'|'영상'|'슬라이드'|'키워드';
 type Item = {
   key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string; adId?:string;
   name:string; campaignName?:string; impressions:number; clicks:number; spend:number; dbCount:number;
-  revenue?:number; roas?:number; thumbnailUrl?:string|null; videoUrl?:string|null;
+  revenue?:number; roas?:number; thumbnailUrl?:string|null; videoUrl?:string|null; carouselImages?:string[]|null;
   title?:string; body?:string; description?:string; cta?:string;
 };
 
@@ -49,9 +49,9 @@ export function CreativeLibraryPage(){
 
   const items:Item[]=useMemo(()=>[
     ...creativeRows.map((r):Item=>({
-      key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
+      key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
       name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount,
-      revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl,
+      revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl, carouselImages:r.carouselImages,
       title:r.title, body:r.body, description:r.description, cta:r.cta,
     })),
     ...keywordRows.map((r):Item=>({
@@ -81,13 +81,14 @@ export function CreativeLibraryPage(){
     <PageHeader title="소재 라이브러리" description="연결된 매체에서 수집한 실제 광고 소재·키워드와 선택 기간의 성과를 함께 봅니다." action={<div className="library-actions"><div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재·캠페인·문구 검색"/></div><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option key={c} value={c}>{c==='all'?'전체 매체':channelLabel(c)}</option>)}</select><select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}>{advertisers.map(a=><option key={a} value={a}>{a==='전체'?'전체 광고주':a}</option>)}</select><select value={sortKey} onChange={e=>toggleSort(e.target.value)} title="정렬 기준"><option value="spend">광고비순</option><option value="impressions">노출순</option><option value="clicks">클릭순</option><option value="dbCount">전환순</option><option value="roas">ROAS순</option></select><button className={view==='grid'?'icon-btn active':'icon-btn'} onClick={()=>setView('grid')} aria-label="카드 보기"><Grid3X3 size={17}/></button><button className={view==='list'?'icon-btn active':'icon-btn'} onClick={()=>setView('list')} aria-label="목록 보기"><List size={17}/></button></div>}/>
     <MetricsDateBar/>
     <div className="media-type-toggle" style={{marginBottom:12}}>
-      {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k as Kind)})`}</button>)}
+      {(['전체','이미지','영상','슬라이드','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k as Kind)})`}</button>)}
     </div>
     <div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?`실제 성과 연동: ${connected.map(channelLabel).join(', ')}`:'연동된 소재 성과 매체가 없습니다.'}{unavailable.length?` · ${unavailable.map(c=>`${channelLabel(c.channel)} ${c.status==='connector_unimplemented'?'커넥터 미구현':c.status==='error'?'수집 오류':'미연동'}`).join(' / ')}`:''}</div>
     {error&&<div className="status-banner danger">{error}</div>}
     {isLoading?<div className="card empty-state">소재 데이터를 불러오는 중입니다.</div>:filtered.length===0?<div className="card empty-state"><div className="empty-state-title">선택 기간에 소재 데이터가 없습니다.</div><div>매체 연결 및 동기화 상태를 확인해주세요. 연결되지 않은 매체는 0으로 표시하지 않습니다.</div></div>:view==='grid'?<div className="library-grid-compact actual-creative-grid">{filtered.map((r,i)=><article key={r.key} className="library-card" onClick={()=>setSelected(r)}><div className="library-thumb-square">
       {r.kind==='키워드'?<span style={{fontSize:20}}>🔑</span>:r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
       {r.kind==='영상'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 6px',display:'flex',alignItems:'center'}}><Play size={11} fill="#fff"/></span>}
+      {r.kind==='슬라이드'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 8px',fontSize:11,fontWeight:700}}>슬라이드 {r.carouselImages?.length||''}</span>}
       {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6}}>{i+1}</span>}
     </div><div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {r.dbCount.toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
       <th>소재</th><th>종류</th><th>매체</th><th>광고주</th><th>캠페인</th>
@@ -107,7 +108,14 @@ export function CreativeLibraryPage(){
             : selected.videoUrl
               ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
               : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>
-        : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
+        : selected.kind==='슬라이드'&&selected.carouselImages?.length
+          ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
+              {selected.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
+                <img src={url} alt={`${selected.name} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
+                <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{selected.carouselImages!.length}</div>
+              </div>)}
+            </div>
+          : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
       {selected.kind!=='키워드'&&(selected.title||selected.body||selected.description||selected.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {selected.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{selected.title}</div></div>}

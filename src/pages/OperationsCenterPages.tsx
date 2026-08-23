@@ -559,7 +559,7 @@ type ReportSectionOption = { key: ReportSectionKey; label: string; group: string
 const REPORT_SECTION_OPTIONS: ReportSectionOption[] = [
   { key:'summary-overview', label:'전체 요약', group:'보고서 구성' },
   { key:'media-performance', label:'매체별 성과', group:'보고서 구성' },
-  { key:'creative-top-worst', label:'소재 TOP·WORST', group:'보고서 구성' },
+  { key:'creative-top-worst', label:'소재 TOP WORST', group:'보고서 구성' },
   { key:'creative-performance', label:'소재별 성과', group:'보고서 구성' },
   { key:'spend-trend', label:'광고비 추이', group:'보고서 구성' },
   { key:'sales-roas-trend', label:'매출/ROAS 추이', group:'보고서 구성' },

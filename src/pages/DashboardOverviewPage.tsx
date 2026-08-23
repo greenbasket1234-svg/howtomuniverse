@@ -397,7 +397,7 @@ export function DashboardOverviewPage(){
     </div>
 
     <TrendComboChart
-      title="일자별 광고비 · 전환 추이"
+      title="일자별 광고비 전환 추이"
       subtitle="지금 선택된 광고주 범위·기간 기준입니다. 범례를 눌러 지표를 껐다 켤 수 있고, 하단 슬라이더로 구간을 좁혀 볼 수 있습니다."
       dates={chartDates}
       summary={[
@@ -474,7 +474,7 @@ export function DashboardOverviewPage(){
     </div>
 
     <section className="card report-insight-card">
-      <div className="daily-report-section-head"><div><h3>분석 · 문제점 · 대응방안</h3><p>지금 화면의 실제 데이터를 기준으로 자동 생성된 인사이트입니다. 참고용이며 최종 판단은 담당자가 확인해 주세요.</p></div></div>
+      <div className="daily-report-section-head"><div><h3>분석 문제점 대응방안</h3><p>지금 화면의 실제 데이터를 기준으로 자동 생성된 인사이트입니다. 참고용이며 최종 판단은 담당자가 확인해 주세요.</p></div></div>
       <div className="report-insight-grid">
         <div className="report-insight-col analysis"><h4>📊 분석</h4>{dashboardInsights.analysis.map((t,i)=><p key={i}>{t}</p>)}</div>
         <div className="report-insight-col problems"><h4>⚠️ 문제점</h4>{dashboardInsights.problems.length?dashboardInsights.problems.map((t,i)=><p key={i}>{t}</p>):<p className="muted">특별한 문제점이 감지되지 않았습니다.</p>}</div>

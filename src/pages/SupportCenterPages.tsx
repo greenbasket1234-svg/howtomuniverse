@@ -249,7 +249,7 @@ function DocumentBoard({
       {historyDoc && (
         <div className="modal-backdrop" onClick={() => setHistoryDoc(null)}>
           <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
-            <div className="modal-head"><h3>{historyDoc.title} · 버전 이력</h3><button className="icon-btn" onClick={() => setHistoryDoc(null)}><X size={18} /></button></div>
+            <div className="modal-head"><h3>{historyDoc.title} 버전 이력</h3><button className="icon-btn" onClick={() => setHistoryDoc(null)}><X size={18} /></button></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 400, overflowY: 'auto' }}>
               {(historyDoc.history ?? []).length === 0 && <p className="muted">이전 버전 기록이 없습니다.</p>}
               {(historyDoc.history ?? []).map((v, index) => (
@@ -312,9 +312,9 @@ export function SupportKnowledgePage() {
       { key: 'faq', label: '광고주 자주 묻는 Q&A', icon: <BookOpen size={14} /> },
       { key: 'creative-reference', label: '소재 레퍼런스', icon: <BookOpen size={14} /> },
       { key: 'creative-guideline', label: '소재 제작 가이드라인', icon: <BookOpen size={14} /> },
-      { key: 'onboarding', label: '교육·온보딩', icon: <BookOpen size={14} /> },
+      { key: 'onboarding', label: '교육 온보딩', icon: <BookOpen size={14} /> },
       { key: 'template', label: '템플릿센터', icon: <BookOpen size={14} /> },
-      { key: 'policy', label: '사내 정책·업무 규정', icon: <BookOpen size={14} /> },
+      { key: 'policy', label: '사내 정책 업무 규정', icon: <BookOpen size={14} /> },
     ]} />;
 }
 
@@ -324,7 +324,7 @@ export function SupportSalesPage() {
     categories={[
       { key: 'quote', label: '견적서', icon: <Handshake size={14} /> },
       { key: 'proposal', label: '제안서', icon: <Handshake size={14} /> },
-      { key: 'partner', label: '협력사·외주 관리', icon: <Handshake size={14} /> },
+      { key: 'partner', label: '협력사 외주 관리', icon: <Handshake size={14} /> },
     ]} />;
 }
 
@@ -332,10 +332,10 @@ export function SupportOpsPage() {
   return <DocumentBoard title="업무 운영" description="회의록, 광고주 커뮤니케이션 기록, 캠페인 실험·회고, 장애·이슈, 인수인계를 기록과 지식 축적 중심으로 관리합니다."
     showAdvertiserField showFollowUpField
     categories={[
-      { key: 'meeting', label: '회의록·결정사항', icon: <ClipboardList size={14} /> },
+      { key: 'meeting', label: '회의록 결정사항', icon: <ClipboardList size={14} /> },
       { key: 'communication', label: '광고주 커뮤니케이션 기록', icon: <Users size={14} /> },
-      { key: 'experiment', label: '캠페인 실험·회고', icon: <ClipboardList size={14} /> },
-      { key: 'incident', label: '장애·이슈 관리', icon: <AlertTriangle size={14} /> },
+      { key: 'experiment', label: '캠페인 실험 회고', icon: <ClipboardList size={14} /> },
+      { key: 'incident', label: '장애 이슈 관리', icon: <AlertTriangle size={14} /> },
       { key: 'handover', label: '업무 인수인계', icon: <ClipboardList size={14} /> },
     ]} />;
 }
@@ -443,7 +443,7 @@ export function SupportHubPage() {
 
   const cards = [
     { label: '최근 수정 자료', value: `${recentDocs.length}건`, to: '/support/knowledge' },
-    { label: '미해결 장애·이슈', value: `${unresolvedIncidents.length}건`, to: '/support/ops' },
+    { label: '미해결 장애 이슈', value: `${unresolvedIncidents.length}건`, to: '/support/ops' },
     { label: '진행 중 인수인계', value: `${activeHandovers.length}건`, to: '/support/ops' },
     { label: '변경 예정 계정', value: `${dueCredentials.length}건`, to: '/support/security' },
   ];
@@ -460,7 +460,7 @@ export function SupportHubPage() {
         ))}
       </div>
       <div className="dashboard-bottom-grid">
-        <section className="card"><div className="card-title-row"><div><h2 style={{ fontSize: 15 }}>후속 연락·조치 예정</h2></div></div>
+        <section className="card"><div className="card-title-row"><div><h2 style={{ fontSize: 15 }}>후속 연락 조치 예정</h2></div></div>
           {upcomingFollowUps.length === 0 && <p className="muted" style={{ padding: 12 }}>예정된 후속 조치가 없습니다.</p>}
           <ul className="dashboard-action-list">{upcomingFollowUps.map(d => <li key={d.id}>{d.followUpAt} · {d.title}{d.advertiserName ? ` (${d.advertiserName})` : ''}</li>)}</ul>
         </section>

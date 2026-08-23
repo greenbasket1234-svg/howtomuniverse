@@ -75,7 +75,7 @@ export function ConversionFunnelPage(){
 
     <div className="funnel-warning"><AlertTriangle size={25}/><div><b>매체 API가 제공하는 이벤트만 표시합니다.</b><p>유효 DB·계약처럼 별도 CRM 연동이 필요한 값은 임의로 0을 채워 정상 연동처럼 보이지 않습니다. 연결되지 않은 매체는 미연동/커넥터 미구현으로 표시됩니다.</p></div></div>
 
-    <div className="section-tabs compact-tabs" style={{marginBottom:14}}><button className={mode==='lead'?'active':''} onClick={()=>setMode('lead')}>예약·상담 퍼널</button><button className={mode==='commerce'?'active':''} onClick={()=>setMode('commerce')}>커머스 퍼널</button></div>
+    <div className="section-tabs compact-tabs" style={{marginBottom:14}}><button className={mode==='lead'?'active':''} onClick={()=>setMode('lead')}>예약 상담 퍼널</button><button className={mode==='commerce'?'active':''} onClick={()=>setMode('commerce')}>커머스 퍼널</button></div>
 
     {error&&<div className="card" style={{borderColor:'#fecaca',color:'#b91c1c'}}>{error}</div>}
     {loading&&<div className="card">실제 매체 데이터를 불러오는 중입니다.</div>}
