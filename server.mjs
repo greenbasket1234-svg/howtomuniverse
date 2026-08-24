@@ -728,6 +728,33 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
       });
     }
   });
+  // 쇼핑검색·브랜드검색 등은 네이버 API 구조상 "키워드" 단위로 등록되지 않는 경우가 많아,
+  // /ncc/keywords로 아무것도 안 잡힙니다(0개). 이런 광고그룹까지 화면에서 안 보이면 안 되니,
+  // 키워드가 하나도 없는 광고그룹은 그 광고그룹 자체를 하나의 항목으로 대체해서 보여줍니다.
+  const adgroupsWithKeyword = new Set(keywords.map(k => k.nccAdgroupId).filter(Boolean));
+  const adgroupsWithoutKeyword = adgroups.filter(a => a.nccAdgroupId && !adgroupsWithKeyword.has(a.nccAdgroupId)).slice(0, 150);
+  await mapWithConcurrency(adgroupsWithoutKeyword, 4, async ag => {
+    const campaignId = ag.nccCampaignId || '';
+    const stats = await naverStatsForIdsDaily(credentials, [ag.nccAdgroupId], since, until);
+    for (const row of stats) {
+      result.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || '',
+        campaignType: campaignTypeMap.get(campaignId) || '',
+        adgroupId: ag.nccAdgroupId,
+        adgroupName: ag.name || '',
+        keywordId: ag.nccAdgroupId,
+        keyword: `${ag.name || '광고그룹'} (광고그룹 전체)`, // 이 유형은 키워드 단위가 아니라 광고그룹 단위로 집계됨을 표시
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: Number(row.ccnt || 0),
+        purchases: Number(row.ccnt || 0),
+        revenue: Number(row.convAmt || 0),
+      });
+    }
+  });
   return result;
 }
 
