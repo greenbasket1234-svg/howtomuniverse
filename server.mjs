@@ -925,14 +925,20 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const rowsOut = [];
+  const typeDiag = new Map(); // 유형별로 /stats가 실제로 데이터를 돌려주는지 진단합니다.
   await mapWithConcurrency(campaignIds, 4, async campaignId => {
+    const tp = campaignTypeMap.get(campaignId) || '(알수없음)';
     const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
+    const cur = typeDiag.get(tp) || { campaigns: 0, rowsWithData: 0, totalRows: 0 };
+    cur.campaigns++; cur.totalRows += rows.length;
+    if (rows.some(r => Number(r.salesAmt || 0) > 0 || Number(r.impCnt || 0) > 0)) cur.rowsWithData++;
+    typeDiag.set(tp, cur);
     for (const row of rows) {
       rowsOut.push({
         date: row.date,
         campaignId,
         campaignName: campaignNameMap.get(campaignId) || campaignId,
-        campaignType: campaignTypeMap.get(campaignId) || '',
+        campaignType: tp,
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
@@ -942,6 +948,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
       });
     }
   });
+  for (const [tp, v] of typeDiag) console.log(`[naver-campaign-stats] 유형=${tp} 캠페인${v.campaigns}개 중 실제 노출/비용 있는 캠페인 ${v.rowsWithData}개 (일별 행 ${v.totalRows}개 수집)`);
   return rowsOut;
 }
 
