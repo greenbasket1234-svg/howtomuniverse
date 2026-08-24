@@ -477,9 +477,10 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
           carouselHashes: isCarousel ? carouselCards.map(c => c.image_hash || null) : null,
           // 해시로 원본을 못 찾을 때를 대비한 대체값들 (아래 해시 조회 후에도 비어있으면 이걸 씁니다).
           // 캐러셀(슬라이드)의 link_data.picture는 "이 캐러셀을 지원하지 않는 구형 지면"에 보여줄
-          // 대표 이미지일 뿐, 실제 카드 내용과 무관한 경우가 많아 대체값으로 쓰지 않습니다
-          // (모든 슬라이드 소재에 똑같은 엉뚱한 이미지가 뜨던 원인이었습니다).
-          thumbnailUrlFallback: isCarousel ? null : (creative.image_url || linkData.picture || creative.thumbnail_url || null),
+          // 대표 이미지일 뿐 실제 카드 내용과 무관해서 쓰지 않지만, creative.thumbnail_url은
+          // 소재(ad) 하나하나마다 따로 생성되는 값이라 안전하게 최종 대비책으로 둡니다
+          // (이게 없으면 카드 이미지 조회가 전부 실패했을 때 완전히 까맣게 뜹니다).
+          thumbnailUrlFallback: isCarousel ? (creative.thumbnail_url || null) : (creative.image_url || linkData.picture || creative.thumbnail_url || null),
           carouselFallback: isCarousel ? carouselCards.map(c => c.picture || null) : null,
           mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
           videoId: creative.video_id || null,
@@ -511,8 +512,11 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   let carouselCardsTotal = 0, carouselCardsResolved = 0;
   for (const id of Object.keys(result)) {
     const row = result[id];
-    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash]) || row.thumbnailUrlFallback
-      || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]]) || row.carouselFallback?.[0] || null;
+    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash])
+      || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]])
+      || row.carouselFallback?.[0]
+      || row.thumbnailUrlFallback
+      || null;
     if (row.carouselHashes) {
       carouselCardsTotal += row.carouselHashes.length;
       carouselCardsResolved += row.carouselHashes.filter(h => h && hashUrlMap[h]).length;
@@ -525,20 +529,21 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
   if (videoIds.length) {
     const videoInfo = {};
-    for (let i = 0; i < videoIds.length; i += chunkSize) {
-      const chunk = [...new Set(videoIds.slice(i, i + chunkSize))];
+    const uniqueVideoIds = [...new Set(videoIds)];
+    // 배치(ids) 방식으로 여러 영상을 한 번에 조회하면 thumbnails 같은 중첩된 목록이 제대로
+    // 안 올 때가 있어, 영상 하나하나에 직접 /{video_id}/thumbnails로 개별 요청합니다.
+    await mapWithConcurrency(uniqueVideoIds, 4, async vid => {
       try {
-        // picture 필드는 영상 썸네일 중 가장 작은 기본값을 주는 경우가 많아, thumbnails 목록에서
-        // 실제로 가장 해상도가 큰 것을 직접 골라 씁니다.
-        const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'source,picture,thumbnails.limit(10){uri,width,height}' });
-        for (const vid of chunk) {
-          if (!data?.[vid]) { console.error('[meta-video] 영상 정보 없음', vid); continue; }
-          const thumbs = data[vid].thumbnails?.data || [];
-          const best = thumbs.length ? thumbs.reduce((a, b) => (Number(b.width) || 0) > (Number(a.width) || 0) ? b : a) : null;
-          videoInfo[vid] = { source: data[vid].source || null, picture: best?.uri || data[vid].picture || null };
-        }
-      } catch (err) { console.error('[meta-video 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
-    }
+        const [videoData, thumbData] = await Promise.all([
+          metaGraphGet(`/${vid}`, { fields: 'source,picture' }),
+          metaGraphGet(`/${vid}/thumbnails`, { limit: '10' }).catch(err => { console.error('[meta-video-thumbnails 실패]', vid, err?.message || err); return null; }),
+        ]);
+        const thumbs = thumbData?.data || [];
+        const best = thumbs.length ? thumbs.reduce((a, b) => (Number(b.width) || 0) > (Number(a.width) || 0) ? b : a) : null;
+        console.log(`[meta-video] ${vid}: thumbnails ${thumbs.length}개 중 최대 ${best?.width || 0}px 선택`);
+        videoInfo[vid] = { source: videoData?.source || null, picture: best?.uri || videoData?.picture || null };
+      } catch (err) { console.error('[meta-video 조회 실패]', vid, err?.message || err); }
+    });
     let videoUrlFilled = 0;
     for (const id of Object.keys(result)) {
       const row = result[id];
