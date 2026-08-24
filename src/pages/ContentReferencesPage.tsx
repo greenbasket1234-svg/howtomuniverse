@@ -32,7 +32,7 @@ type SearchResultItem = {
   thumbnailUrl?: string | null; mediaUrl?: string | null; mediaType?: string | null; contentType?: string | null;
   adStatus?: string | null; adStartedAt?: string | null; publishedAt?: string | null;
   views?: number | null; likes?: number | null; comments?: number | null; shares?: number | null; saves?: number | null;
-  availableMetrics: string[]; rawMetadata?: unknown; alreadySaved?: boolean;
+  availableMetrics: string[]; rawMetadata?: unknown; alreadySaved?: boolean; captionMatchesQuery?: boolean;
 };
 type Collection = { id: string; name: string; description?: string | null; item_count: number };
 type CollectionRule = {
@@ -346,7 +346,7 @@ function CollectNowModal({ connectors, rules, advertisers, onClose, onSaved }: {
                     {r.thumbnailUrl ? <img src={r.thumbnailUrl} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }}/> : <div style={{ width: 56, height: 56, background: '#f1f5f9', borderRadius: 8, flexShrink: 0 }}/>}
                     <div style={{ minWidth: 0 }}>
                       <b style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title || r.body?.slice(0, 60) || '(제목 없음)'}</b>
-                      <small className="muted-text">{r.authorName || '-'} {r.alreadySaved && '· 이미 수집된 레퍼런스입니다'}</small>
+                      <small className="muted-text">{r.authorName || '-'} {r.captionMatchesQuery && <span className="badge badge-success" style={{ marginLeft: 4 }}>캡션에도 일치</span>} {r.alreadySaved && '· 이미 수집된 레퍼런스입니다'}</small>
                     </div>
                   </label>
                 ))}

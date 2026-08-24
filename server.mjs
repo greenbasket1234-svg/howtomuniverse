@@ -2092,7 +2092,9 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const existingSet = new Set(existing.rows.map(r => r.external_id));
           for (const item of result.items) item.alreadySaved = existingSet.has(item.externalId);
         }
-        return sendJson(res, result.status === 'permission_required' ? 424 : 200, { ...result, platform: connector.platform, referenceType: connector.referenceType });
+        // apiFetch는 HTTP 상태가 200이 아니면 응답 본문의 message를 무시하고 res.statusText로
+        // 대체해버려서, 항상 200으로 응답하고 성공/실패 여부는 body.status 필드로 구분합니다.
+        return sendJson(res, 200, { ...result, platform: connector.platform, referenceType: connector.referenceType });
       }
 
       // 검색 결과(또는 수동 입력)를 실제로 저장합니다.
