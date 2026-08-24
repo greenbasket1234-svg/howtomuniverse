@@ -476,7 +476,10 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
           mainImageHash,
           carouselHashes: isCarousel ? carouselCards.map(c => c.image_hash || null) : null,
           // 해시로 원본을 못 찾을 때를 대비한 대체값들 (아래 해시 조회 후에도 비어있으면 이걸 씁니다).
-          thumbnailUrlFallback: creative.image_url || linkData.picture || creative.thumbnail_url || null,
+          // 캐러셀(슬라이드)의 link_data.picture는 "이 캐러셀을 지원하지 않는 구형 지면"에 보여줄
+          // 대표 이미지일 뿐, 실제 카드 내용과 무관한 경우가 많아 대체값으로 쓰지 않습니다
+          // (모든 슬라이드 소재에 똑같은 엉뚱한 이미지가 뜨던 원인이었습니다).
+          thumbnailUrlFallback: isCarousel ? null : (creative.image_url || linkData.picture || creative.thumbnail_url || null),
           carouselFallback: isCarousel ? carouselCards.map(c => c.picture || null) : null,
           mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
           videoId: creative.video_id || null,
@@ -505,12 +508,19 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
     }
     console.log(`[meta-adimages] 해시 ${hashList.length}개 중 ${Object.keys(hashUrlMap).length}개 원본 URL 확보`);
   }
+  let carouselCardsTotal = 0, carouselCardsResolved = 0;
   for (const id of Object.keys(result)) {
     const row = result[id];
-    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash]) || row.thumbnailUrlFallback || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]]) || null;
+    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash]) || row.thumbnailUrlFallback
+      || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]]) || row.carouselFallback?.[0] || null;
+    if (row.carouselHashes) {
+      carouselCardsTotal += row.carouselHashes.length;
+      carouselCardsResolved += row.carouselHashes.filter(h => h && hashUrlMap[h]).length;
+    }
     row.carouselImages = row.carouselHashes ? row.carouselHashes.map((h, idx) => (h && hashUrlMap[h]) || row.carouselFallback?.[idx] || null).filter(Boolean) : null;
     delete row.mainImageHash; delete row.carouselHashes; delete row.thumbnailUrlFallback; delete row.carouselFallback;
   }
+  if (carouselCardsTotal) console.log(`[meta-carousel] 카드 ${carouselCardsTotal}개 중 해시로 원본 확보 ${carouselCardsResolved}개, 나머지는 카드 자체 picture(600px)로 대체`);
   console.log(`[meta-creative] 요청 ${adIds.length}개 중 ${Object.keys(result).length}개 소재 정보 확보, 영상 ${videoIds.length}개`);
   // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
   if (videoIds.length) {
