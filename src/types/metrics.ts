@@ -37,17 +37,17 @@ export type BaseMetricRow = {
 };
 
 export type DailyMetricRow = BaseMetricRow & { date: string };
-export type CampaignMetricRow = BaseMetricRow & { campaignId: string; campaignName: string };
+export type CampaignMetricRow = BaseMetricRow & { campaignId: string; campaignName: string; campaignType?: string };
 export type CampaignDailyMetricRow = CampaignMetricRow & { date: string };
 export type CreativeMetricRow = BaseMetricRow & {
-  campaignId?: string; campaignName?: string; adgroupId?: string; adgroupName?: string;
+  campaignId?: string; campaignName?: string; campaignType?: string; adgroupId?: string; adgroupName?: string;
   adId: string; adName: string; thumbnailUrl?: string | null; mediaType?: 'image'|'video'|'text'|'carousel'|null; videoUrl?: string | null;
   carouselImages?: string[] | null;
   title?: string; body?: string; description?: string; cta?: string;
 };
 export type CreativeDailyMetricRow = CreativeMetricRow & { date: string };
 export type KeywordMetricRow = BaseMetricRow & {
-  campaignId?: string; campaignName?: string; adgroupId?: string; adgroupName?: string; keywordId?: string; keyword: string;
+  campaignId?: string; campaignName?: string; campaignType?: string; adgroupId?: string; adgroupName?: string; keywordId?: string; keyword: string;
 };
 export type KeywordDailyMetricRow = KeywordMetricRow & { date: string };
 

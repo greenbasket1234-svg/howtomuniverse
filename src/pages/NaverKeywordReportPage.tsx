@@ -39,6 +39,7 @@ export function NaverKeywordReportPage(){
       <div className="table-scroll"><table className="media-report-table"><thead><tr>
         <th className="sortable-th" onClick={()=>toggleSort('advertiserName')}>광고주{arrow('advertiserName')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('campaignName')}>캠페인{arrow('campaignName')}</th>
+        <th>유형</th>
         <th>광고그룹</th>
         <th className="sortable-th" onClick={()=>toggleSort('keyword')}>키워드{arrow('keyword')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
@@ -53,8 +54,8 @@ export function NaverKeywordReportPage(){
         <th className="sortable-th" onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
-        {!loading&&sortedVisible.length===0&&<tr><td colSpan={15} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 실제 키워드 데이터가 없습니다.</td></tr>}
+        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.campaignType&&r.campaignType!=='-'?<Badge tone="neutral">{r.campaignType}</Badge>:'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
+        {!loading&&sortedVisible.length===0&&<tr><td colSpan={16} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 실제 키워드 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
       <div className="footnote">모든 수치는 같은 from/to 기간으로 서버에서 집계됩니다. 미연동 매체는 빈 데이터와 상태로 구분됩니다.</div>
     </section>

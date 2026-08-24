@@ -234,9 +234,9 @@ async function pgReadDb(tenantId, filters = {}) {
        FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE ${dm.where}`, dm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
     pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
   ]);
@@ -458,7 +458,7 @@ async function metaFetchAdCreativeThumbnails(adIds) {
     try {
       // thumbnail_url의 가로/세로 크기는 최상위 파라미터가 아니라, 필드 안에 .width()/.height()로 지정해야
       // 실제로 적용됩니다(최상위 파라미터로 보내면 무시되어 저화질 기본값이 반환될 수 있습니다).
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec}' });
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,message,name,description,call_to_action,child_attachments{picture}},video_data{image_url,message,call_to_action}}}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
         if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
@@ -470,11 +470,10 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         const carouselImages = carouselCards.map(c => c.picture || c.image_url).filter(Boolean);
         const isCarousel = carouselImages.length > 0;
         result[id] = {
-          // thumbnail_url은 위에서 명시적으로 1080x1080을 요청했기 때문에 크기가 항상 보장됩니다.
-          // image_url(원본)은 소재마다 실제 업로드 크기가 제각각이라(작은 원본도 있음) 이걸
-          // 최우선으로 쓰면 소재별로 화질이 들쭉날쭉해집니다. 그래서 고정 크기가 보장되는
-          // thumbnail_url을 최우선으로 쓰고, 캐러셀은 대표 이미지로 첫 카드를 씁니다.
-          thumbnailUrl: creative.thumbnail_url || carouselImages[0] || creative.image_url || linkData.picture || null,
+          // Meta에게 thumbnail_url을 1080x1080으로 요청해도 실제로는 그 크기를 지키지 않고
+          // 작은 이미지를 돌려주는 경우가 있어(계정/소재 유형에 따라 다름), 원본 업로드 파일인
+          // image_url을 최우선으로 쓰고, 없을 때만 thumbnail_url로 대체합니다.
+          thumbnailUrl: creative.image_url || carouselImages[0] || linkData.picture || creative.thumbnail_url || null,
           mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
           carouselImages: isCarousel ? carouselImages : null,
           videoId: creative.video_id || null,
@@ -520,16 +519,17 @@ async function metaFetchAdCreativeThumbnails(adIds) {
 async function naverFetchAdMasters(credentials) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const adgroups = [];
   await mapWithConcurrency(campaigns, 4, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
-    if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '' })));
+    if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '', campaignType: campaignTypeMap.get(c.nccCampaignId) || '' })));
   });
   const adgroupNameMap = new Map(adgroups.map(ag => [ag.nccAdgroupId, ag.name || '']));
   const ads = [];
   await mapWithConcurrency(adgroups, 4, async ag => {
     const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []);
-    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' })));
+    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' })));
   });
   return { ads, adgroupNameMap };
 }
@@ -601,6 +601,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         date: row.date,
         campaignId: ad.campaignId || '',
         campaignName: ad.campaignName || '',
+        campaignType: ad.campaignType || '',
         adgroupId: ad.adgroupId || '',
         adgroupName: ad.adgroupName || '',
         adId,
@@ -623,9 +624,16 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   return rows;
 }
 
+/** 네이버 캠페인 유형(campaignTp)을 한글로 바꿔줍니다. */
+function naverCampaignTypeKo(tp) {
+  const map = { WEB_SITE: '파워링크', SHOPPING: '쇼핑검색', POWER_CONTENTS: '파워컨텐츠', BRAND_SEARCH: '브랜드검색', PLACE: '플레이스' };
+  return map[tp] || tp || '';
+}
+
 async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const adgroups = [];
   await mapWithConcurrency(campaigns, 4, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error('[naver-adgroups 실패]', c.nccCampaignId, err?.message || err); return []; });
@@ -651,6 +659,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         date: row.date,
         campaignId,
         campaignName: campaignNameMap.get(campaignId) || '',
+        campaignType: campaignTypeMap.get(campaignId) || '',
         adgroupId,
         adgroupName: adgroupNameMap.get(adgroupId) || '',
         keywordId,
@@ -859,6 +868,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
   if (!campaignIds.length) return [];
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const rowsOut = [];
   await mapWithConcurrency(campaignIds, 4, async campaignId => {
     const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
@@ -867,6 +877,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
         date: row.date,
         campaignId,
         campaignName: campaignNameMap.get(campaignId) || campaignId,
+        campaignType: campaignTypeMap.get(campaignId) || '',
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
@@ -1604,14 +1615,14 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && r.campaignId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, date, impressions, clicks, spend, db_count, purchases, revenue)
-         SELECT $1, $2, $3, cid, cname, d, imp, clk, sp, dbc, pur, rev
-         FROM UNNEST($4::text[], $5::text[], $6::date[], $7::bigint[], $8::bigint[], $9::numeric[], $10::bigint[], $11::bigint[], $12::numeric[]) AS t(cid, cname, d, imp, clk, sp, dbc, pur, rev)
+        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, date, impressions, clicks, spend, db_count, purchases, revenue)
+         SELECT $1, $2, $3, cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::date[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::numeric[]) AS t(cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev)
          ON CONFLICT (advertiser_id, channel, campaign_id, date) DO UPDATE SET
-           campaign_name=EXCLUDED.campaign_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
+           campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
            spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
         [tenantId, advertiserId, channel,
-         valid.map(r => String(r.campaignId)), valid.map(r => r.campaignName || String(r.campaignId)), valid.map(r => r.date),
+         valid.map(r => String(r.campaignId)), valid.map(r => r.campaignName || String(r.campaignId)), valid.map(r => r.campaignType || ''), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
       );
@@ -1620,18 +1631,18 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images)
-         SELECT $1, $2, $3, cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::numeric[], $17::text[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[])
-           AS t(cid, cname, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg)
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[], $25::text[])
+           AS t(cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg)
          ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
-           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
            ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
            db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
            thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, video_url=EXCLUDED.video_url, title=EXCLUDED.title,
            body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, carousel_images=EXCLUDED.carousel_images, updated_at=now()`,
         [tenantId, advertiserId, channel,
-         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
          valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
@@ -1644,16 +1655,16 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && (r.keywordId || r.keyword));
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue)
-         SELECT $1, $2, $3, cid, cname, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::numeric[])
-           AS t(cid, cname, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev)
+        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[])
+           AS t(cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev)
          ON CONFLICT (advertiser_id, channel, keyword_id, keyword, date) DO UPDATE SET
-           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
            impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
            db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
         [tenantId, advertiserId, channel,
-         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
          valid.map(r => r.keywordId || ''), valid.map(r => r.keyword || r.keywordId), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
@@ -1870,7 +1881,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const grouped = new Map();
       for (const row of source) {
         const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
-        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
+        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
         cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
       }
       const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
@@ -1892,7 +1903,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
       const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
-      const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
     }
@@ -1916,10 +1927,10 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
     }
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------

@@ -61,7 +61,7 @@ export function KeywordAnalysisPage(){
   // found가 아직 없을 때(광고주 목록이 비동기로 로딩 중일 때)도 훅 호출 순서가 항상 같아야 하므로,
   // 조기 리턴(이 아래) 전에 필요한 훅을 전부 미리 호출해둡니다. (React 훅 규칙)
   const allRows=metricRows.filter(m=>platform==='전체'||CHANNEL_TO_PLATFORM[m.channel]===platform).map((m,i)=>({
-    id:`${m.channel}-${m.keywordId||m.keyword}-${i}`,platform:CHANNEL_TO_PLATFORM[m.channel]??m.channel,keyword:m.keyword,campaign:m.campaignName||'-',adGroup:m.adgroupName||m.adgroupId||'-',
+    id:`${m.channel}-${m.keywordId||m.keyword}-${i}`,platform:CHANNEL_TO_PLATFORM[m.channel]??m.channel,keyword:m.keyword,campaign:m.campaignName||'-',campaignType:m.campaignType||'-',adGroup:m.adgroupName||m.adgroupId||'-',
     impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount,revenue:m.revenue||0,status:'active' as const,
     grade:gradeOf({impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount})
   }));
@@ -92,7 +92,7 @@ export function KeywordAnalysisPage(){
     <div className="card" style={{padding:0}}><div className="table-scroll"><table className="data-table keyword-analysis-table"><thead><tr>
       <th>매체</th>
       <th className="sortable-th" onClick={()=>toggleSort('keyword')}>키워드{arrow('keyword')}</th>
-      <th>캠페인</th><th>광고그룹</th>
+      <th>캠페인</th><th>유형</th><th>광고그룹</th>
       <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('ctr')}>CTR{arrow('ctr')}</th>
@@ -106,8 +106,8 @@ export function KeywordAnalysisPage(){
       <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       <th>분석</th>
     </tr></thead><tbody>
-      {filteredRows.map(row=><tr key={row.id}><td><Badge tone="accent" style={{background:`${getPlatformColor(row.platform)}1a`,color:getPlatformColor(row.platform),border:`1px solid ${getPlatformColor(row.platform)}55`}}>{row.platform}</Badge></td><td><strong>{row.keyword}</strong></td><td>{row.campaign}</td><td>{row.adGroup}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{pct(row.clicks,row.impressions)}</td><td className="num">{row.clicks?currency(row.spend/row.clicks):'-'}</td><td className="num">{row.impressions?currency(row.cpm):'-'}</td><td className="num metric-emphasis">{currency(row.spend)}</td><td className="num"><b>{row.conversions.toLocaleString()}</b></td><td className="num">{pct(row.conversions,row.clicks)}</td><td className="num">{row.conversions?currency(row.spend/row.conversions):'-'}</td><td className="num">{row.revenue?currency(row.revenue):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td><td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td></tr>)}
-      {!loading&&filteredRows.length===0&&<tr><td colSpan={16} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 키워드 데이터가 없습니다. 미연동 매체는 0으로 생성하지 않습니다.</td></tr>}
+      {filteredRows.map(row=><tr key={row.id}><td><Badge tone="accent" style={{background:`${getPlatformColor(row.platform)}1a`,color:getPlatformColor(row.platform),border:`1px solid ${getPlatformColor(row.platform)}55`}}>{row.platform}</Badge></td><td><strong>{row.keyword}</strong></td><td>{row.campaign}</td><td>{row.campaignType&&row.campaignType!=='-'?<Badge tone="neutral">{row.campaignType}</Badge>:'-'}</td><td>{row.adGroup}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{pct(row.clicks,row.impressions)}</td><td className="num">{row.clicks?currency(row.spend/row.clicks):'-'}</td><td className="num">{row.impressions?currency(row.cpm):'-'}</td><td className="num metric-emphasis">{currency(row.spend)}</td><td className="num"><b>{row.conversions.toLocaleString()}</b></td><td className="num">{pct(row.conversions,row.clicks)}</td><td className="num">{row.conversions?currency(row.spend/row.conversions):'-'}</td><td className="num">{row.revenue?currency(row.revenue):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td><td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td></tr>)}
+      {!loading&&filteredRows.length===0&&<tr><td colSpan={17} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 키워드 데이터가 없습니다. 미연동 매체는 0으로 생성하지 않습니다.</td></tr>}
     </tbody></table></div></div>
     <div className="keyword-analysis-cards"><div className="card"><div className="card-title">고성과 키워드</div>{high.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.keyword}</Badge> 전환율 {pct(r.conversions,r.clicks)}</p>)}</div><div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> 클릭 대비 전환 0건</p>)}</div><div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map(r=><p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> 노출 대비 클릭 0건</p>)}</div><div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map(r=><p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> CTR {pct(r.clicks,r.impressions)}</p>)}</div></div>
   </div>;

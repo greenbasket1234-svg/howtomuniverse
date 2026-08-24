@@ -28,9 +28,12 @@ function fmtProposalDiff(current: number, target: number, format: 'currency' | '
 }
 
 function fmtProposalPercentDiff(current: number, target: number): string | null {
-  if (!Number.isFinite(current) || !Number.isFinite(target) || current === 0 || current === target) return null;
-  const rate = ((target - current) / Math.abs(current)) * 100;
-  return `${rate > 0 ? '+' : '−'}${Math.abs(rate).toFixed(1)}% · 이번 달 대비`;
+  if (!Number.isFinite(current) || !Number.isFinite(target) || current === target) return null;
+  // CVR·CTR·ROAS는 이미 퍼센트 값이라, "그 값이 상대적으로 몇 % 늘었나"가 아니라
+  // "퍼센트 포인트로 몇 만큼 늘었나"(예: 9.8% → 11.7%는 +1.9%p)로 보여줘야 화면에 표시된
+  // 반올림 숫자로 직접 암산했을 때와 정확히 일치합니다.
+  const diff = target - current;
+  return `${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}%p · 이번 달 대비`;
 }
 
 function KpiCard({ label, current, target, good, neutral, diff }: { label: string; current: string; target: string; good?: boolean; neutral?: boolean; diff?: string | null }) {

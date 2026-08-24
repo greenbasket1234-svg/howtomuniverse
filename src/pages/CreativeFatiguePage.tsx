@@ -53,7 +53,16 @@ export function CreativeFatiguePage(){
             : detail.videoUrl
               ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
               : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>
-        : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
+        : kindOf(detail)==='키워드'
+          ? null
+          : detail.mediaType==='carousel'&&detail.carouselImages?.length
+            ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
+                {detail.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
+                  <img src={url} alt={`${detail.adName} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
+                  <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{detail.carouselImages!.length}</div>
+                </div>)}
+              </div>
+            : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {detail.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{detail.title}</div></div>}

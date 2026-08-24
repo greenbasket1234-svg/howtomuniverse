@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
   channel TEXT NOT NULL,
   campaign_id TEXT NOT NULL,
   campaign_name TEXT,
+  campaign_type TEXT,
   date DATE NOT NULL,
   impressions BIGINT NOT NULL DEFAULT 0,
   clicks BIGINT NOT NULL DEFAULT 0,
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant_date ON campaign_daily_metrics(tenant_id, date);
+ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 
 CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   id BIGSERIAL PRIMARY KEY,
@@ -129,6 +131,7 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   channel TEXT NOT NULL,
   campaign_id TEXT,
   campaign_name TEXT,
+  campaign_type TEXT,
   adgroup_id TEXT,
   adgroup_name TEXT,
   ad_id TEXT NOT NULL,
@@ -154,6 +157,7 @@ CREATE TABLE IF NOT EXISTS creative_daily_metrics (
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS video_url TEXT;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS carousel_images JSONB;
+ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant_date ON creative_daily_metrics(tenant_id, date);
@@ -165,6 +169,7 @@ CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
   channel TEXT NOT NULL,
   campaign_id TEXT,
   campaign_name TEXT,
+  campaign_type TEXT,
   adgroup_id TEXT,
   adgroup_name TEXT,
   keyword_id TEXT NOT NULL DEFAULT '',
@@ -180,6 +185,7 @@ CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
   UNIQUE(advertiser_id, channel, keyword_id, keyword, date)
 );
 ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
+ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant ON keyword_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_adv_date ON keyword_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant_date ON keyword_daily_metrics(tenant_id, date);
