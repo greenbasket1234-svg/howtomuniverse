@@ -448,34 +448,37 @@ async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
   return srcMatch ? srcMatch[1].replace(/&amp;/g, '&') : null;
 }
 
-async function metaFetchAdCreativeThumbnails(adIds) {
+async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   const result = {};
   const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
   const videoIds = [];
+  const allImageHashes = new Set();
   for (let i = 0; i < adIds.length; i += chunkSize) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
     try {
-      // thumbnail_url의 가로/세로 크기는 최상위 파라미터가 아니라, 필드 안에 .width()/.height()로 지정해야
-      // 실제로 적용됩니다(최상위 파라미터로 보내면 무시되어 저화질 기본값이 반환될 수 있습니다).
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,message,name,description,call_to_action,child_attachments{picture}},video_data{image_url,message,call_to_action}}}' });
+      // image_url/thumbnail_url은 계정·소재 유형에 따라 저화질 캐시본을 돌려주는 경우가 있어,
+      // Meta가 공식적으로 권장하는 방식대로 image_hash를 받아서 별도의 /adimages 조회로
+      // "항상 원본 그대로"인 URL을 다시 받아옵니다.
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture,image_hash}},video_data{image_url,message,call_to_action}}}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
         if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
         // 캐러셀(슬라이드) 광고는 child_attachments에 카드가 여러 장 들어있습니다. 각 카드의
-        // 이미지를 전부 모아서 슬라이드 미리보기에 쓸 수 있게 합니다(기존엔 첫 장만 쓰고 나머지는
-        // 버렸습니다).
+        // 해시를 모아서, 아래에서 한 번에 원본 이미지로 바꿉니다(기존엔 첫 장만 쓰고 나머지는 버렸습니다).
         const carouselCards = Array.isArray(linkData.child_attachments) ? linkData.child_attachments : [];
-        const carouselImages = carouselCards.map(c => c.picture || c.image_url).filter(Boolean);
-        const isCarousel = carouselImages.length > 0;
+        const isCarousel = carouselCards.length > 0;
+        const mainImageHash = creative.image_hash || linkData.image_hash || null;
+        if (mainImageHash) allImageHashes.add(mainImageHash);
+        for (const c of carouselCards) if (c.image_hash) allImageHashes.add(c.image_hash);
         result[id] = {
-          // Meta에게 thumbnail_url을 1080x1080으로 요청해도 실제로는 그 크기를 지키지 않고
-          // 작은 이미지를 돌려주는 경우가 있어(계정/소재 유형에 따라 다름), 원본 업로드 파일인
-          // image_url을 최우선으로 쓰고, 없을 때만 thumbnail_url로 대체합니다.
-          thumbnailUrl: creative.image_url || carouselImages[0] || linkData.picture || creative.thumbnail_url || null,
+          mainImageHash,
+          carouselHashes: isCarousel ? carouselCards.map(c => c.image_hash || null) : null,
+          // 해시로 원본을 못 찾을 때를 대비한 대체값들 (아래 해시 조회 후에도 비어있으면 이걸 씁니다).
+          thumbnailUrlFallback: creative.image_url || linkData.picture || creative.thumbnail_url || null,
+          carouselFallback: isCarousel ? carouselCards.map(c => c.picture || null) : null,
           mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
-          carouselImages: isCarousel ? carouselImages : null,
           videoId: creative.video_id || null,
           videoUrl: null, // 아래에서 비디오 소스를 한 번 더 조회해 채웁니다.
           title: creative.title || linkData.name || '',
@@ -486,6 +489,27 @@ async function metaFetchAdCreativeThumbnails(adIds) {
         if (creative.video_id) videoIds.push(creative.video_id);
       }
     } catch (err) { console.error('[meta-creative 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
+  }
+  // image_hash를 실제 "항상 원본 해상도"인 URL로 바꿉니다. 이게 Meta가 공식적으로 권장하는,
+  // 화질이 들쭉날쭉하지 않는 유일한 방법입니다.
+  const hashUrlMap = {};
+  if (accountId && allImageHashes.size) {
+    const hashList = [...allImageHashes];
+    const acctId = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+    for (let i = 0; i < hashList.length; i += chunkSize) {
+      const chunk = hashList.slice(i, i + chunkSize);
+      try {
+        const data = await metaGraphGet(`/${acctId}/adimages`, { hashes: JSON.stringify(chunk) });
+        for (const img of data?.data || []) if (img.hash && img.url) hashUrlMap[img.hash] = img.url;
+      } catch (err) { console.error('[meta-adimages 조회 실패]', chunk.length, '개 해시,', err?.message || err); }
+    }
+    console.log(`[meta-adimages] 해시 ${hashList.length}개 중 ${Object.keys(hashUrlMap).length}개 원본 URL 확보`);
+  }
+  for (const id of Object.keys(result)) {
+    const row = result[id];
+    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash]) || row.thumbnailUrlFallback || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]]) || null;
+    row.carouselImages = row.carouselHashes ? row.carouselHashes.map((h, idx) => (h && hashUrlMap[h]) || row.carouselFallback?.[idx] || null).filter(Boolean) : null;
+    delete row.mainImageHash; delete row.carouselHashes; delete row.thumbnailUrlFallback; delete row.carouselFallback;
   }
   console.log(`[meta-creative] 요청 ${adIds.length}개 중 ${Object.keys(result).length}개 소재 정보 확보, 영상 ${videoIds.length}개`);
   // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
@@ -647,6 +671,18 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
     if (Array.isArray(rows)) keywords.push(...rows);
   });
   console.log(`[naver-keywords] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 키워드 ${keywords.length}개 수집`);
+  // 캠페인 유형별로 몇 개씩 모였는지 나눠서 보여줍니다 - 특정 유형(쇼핑검색/브랜드검색 등)만
+  // 키워드가 0개로 나오면, 그 매체 유형은 애초에 "키워드" 단위 타겟팅을 쓰지 않는 구조라는 뜻입니다.
+  const byType = new Map();
+  for (const c of campaigns) {
+    const tp = naverCampaignTypeKo(c.campaignTp) || c.campaignTp || '(알수없음)';
+    const agCount = adgroups.filter(a => a.nccCampaignId === c.nccCampaignId).length;
+    const kwCount = keywords.filter(k => adgroupCampaignMap.get(k.nccAdgroupId) === c.nccCampaignId).length;
+    const cur = byType.get(tp) || { campaigns: 0, adgroups: 0, keywords: 0 };
+    cur.campaigns++; cur.adgroups += agCount; cur.keywords += kwCount;
+    byType.set(tp, cur);
+  }
+  for (const [tp, v] of byType) console.log(`[naver-keywords] 유형=${tp} 캠페인${v.campaigns}개 광고그룹${v.adgroups}개 키워드${v.keywords}개`);
   const selected = keywords.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
   const result = [];
   await mapWithConcurrency(selected, 4, async kw => {
@@ -1747,7 +1783,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (adRows.length) {
-            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))]).catch(err => { console.error('[meta-creative 전체 실패]', err?.message || err); return {}; });
+            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))], account.account_id).catch(err => { console.error('[meta-creative 전체 실패]', err?.message || err); return {}; });
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
             await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, enrichedAdRows);
           }

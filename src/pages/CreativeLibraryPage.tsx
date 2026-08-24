@@ -38,7 +38,7 @@ export function CreativeLibraryPage(){
     setPreviewUrl(null);
     // 원본 영상 파일(source)은 매체 권한에 따라 막힐 수 있어, Meta가 직접 제공하는 재생 가능한
     // 광고 미리보기(iframe)를 그 소재를 열 때만 불러옵니다.
-    if(selected?.kind==='영상'&&selected.channel==='meta'&&selected.adId){
+    if((selected?.kind==='영상'||selected?.kind==='슬라이드')&&selected.channel==='meta'&&selected.adId){
       setPreviewLoading(true);
       apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(selected.adId)}`)
         .then(r=>setPreviewUrl(r.previewUrl))
@@ -100,22 +100,20 @@ export function CreativeLibraryPage(){
     </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
     {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
       <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
-      {selected.kind==='영상'
-        ? previewLoading
-          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
-          : previewUrl
-            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
-            : selected.videoUrl
-              ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
-              : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>
-        : selected.kind==='슬라이드'&&selected.carouselImages?.length
-          ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
-              {selected.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
-                <img src={url} alt={`${selected.name} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
-                <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{selected.carouselImages!.length}</div>
-              </div>)}
-            </div>
-          : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
+      {(selected.kind==='영상'||selected.kind==='슬라이드')&&previewLoading
+        ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+        : previewUrl
+          ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+          : selected.videoUrl
+            ? <video className="creative-detail-preview" src={selected.videoUrl} poster={selected.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+            : selected.kind==='슬라이드'&&selected.carouselImages?.length
+              ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
+                  {selected.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
+                    <img src={url} alt={`${selected.name} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
+                    <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{selected.carouselImages!.length}</div>
+                  </div>)}
+                </div>
+              : selected.thumbnailUrl&&<img className="creative-detail-preview" src={selected.thumbnailUrl} alt={selected.name}/>}
       {selected.kind!=='키워드'&&(selected.title||selected.body||selected.description||selected.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {selected.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{selected.title}</div></div>}

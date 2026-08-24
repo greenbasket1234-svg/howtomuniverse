@@ -14,7 +14,7 @@ type Response={rows:CreativeMetricRow[];dailyRows:CreativeDailyMetricRow[];meta:
 type FatigueRow=CreativeMetricRow&{score:number;cpm3Change:number|null;cpm7Change:number|null;ctr7Change:number|null;cpc7Change:number|null;activeDays:number};
 const pct=(a:number,b:number)=>b>0?(a-b)/b*100:null;
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
-const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지';
+const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지';
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
 function aggregate(rows:CreativeDailyMetricRow[]){const x=rows.reduce((a,r)=>({impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,spend:a.spend+r.spend}),{impressions:0,clicks:0,spend:0});return{...x,cpm:x.impressions?x.spend/x.impressions*1000:0,ctr:x.impressions?x.clicks/x.impressions*100:0,cpc:x.clicks?x.spend/x.clicks:0}}
 function lastDates(rows:CreativeDailyMetricRow[],n:number,offset=0){const dates=[...new Set(rows.map(r=>r.date))].sort().reverse().slice(offset,offset+n);const s=new Set(dates);return rows.filter(r=>s.has(r.date))}
@@ -27,7 +27,7 @@ export function CreativeFatiguePage(){
   const [previewLoading,setPreviewLoading]=useState(false);
   useEffect(()=>{
     setPreviewUrl(null);
-    if(detail&&kindOf(detail)==='영상'&&detail.channel==='meta'&&detail.adId){
+    if(detail&&(kindOf(detail)==='영상'||kindOf(detail)==='슬라이드')&&detail.channel==='meta'&&detail.adId){
       setPreviewLoading(true);
       apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(detail.adId)}`)
         .then(r=>setPreviewUrl(r.previewUrl)).catch(()=>setPreviewUrl(null)).finally(()=>setPreviewLoading(false));
@@ -45,24 +45,20 @@ export function CreativeFatiguePage(){
     {error&&<div className="status-banner danger">{error}</div>}<div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?'실제 소재 일별 성과 기준입니다.':'연동된 소재 성과 매체가 없습니다.'} 빈도·도달 데이터는 현재 저장하지 않아 피로도 점수에 포함하지 않습니다.</div><div className="fatigue-stat-grid"><div><span>🔴 위험 (85+)</span><strong>{rows.filter(r=>r.score>=85).length}건</strong></div><div><span>🟡 주의 (70+)</span><strong>{rows.filter(r=>r.score>=70&&r.score<85).length}건</strong></div><div><span>🟢 정상</span><strong>{rows.filter(r=>r.score<70).length}건</strong></div></div><section className="card ops-card"><div className="table-scroll"><table className="ops-table fatigue-table"><thead><tr><th>소재</th><th>유형</th><th>매체</th><th>피로도</th><th>3일 CPM 변화</th><th>7일 CPM 변화</th><th>7일 CTR 변화</th><th>7일 CPC 변화</th><th>활성일</th><th>기간 광고비</th></tr></thead><tbody>{loading?<tr><td colSpan={10} className="empty-cell">불러오는 중...</td></tr>:rows.length===0?<tr><td colSpan={10} className="empty-cell">분석할 실제 소재 일별 데이터가 없습니다.</td></tr>:rows.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><button className="creative-name-cell" onClick={()=>setDetail(r)} style={{border:0,background:'transparent',cursor:'pointer',textAlign:'left'}}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td>{r.channel==='meta'?'Meta':r.channel==='naver'?'네이버':r.channel}</td><td><b>{r.score}</b>점</td><td>{fmt(r.cpm3Change)}</td><td>{fmt(r.cpm7Change)}</td><td>{fmt(r.ctr7Change,true)}</td><td>{fmt(r.cpc7Change)}</td><td>{r.activeDays}일</td><td>₩{Math.round(r.spend).toLocaleString()}</td></tr>)}</tbody></table></div><div className="footnote">점수는 선택 기간 안에서 소재별 일별 데이터가 충분한 경우에만 변화율을 계산합니다. 데이터가 없는 지표를 0으로 가장하지 않습니다.</div></section>
     {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
-      {kindOf(detail)==='영상'
-        ? previewLoading
-          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
-          : previewUrl
-            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
-            : detail.videoUrl
-              ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
-              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>
-        : kindOf(detail)==='키워드'
-          ? null
-          : detail.mediaType==='carousel'&&detail.carouselImages?.length
-            ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
-                {detail.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
-                  <img src={url} alt={`${detail.adName} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
-                  <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{detail.carouselImages!.length}</div>
-                </div>)}
-              </div>
-            : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
+      {(kindOf(detail)==='영상'||kindOf(detail)==='슬라이드')&&previewLoading
+        ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+        : previewUrl
+          ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+          : detail.videoUrl
+            ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+            : detail.mediaType==='carousel'&&detail.carouselImages?.length
+              ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
+                  {detail.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
+                    <img src={url} alt={`${detail.adName} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
+                    <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{detail.carouselImages!.length}</div>
+                  </div>)}
+                </div>
+              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {detail.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{detail.title}</div></div>}

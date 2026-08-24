@@ -11,7 +11,7 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
 type SortKey='spend'|'impressions'|'clicks'|'ctr'|'cpc'|'cpm'|'dbCount'|'revenue'|'cpa'|'roas';
-const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지';
+const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지';
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
 
 export function MetaCreativeReportPage(){
@@ -21,7 +21,7 @@ export function MetaCreativeReportPage(){
   const [previewLoading,setPreviewLoading]=useState(false);
   useEffect(()=>{
     setPreviewUrl(null);
-    if(detail&&kindOf(detail)==='영상'&&detail.channel==='meta'&&detail.adId){
+    if(detail&&(kindOf(detail)==='영상'||kindOf(detail)==='슬라이드')&&detail.channel==='meta'&&detail.adId){
       setPreviewLoading(true);
       apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(detail.adId)}`)
         .then(r=>setPreviewUrl(r.previewUrl)).catch(()=>setPreviewUrl(null)).finally(()=>setPreviewLoading(false));
@@ -49,24 +49,20 @@ export function MetaCreativeReportPage(){
     </section>
     {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
       <div className="modal-head"><div><h3>{detail.adName}</h3><p>{detail.advertiserName} · {detail.channel==='meta'?'Meta':detail.channel==='naver'?'네이버':detail.channel} · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
-      {kindOf(detail)==='영상'
-        ? previewLoading
-          ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
-          : previewUrl
-            ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
-            : detail.videoUrl
-              ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
-              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>
-        : kindOf(detail)==='키워드'
-          ? null
-          : detail.mediaType==='carousel'&&detail.carouselImages?.length
-            ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
-                {detail.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
-                  <img src={url} alt={`${detail.adName} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
-                  <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{detail.carouselImages!.length}</div>
-                </div>)}
-              </div>
-            : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
+      {(kindOf(detail)==='영상'||kindOf(detail)==='슬라이드')&&previewLoading
+        ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
+        : previewUrl
+          ? <iframe title="광고 미리보기" src={previewUrl} className="creative-detail-preview" style={{width:'100%',height:400,border:0,borderRadius:10,background:'#000'}}/>
+          : detail.videoUrl
+            ? <video className="creative-detail-preview" src={detail.videoUrl} poster={detail.thumbnailUrl||undefined} controls style={{width:'100%',maxHeight:400,background:'#000',borderRadius:10}}/>
+            : detail.mediaType==='carousel'&&detail.carouselImages?.length
+              ? <div style={{display:'flex',gap:8,overflowX:'auto',padding:'4px 2px'}}>
+                  {detail.carouselImages.map((url,i)=><div key={i} style={{flex:'0 0 auto',width:200}}>
+                    <img src={url} alt={`${detail.adName} 슬라이드 ${i+1}`} style={{width:200,height:200,objectFit:'cover',borderRadius:10,background:'#f1f5f9'}}/>
+                    <div style={{textAlign:'center',fontSize:12,color:'#64748b',marginTop:4}}>{i+1}/{detail.carouselImages!.length}</div>
+                  </div>)}
+                </div>
+              : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
       {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {detail.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{detail.title}</div></div>}
