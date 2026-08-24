@@ -460,7 +460,7 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
       // image_url/thumbnail_url은 계정·소재 유형에 따라 저화질 캐시본을 돌려주는 경우가 있어,
       // Meta가 공식적으로 권장하는 방식대로 image_hash를 받아서 별도의 /adimages 조회로
       // "항상 원본 그대로"인 URL을 다시 받아옵니다.
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture,image_hash}},video_data{image_url,message,call_to_action}}}' });
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
         if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
@@ -518,10 +518,14 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
     for (let i = 0; i < videoIds.length; i += chunkSize) {
       const chunk = [...new Set(videoIds.slice(i, i + chunkSize))];
       try {
-        const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'source,picture' });
+        // picture 필드는 영상 썸네일 중 가장 작은 기본값을 주는 경우가 많아, thumbnails 목록에서
+        // 실제로 가장 해상도가 큰 것을 직접 골라 씁니다.
+        const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'source,picture,thumbnails.limit(10){uri,width,height}' });
         for (const vid of chunk) {
-          if (data?.[vid]) videoInfo[vid] = { source: data[vid].source || null, picture: data[vid].picture || null };
-          else console.error('[meta-video] 영상 정보 없음', vid);
+          if (!data?.[vid]) { console.error('[meta-video] 영상 정보 없음', vid); continue; }
+          const thumbs = data[vid].thumbnails?.data || [];
+          const best = thumbs.length ? thumbs.reduce((a, b) => (Number(b.width) || 0) > (Number(a.width) || 0) ? b : a) : null;
+          videoInfo[vid] = { source: data[vid].source || null, picture: best?.uri || data[vid].picture || null };
         }
       } catch (err) { console.error('[meta-video 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
     }
