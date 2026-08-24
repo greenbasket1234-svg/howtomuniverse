@@ -18,8 +18,8 @@ export function standardizeCta(value:string):StandardCta{
   if(/상담/.test(text))return '상담 신청';
   if(/견적/.test(text))return '견적 받기';
   // '지금 쇼핑하기'(예전 번역)와 '지금 구매하기'(정확한 번역)가 같은 의미라 한 그룹으로 묶고,
-  // 둘 다 헷갈리지 않게 라벨에 함께 표기합니다.
-  if(/구매|주문|쇼핑/.test(text))return '지금 쇼핑하기(지금 구매하기)' as StandardCta;
+  // 화면에는 정확한 번역인 '지금 구매하기'로만 표시합니다.
+  if(/구매|주문|쇼핑/.test(text))return '지금 구매하기' as StandardCta;
   if(/예약/.test(text))return '예약하기';
   if(/문의/.test(text))return '문의하기';
   if(/다운|받기/.test(text))return '다운로드';

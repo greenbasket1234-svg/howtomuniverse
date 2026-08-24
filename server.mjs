@@ -1341,6 +1341,11 @@ async function handleApi(req, res, pathname) {
         const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
         await pgPool.query(schemaSql);
 
+        // 예전에 잘못 번역되어 저장된 CTA 문구('지금 쇼핑하기')를 정확한 번역('지금 구매하기')으로 일괄 수정합니다.
+        // 여러 번 실행해도 안전합니다(이미 고쳐진 값은 조건에 안 걸려 그냥 넘어갑니다).
+        const ctaFixResult = await pgPool.query(`UPDATE creative_daily_metrics SET cta = '지금 구매하기' WHERE cta = '지금 쇼핑하기'`);
+        if (ctaFixResult.rowCount) log.push(`CTA 문구 정정: '지금 쇼핑하기' → '지금 구매하기' (${ctaFixResult.rowCount}건)`);
+
         log.push('테넌트(고객사)를 생성합니다...');
         const tenantName = ADMIN_USER.name ? `${ADMIN_USER.name}의 회사` : '하우투엠';
         const tenantRes = await pgPool.query(
