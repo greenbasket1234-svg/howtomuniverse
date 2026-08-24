@@ -17,7 +17,9 @@ export function standardizeCta(value:string):StandardCta{
   if(!text||text==='미분류')return '미분류';
   if(/상담/.test(text))return '상담 신청';
   if(/견적/.test(text))return '견적 받기';
-  if(/구매|주문/.test(text))return '구매하기';
+  // '지금 쇼핑하기'(예전 번역)와 '지금 구매하기'(정확한 번역)가 같은 의미라 한 그룹으로 묶고,
+  // 둘 다 헷갈리지 않게 라벨에 함께 표기합니다.
+  if(/구매|주문|쇼핑/.test(text))return '지금 쇼핑하기(지금 구매하기)' as StandardCta;
   if(/예약/.test(text))return '예약하기';
   if(/문의/.test(text))return '문의하기';
   if(/다운|받기/.test(text))return '다운로드';
@@ -25,5 +27,8 @@ export function standardizeCta(value:string):StandardCta{
   if(/프로필/.test(text))return '프로필 방문';
   if(/댓글|DM|디엠/.test(text))return '댓글/DM';
   if(/더 알아|자세히/.test(text))return '더 알아보기';
-  return ((CTA_TAXONOMY as readonly string[]).includes(text)?text:'행동유도 없음') as StandardCta;
+  if((CTA_TAXONOMY as readonly string[]).includes(text))return text as StandardCta;
+  // 알려진 패턴에 없다고 "행동유도 없음"으로 뭉개면 실제로는 CTA가 있는데 없는 것처럼 보이므로,
+  // 수집된 CTA 문구를 그대로 그 자체의 분류명으로 사용합니다.
+  return text as StandardCta;
 }

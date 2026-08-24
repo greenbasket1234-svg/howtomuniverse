@@ -422,7 +422,7 @@ async function metaFetchAdInsights(accountId, since, until) {
 /** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
 // Meta의 call_to_action_type은 영어 enum이라, 화면에는 한국어로 번역해서 보여줍니다.
 const CTA_LABEL_KO = {
-  LEARN_MORE: '더 알아보기', SHOP_NOW: '지금 쇼핑하기', SIGN_UP: '가입하기', BOOK_TRAVEL: '예약하기',
+  LEARN_MORE: '더 알아보기', SHOP_NOW: '지금 구매하기', SIGN_UP: '가입하기', BOOK_TRAVEL: '예약하기',
   CONTACT_US: '문의하기', DOWNLOAD: '다운로드', GET_QUOTE: '견적 받기', SUBSCRIBE: '구독하기',
   WATCH_MORE: '더 보기', APPLY_NOW: '지금 신청하기', CALL_NOW: '전화하기', GET_DIRECTIONS: '길찾기',
   MESSAGE_PAGE: '메시지 보내기', SEND_MESSAGE: '메시지 보내기', GET_OFFER: '혜택 받기', ORDER_NOW: '지금 주문하기',
