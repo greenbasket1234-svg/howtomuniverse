@@ -458,6 +458,7 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
   const videoIds = [];
   const allImageHashes = new Set();
+  const existingPostAdIds = []; // { adId, postId } - "기존 게시물 활용" 방식 광고들
   for (let i = 0; i < adIds.length; i += chunkSize) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
@@ -465,7 +466,7 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
       // image_url/thumbnail_url은 계정·소재 유형에 따라 저화질 캐시본을 돌려주는 경우가 있어,
       // Meta가 공식적으로 권장하는 방식대로 image_hash를 받아서 별도의 /adimages 조회로
       // "항상 원본 그대로"인 URL을 다시 받아옵니다.
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,effective_object_story_id,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
         if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
@@ -477,6 +478,11 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
         const mainImageHash = creative.image_hash || linkData.image_hash || null;
         if (mainImageHash) allImageHashes.add(mainImageHash);
         for (const c of carouselCards) if (c.image_hash) allImageHashes.add(c.image_hash);
+        // "새 소재"가 아니라 "기존 게시물(인스타그램/페이스북 포스트)을 그대로 광고로 돌리는" 방식이면
+        // object_story_spec 안에 이미지/영상 정보가 아예 없고, effective_object_story_id로 그 게시물을
+        // 가리키기만 합니다. 이 경우 게시물 자체를 별도로 조회해야 미리보기를 가져올 수 있습니다.
+        const usesExistingPost = !!creative.effective_object_story_id && !mainImageHash && !isCarousel && !creative.image_url && !linkData.picture;
+        if (usesExistingPost) existingPostAdIds.push({ adId: id, postId: creative.effective_object_story_id });
         result[id] = {
           mainImageHash,
           carouselHashes: isCarousel ? carouselCards.map(c => c.image_hash || null) : null,
@@ -498,6 +504,51 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
         if (creative.video_id) videoIds.push(creative.video_id);
       }
     } catch (err) { console.error('[meta-creative 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
+  }
+
+  // "기존 게시물 활용" 광고는 게시물 자체를 별도로 조회해서 미리보기를 채웁니다.
+  if (existingPostAdIds.length) {
+    console.log(`[meta-existing-post] 기존 게시물 활용 광고 ${existingPostAdIds.length}개 발견, 게시물 조회 시작`);
+    const postIds = [...new Set(existingPostAdIds.map(x => x.postId))];
+    const postInfo = {};
+    for (let i = 0; i < postIds.length; i += chunkSize) {
+      const chunk = postIds.slice(i, i + chunkSize);
+      try {
+        // full_picture: 게시물의 대표 이미지(고화질). attachments: 캐러셀이면 subattachments에 카드별
+        // 이미지가, 영상이면 target.id에 실제 영상 오브젝트 ID가 들어있어 재생 정보를 더 가져올 수 있습니다.
+        const data = await metaGraphGet('/', {
+          ids: chunk.join(','),
+          fields: 'full_picture,message,attachments{media_type,media,url,target,subattachments{media,target}}',
+        });
+        for (const postId of chunk) {
+          if (data?.[postId]) postInfo[postId] = data[postId];
+          else console.error('[meta-existing-post] 게시물 정보 없음(삭제되었거나 접근 권한 없음)', postId);
+        }
+      } catch (err) { console.error('[meta-existing-post 조회 실패]', chunk.length, '개, ', err?.message || err); }
+    }
+    for (const { adId, postId } of existingPostAdIds) {
+      const post = postInfo[postId];
+      if (!post) continue;
+      const row = result[adId];
+      const attachment = post.attachments?.data?.[0];
+      const subAttachments = attachment?.subattachments?.data || [];
+      if (subAttachments.length > 1) {
+        // 캐러셀 게시물: 카드별 이미지를 모두 모읍니다.
+        row.mediaType = 'carousel';
+        row.carouselFallback = subAttachments.map(s => s.media?.image?.src || null);
+        row.thumbnailUrlFallback = row.carouselFallback[0] || post.full_picture || row.thumbnailUrlFallback;
+      } else if (attachment?.media_type === 'video_inline' || attachment?.media_type === 'video_autoplay') {
+        // 영상 게시물: 실제 영상 오브젝트 ID를 알아내서, 기존 영상 처리 로직(고화질 썸네일·재생)에 그대로 태웁니다.
+        const videoObjectId = attachment.target?.id;
+        if (videoObjectId) { row.videoId = videoObjectId; videoIds.push(videoObjectId); row.mediaType = 'video'; }
+        row.thumbnailUrlFallback = attachment.media?.image?.src || post.full_picture || row.thumbnailUrlFallback;
+      } else {
+        row.thumbnailUrlFallback = post.full_picture || attachment?.media?.image?.src || row.thumbnailUrlFallback;
+      }
+      if (!row.body && post.message) row.body = post.message;
+    }
+    const resolvedCount = existingPostAdIds.filter(({ adId }) => result[adId]?.thumbnailUrlFallback).length;
+    console.log(`[meta-existing-post] ${existingPostAdIds.length}개 중 ${resolvedCount}개 미리보기 확보`);
   }
   // image_hash를 실제 "항상 원본 해상도"인 URL로 바꿉니다. 이게 Meta가 공식적으로 권장하는,
   // 화질이 들쭉날쭉하지 않는 유일한 방법입니다.
@@ -526,7 +577,9 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
       carouselCardsTotal += row.carouselHashes.length;
       carouselCardsResolved += row.carouselHashes.filter(h => h && hashUrlMap[h]).length;
     }
-    row.carouselImages = row.carouselHashes ? row.carouselHashes.map((h, idx) => (h && hashUrlMap[h]) || row.carouselFallback?.[idx] || null).filter(Boolean) : null;
+    row.carouselImages = row.carouselHashes
+      ? row.carouselHashes.map((h, idx) => (h && hashUrlMap[h]) || row.carouselFallback?.[idx] || null).filter(Boolean)
+      : (row.carouselFallback ? row.carouselFallback.filter(Boolean) : null);
     delete row.mainImageHash; delete row.carouselHashes; delete row.thumbnailUrlFallback; delete row.carouselFallback;
   }
   if (carouselCardsTotal) console.log(`[meta-carousel] 카드 ${carouselCardsTotal}개 중 해시로 원본 확보 ${carouselCardsResolved}개, 나머지는 카드 자체 picture(600px)로 대체`);
