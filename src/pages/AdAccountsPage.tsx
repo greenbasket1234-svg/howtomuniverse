@@ -210,6 +210,7 @@ export function AdAccountsPage() {
                     </div>
                     <div className="account-sync-actions">
                       <select value={syncDaysByChannel[channel]||90} onChange={e=>setSyncDaysByChannel(prev=>({...prev,[channel]:Number(e.target.value)}))} title="수집 기간" style={{marginRight:6}}>
+                        <option value={1}>오늘</option>
                         <option value={90}>최근 90일</option>
                         <option value={180}>최근 6개월</option>
                         <option value={396}>최근 13개월</option>
