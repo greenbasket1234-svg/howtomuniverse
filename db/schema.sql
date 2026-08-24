@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_tenant ON daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_adv_date ON daily_metrics(advertiser_id, date);
+CREATE INDEX IF NOT EXISTS idx_daily_metrics_tenant_date ON daily_metrics(tenant_id, date);
 
 
 CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
+CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant_date ON campaign_daily_metrics(tenant_id, date);
 
 CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   id BIGSERIAL PRIMARY KEY,
@@ -154,6 +156,7 @@ ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS carousel_images JSONB;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
+CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant_date ON creative_daily_metrics(tenant_id, date);
 
 CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
   id BIGSERIAL PRIMARY KEY,
@@ -179,6 +182,7 @@ CREATE TABLE IF NOT EXISTS keyword_daily_metrics (
 ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS adgroup_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant ON keyword_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_adv_date ON keyword_daily_metrics(advertiser_id, date);
+CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant_date ON keyword_daily_metrics(tenant_id, date);
 
 CREATE TABLE IF NOT EXISTS sync_validation_logs (
   id BIGSERIAL PRIMARY KEY,

@@ -205,7 +205,25 @@ async function addLog(entry) {
  * 다루는 여러 화면(전환 퍼널/캠페인·소재·키워드 분석 등)이 기존의 필터링·집계 로직을
  * 그대로 재사용할 수 있도록, 컬럼명을 JSON 시절과 동일한 camelCase로 맞춰서 반환합니다.
  */
-async function pgReadDb(tenantId) {
+/**
+ * tenantId의 데이터를 읽어옵니다. filters(from/to/advertiserId/channels)를 넘기면
+ * SQL 단계에서 미리 걸러서 가져오므로, 데이터가 쌓일수록 전체를 다 읽어와서 자바스크립트로
+ * 거르던 예전 방식보다 훨씬 빠릅니다. filters를 생략하면(관리자 화면 등) 예전처럼 전체를 읽습니다.
+ */
+async function pgReadDb(tenantId, filters = {}) {
+  const { from, to, advertiserId, channels } = filters;
+  // 일별/캠페인별/소재별/키워드별 4개 테이블에 공통으로 적용할 WHERE 조각을 만듭니다.
+  // 파라미터 번호($2, $3...)는 테이블마다 다시 매겨야 하므로, 이 함수가 그 값들을 직접 만들어 돌려줍니다.
+  function dateScopedWhere() {
+    const clauses = ['tenant_id = $1'];
+    const params = [tenantId];
+    if (from) { params.push(from); clauses.push(`date >= $${params.length}`); }
+    if (to) { params.push(to); clauses.push(`date <= $${params.length}`); }
+    if (advertiserId) { params.push(advertiserId); clauses.push(`advertiser_id = $${params.length}`); }
+    if (channels && channels.length) { params.push(channels); clauses.push(`channel = ANY($${params.length}::text[])`); }
+    return { where: clauses.join(' AND '), params };
+  }
+  const dm = dateScopedWhere(), cm = dateScopedWhere(), cdm = dateScopedWhere(), kdm = dateScopedWhere();
   const [advRes, dmRes, cmRes, cdmRes, kdmRes, svRes, logRes] = await Promise.all([
     pgPool.query(
       `SELECT a.id, a.name,
@@ -215,10 +233,10 @@ async function pgReadDb(tenantId) {
               )) FILTER (WHERE m.id IS NOT NULL), '[]') as accounts
        FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE tenant_id=$1`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE tenant_id=$1`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE tenant_id=$1`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE tenant_id=$1`, [tenantId]),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE ${dm.where}`, dm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
     pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
   ]);
@@ -1822,33 +1840,33 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
 
     // 중앙 Metrics API — 모든 데이터 화면은 이 계층만 사용합니다.
     if (req.method === 'GET' && pathname === '/api/metrics/daily') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId));
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters));
       const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/summary') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const source = filterMetricRows(db.dailyMetrics, filters);
       const summary = withDerived(aggregateMetricRows(source));
       return sendJson(res, 200, { summary, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/media') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
       const rows = groupMetrics(source, r => `${r.channel}`, r => ({ channel: r.channel, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       void names;
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/advertisers') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
       const rows = groupMetrics(source, r => `${r.advertiserId}`, r => ({ advertiserId: r.advertiserId, advertiserName: names.get(String(r.advertiserId)) || String(r.advertiserId), impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
       const rows = groupMetrics(source, r => `${r.advertiserId}|${r.channel}|${r.campaignId}`, r => ({ advertiserId:r.advertiserId, advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId), channel:r.channel, campaignId:r.campaignId, campaignName:r.campaignName, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/creatives') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
       const grouped = new Map();
       for (const row of source) {
         const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
@@ -1873,21 +1891,21 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       }
     }
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
-      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
       const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/funnel') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId)); const source=filterMetricRows(db.dailyMetrics,filters);
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); const source=filterMetricRows(db.dailyMetrics,filters);
       const rows=groupMetrics(source,r=>r.channel,r=>({channel:r.channel,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/metrics/status') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId)); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/integrations/sync-validation') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId)); let rows=db.syncValidationLogs||[];
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); let rows=db.syncValidationLogs||[];
       if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
       const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
       const names=advertiserNameMap(db);return sendJson(res,200,{rows:rows.slice(0,limit).map(r=>({...r,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId)}))});
@@ -1895,13 +1913,13 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
 
     // 기존 경로 호환: 내부 구현은 중앙 Metrics API와 같은 기간별 저장소를 사용합니다.
     if (req.method === 'GET' && pathname === '/api/daily-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
     }
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
