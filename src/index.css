@@ -2755,3 +2755,41 @@ body{font-size:15.5px;line-height:1.55}
 .library-thumb-apipreview iframe{width:100%;height:100%;border:0;pointer-events:none}
 .library-thumb-apipreview img{width:100%;height:100%;object-fit:cover}
 .library-thumb-loading{color:#94a3b8;font-size:12px}
+
+/* ============================================================
+   레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
+   ============================================================ */
+.chip-tab{border:1px solid #e0e6ef;background:#fff;color:#5d6879;border-radius:999px;padding:8px 16px;font-weight:750;font-size:13.5px;cursor:pointer;white-space:nowrap}
+.chip-tab:hover{border-color:#c9d5f4;color:#315fe5}
+.chip-tab.active{background:#315fe5;border-color:#315fe5;color:#fff}
+.chip-tab.small{padding:5px 12px;font-size:12.5px}
+.chip-tab-status{font-weight:600;opacity:.75;font-size:11.5px}
+
+.ref-perf-filter{display:flex;align-items:center;gap:6px;font-size:13px;color:#5d6879;font-weight:650}
+.ref-perf-filter select{padding:5px 8px;border-radius:8px;border:1px solid #e0e6ef}
+
+.ref-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:14px}
+.ref-card{background:#fff;border:1px solid #e5e9f1;border-radius:14px;overflow:hidden;cursor:pointer;transition:box-shadow .15s,transform .15s;display:flex;flex-direction:column}
+.ref-card:hover{box-shadow:0 10px 24px rgba(15,23,42,.08);transform:translateY(-2px)}
+.ref-card-thumb{position:relative;width:100%;aspect-ratio:1/1;background:#f1f5f9}
+.ref-card-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.ref-card-thumb-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12.5px;text-align:center;padding:10px}
+.ref-card-fav{position:absolute;top:8px;right:8px;color:#f5c400;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+.ref-card-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:5px;flex:1}
+.ref-card-meta{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.ref-card-title{font-size:14px;font-weight:750;color:#1e293b;margin:0;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ref-card-sub{font-size:12.5px;color:#64748b;margin:0}
+.ref-card-copy{font-size:12.5px;color:#475569;margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ref-card-cta{font-size:12px;color:#315fe5;font-weight:700;margin:0}
+.ref-card-date{font-size:11.5px;color:#94a3b8;margin:0}
+.ref-card-stats{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:#5d6879;margin-top:2px}
+.ref-card-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+.ref-card-tag{font-size:11px;color:#5d6879;background:#f1f5f9;border-radius:999px;padding:2px 8px}
+.ref-card-status{margin-top:auto;padding-top:6px}
+
+.ref-search-result-row{align-items:center}
+.ref-collect-progress-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #eef2f7;font-size:13.5px}
+.ref-collect-progress-row:last-child{border-bottom:none}
+
+@media(max-width:900px){.ref-card-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.ref-card-grid{grid-template-columns:1fr}}

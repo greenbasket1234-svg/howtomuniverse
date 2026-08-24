@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { buildReferenceConnectors } from './lib/referenceConnectors.mjs';
 
 // 요청 처리 중 예상하지 못한 예외가 있어도 서버 프로세스 전체가 죽지 않도록 최상위
 // 안전장치를 둡니다. 개별 요청 핸들러에서 이미 잡히지 않은 예외만 여기서 잡습니다.
@@ -447,6 +448,10 @@ async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
   const srcMatch = body.match(/src="([^"]+)"/);
   return srcMatch ? srcMatch[1].replace(/&amp;/g, '&') : null;
 }
+
+// 레퍼런스 수집(콘텐츠 → 레퍼런스 수집 메뉴)에서 쓰는 플랫폼별 Connector 레지스트리입니다.
+// 이 시점엔 metaGraphGet/metaConfigured/ctaLabelKo가 이미 함수 호이스팅으로 사용 가능합니다.
+const REFERENCE_CONNECTORS = buildReferenceConnectors({ metaGraphGet, metaConfigured, ctaLabelKo });
 
 async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   const result = {};
@@ -1995,6 +2000,346 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         return sendJson(res, 502, { error: error instanceof Error ? error.message : '미리보기 조회에 실패했습니다.' });
       }
     }
+
+    // ============================================================
+    // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
+    // ============================================================
+    if (pathname.startsWith('/api/references') || pathname.startsWith('/api/reference-')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      // 커넥터별 지원 현황(진짜 상태) 조회 - 화면에서 "준비중"/"API 권한 필요" 등을 표시하는 데 씁니다.
+      if (req.method === 'GET' && pathname === '/api/references/connectors/status') {
+        const status = Object.entries(REFERENCE_CONNECTORS).map(([key, c]) => ({
+          key, platform: c.platform, label: c.label, referenceType: c.referenceType,
+          implemented: c.implemented, capabilities: c.capabilities,
+        }));
+        return sendJson(res, 200, { connectors: status });
+      }
+
+      // 실시간 검색(아직 저장은 안 함) - 검색 결과를 보고 사용자가 골라서 저장합니다.
+      if (req.method === 'POST' && pathname === '/api/references/search') {
+        const body = await readJson(req);
+        const connectorKey = cleanText(body.connector || '', 40);
+        const connector = REFERENCE_CONNECTORS[connectorKey];
+        if (!connector) return sendJson(res, 400, { error: `알 수 없는 커넥터입니다: ${connectorKey}` });
+        const result = await connector.search({
+          query: cleanText(body.query || '', 200),
+          country: cleanText(body.country || '', 10),
+          adType: cleanText(body.adType || '', 20),
+          igUserId: cleanText(body.igUserId || '', 60),
+          limit: Number(body.limit) || 25,
+        });
+        // 이미 저장된 레퍼런스는 검색 결과에 표시해서, 사용자가 "이미 수집됨"을 바로 알 수 있게 합니다.
+        if (result.items.length) {
+          const externalIds = result.items.map(i => i.externalId).filter(Boolean);
+          const existing = externalIds.length
+            ? await pgPool.query(`SELECT external_id FROM references_store WHERE tenant_id=$1 AND platform=$2 AND external_id = ANY($3::text[])`, [tenantId, connector.platform, externalIds])
+            : { rows: [] };
+          const existingSet = new Set(existing.rows.map(r => r.external_id));
+          for (const item of result.items) item.alreadySaved = existingSet.has(item.externalId);
+        }
+        return sendJson(res, result.status === 'permission_required' ? 424 : 200, { ...result, platform: connector.platform, referenceType: connector.referenceType });
+      }
+
+      // 검색 결과(또는 수동 입력)를 실제로 저장합니다.
+      if (req.method === 'POST' && pathname === '/api/references') {
+        const body = await readJson(req);
+        const item = body.item || {};
+        const referenceType = cleanText(body.referenceType || item.referenceType || '', 30) || 'ORGANIC_CONTENT';
+        const platform = cleanText(body.platform || item.platform || '', 30);
+        if (!platform) return sendJson(res, 400, { error: 'platform이 필요합니다.' });
+        const canonicalUrl = item.canonicalUrl ? item.canonicalUrl.split('?')[0] : null;
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO references_store (
+              tenant_id, advertiser_id, reference_type, platform, source_type, external_id, url, canonical_url,
+              title, body, headline, description, cta, author_id, author_name, author_followers,
+              thumbnail_url, media_url, media_type, content_type, ad_status, ad_started_at,
+              published_at, views, likes, comments, shares, saves, available_metrics, raw_text, transcript, raw_metadata, created_by
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+            RETURNING id`,
+            [
+              tenantId, body.advertiserId || null, referenceType, platform, body.sourceType || 'collected',
+              item.externalId || null, item.url || null, canonicalUrl,
+              item.title || null, item.body || null, item.headline || null, item.description || null, item.cta || null,
+              item.authorId || null, item.authorName || null, item.authorFollowers ?? null,
+              item.thumbnailUrl || null, item.mediaUrl || null, item.mediaType || null, item.contentType || null,
+              item.adStatus || null, item.adStartedAt || null, item.publishedAt || null,
+              item.views ?? null, item.likes ?? null, item.comments ?? null, item.shares ?? null, item.saves ?? null,
+              item.availableMetrics || [], item.rawText || null, item.transcript || null,
+              item.rawMetadata ? JSON.stringify(item.rawMetadata) : null, body.createdBy || 'admin',
+            ]
+          );
+          await addLog(tenantId, 'reference_saved', { platform, referenceType });
+          return sendJson(res, 201, { id: insert.rows[0].id });
+        } catch (err) {
+          if (String(err?.code) === '23505') return sendJson(res, 409, { error: '이미 수집된 레퍼런스입니다.' });
+          return sendJson(res, 500, { error: err instanceof Error ? err.message : '저장에 실패했습니다.' });
+        }
+      }
+
+      // URL 직접 저장 - 가능한 경우 메타데이터(og:title 등)를 가져와 채웁니다.
+      if (req.method === 'POST' && pathname === '/api/references/url') {
+        const body = await readJson(req);
+        const url = cleanText(body.url || '', 2000);
+        if (!url) return sendJson(res, 400, { error: 'url이 필요합니다.' });
+        let title = body.title || null, thumbnailUrl = body.thumbnailUrl || null, siteName = null, description = body.description || null;
+        try {
+          const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+          const html = await resp.text();
+          const og = (prop) => html.match(new RegExp(`<meta[^>]+property=["']og:${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))?.[1]
+            || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:${prop}["']`, 'i'))?.[1] || null;
+          title = title || og('title') || html.match(/<title>([^<]+)<\/title>/i)?.[1] || null;
+          thumbnailUrl = thumbnailUrl || og('image');
+          description = description || og('description');
+          siteName = og('site_name');
+        } catch (err) {
+          console.error('[reference-url 메타데이터 조회 실패]', err?.message || err);
+          // 메타데이터를 못 가져와도 URL 자체는 저장할 수 있게 계속 진행합니다(사용자가 직접 입력 가능).
+        }
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO references_store (tenant_id, advertiser_id, reference_type, platform, source_type, url, canonical_url, title, description, thumbnail_url, published_at, created_by)
+             VALUES ($1,$2,$3,$4,'manual_url',$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+            [tenantId, body.advertiserId || null, body.referenceType || 'ORGANIC_CONTENT', siteName || 'manual', url, url.split('?')[0], title, description, thumbnailUrl, body.publishedAt || null, body.createdBy || 'admin']
+          );
+          return sendJson(res, 201, { id: insert.rows[0].id, title, thumbnailUrl, description });
+        } catch (err) {
+          if (String(err?.code) === '23505') return sendJson(res, 409, { error: '이미 수집된 레퍼런스입니다.' });
+          return sendJson(res, 500, { error: err instanceof Error ? err.message : '저장에 실패했습니다.' });
+        }
+      }
+
+      // 목록 조회 (필터 다수 지원)
+      if (req.method === 'GET' && pathname === '/api/references') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['r.tenant_id = $1']; const params = [tenantId];
+        const add = (sql, val) => { params.push(val); clauses.push(sql.replace('?', `$${params.length}`)); };
+        if (q.get('referenceType')) add('r.reference_type = ?', q.get('referenceType'));
+        if (q.get('platform')) add('r.platform = ?', q.get('platform'));
+        if (q.get('advertiserId')) add('r.advertiser_id = ?', q.get('advertiserId'));
+        if (q.get('status')) add('r.status = ?', q.get('status'));
+        if (q.get('contentType')) add('r.content_type = ?', q.get('contentType'));
+        if (q.get('from')) add('r.published_at >= ?', q.get('from'));
+        if (q.get('to')) add('r.published_at <= ?', q.get('to'));
+        if (q.get('query')) { const kw = `%${q.get('query')}%`; params.push(kw, kw); clauses.push(`(r.title ILIKE $${params.length - 1} OR r.body ILIKE $${params.length})`); }
+        if (q.get('minViews')) add('r.views >= ?', Number(q.get('minViews')));
+        if (q.get('minLikes')) add('r.likes >= ?', Number(q.get('minLikes')));
+        if (q.get('minComments')) add('r.comments >= ?', Number(q.get('minComments')));
+        if (q.get('minFollowers')) add('r.author_followers >= ?', Number(q.get('minFollowers')));
+        if (q.get('collectionId')) { params.push(q.get('collectionId')); clauses.push(`r.id IN (SELECT reference_id FROM reference_collection_items WHERE collection_id = $${params.length})`); }
+        if (q.get('tag')) { params.push(q.get('tag')); clauses.push(`r.id IN (SELECT tl.reference_id FROM reference_tag_links tl JOIN reference_tags t ON t.id=tl.tag_id WHERE t.name = $${params.length})`); }
+        const sortMap = { latest: 'r.published_at DESC NULLS LAST', views: 'r.views DESC NULLS LAST', likes: 'r.likes DESC NULLS LAST', comments: 'r.comments DESC NULLS LAST' };
+        const sort = sortMap[q.get('sort')] || 'r.collected_at DESC';
+        const limit = Math.min(Number(q.get('limit')) || 60, 200);
+        const rows = await pgPool.query(
+          `SELECT r.*, a.name as advertiser_name,
+             COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
+           FROM references_store r
+           LEFT JOIN advertisers a ON a.id = r.advertiser_id
+           LEFT JOIN reference_tag_links tl ON tl.reference_id = r.id
+           LEFT JOIN reference_tags t ON t.id = tl.tag_id
+           WHERE ${clauses.join(' AND ')}
+           GROUP BY r.id, a.name
+           ORDER BY ${sort} LIMIT ${limit}`, params);
+        // 계정 규모 대비 반응(팔로워 대비 조회/좋아요/댓글 비율)을 AI 없이 서버에서 직접 계산합니다.
+        const items = rows.rows.map(r => {
+          const followers = r.author_followers ? Number(r.author_followers) : null;
+          const ratio = (v) => (followers && v != null) ? Number(v) / followers : null;
+          return { ...r, viewFollowerRatio: ratio(r.views), likeFollowerRatio: ratio(r.likes), commentFollowerRatio: ratio(r.comments) };
+        });
+        return sendJson(res, 200, { items });
+      }
+
+      // 요약 KPI: 오늘 수집 / 이번 주 수집 / 저장한 레퍼런스 / 등록 키워드(수집 규칙 기준)
+      if (req.method === 'GET' && pathname === '/api/references/summary') {
+        const [today, week, total, rules] = await Promise.all([
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND collected_at >= CURRENT_DATE`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND collected_at >= CURRENT_DATE - INTERVAL '7 days'`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND status IN ('saved','used_in_production')`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM reference_collection_rules WHERE tenant_id=$1 AND is_active=true`, [tenantId]),
+        ]);
+        return sendJson(res, 200, {
+          todayCollected: Number(today.rows[0].count), weekCollected: Number(week.rows[0].count),
+          savedReferences: Number(total.rows[0].count), activeKeywordRules: Number(rules.rows[0].count),
+        });
+      }
+
+      // 상세 조회
+      const detailMatch = pathname.match(/^\/api\/references\/([^/]+)$/);
+      if (req.method === 'GET' && detailMatch) {
+        const r = await pgPool.query(
+          `SELECT r.*, a.name as advertiser_name, COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
+           FROM references_store r LEFT JOIN advertisers a ON a.id=r.advertiser_id
+           LEFT JOIN reference_tag_links tl ON tl.reference_id=r.id LEFT JOIN reference_tags t ON t.id=tl.tag_id
+           WHERE r.id=$1 AND r.tenant_id=$2 GROUP BY r.id, a.name`, [detailMatch[1], tenantId]);
+        if (!r.rows.length) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        const collections = await pgPool.query(`SELECT c.id, c.name FROM reference_collections c JOIN reference_collection_items ci ON ci.collection_id=c.id WHERE ci.reference_id=$1`, [detailMatch[1]]);
+        return sendJson(res, 200, { ...r.rows[0], collections: collections.rows });
+      }
+
+      // 수정 (상태/즐겨찾기/광고주/메모/태그)
+      if (req.method === 'PATCH' && detailMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.status !== undefined) set('status', body.status);
+        if (body.isFavorite !== undefined) set('is_favorite', !!body.isFavorite);
+        if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.note !== undefined) set('note', body.note);
+        if (!sets.length && !body.tags) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        if (sets.length) await pgPool.query(`UPDATE references_store SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2`, params);
+        if (Array.isArray(body.tags)) {
+          await pgPool.query(`DELETE FROM reference_tag_links WHERE reference_id = $1`, [detailMatch[1]]);
+          for (const name of body.tags) {
+            const t = await pgPool.query(`INSERT INTO reference_tags (tenant_id, name) VALUES ($1,$2) ON CONFLICT (tenant_id, name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tenantId, name]);
+            await pgPool.query(`INSERT INTO reference_tag_links (reference_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [detailMatch[1], t.rows[0].id]);
+          }
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 삭제
+      if (req.method === 'DELETE' && detailMatch) {
+        await pgPool.query(`DELETE FROM references_store WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // "이 레퍼런스로 제작" 사용 이력 기록
+      const usageMatch = pathname.match(/^\/api\/references\/([^/]+)\/usage$/);
+      if (req.method === 'POST' && usageMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`INSERT INTO reference_usage (reference_id, used_for, reference_scope, created_by) VALUES ($1,$2,$3,$4)`,
+          [usageMatch[1], body.usedFor || '', body.referenceScope || null, body.createdBy || 'admin']);
+        await pgPool.query(`UPDATE references_store SET status='used_in_production', updated_at=now() WHERE id=$1 AND status NOT IN ('used_in_production')`, [usageMatch[1]]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 태그 목록
+      if (req.method === 'GET' && pathname === '/api/reference-tags') {
+        const r = await pgPool.query(`SELECT id, name FROM reference_tags WHERE tenant_id=$1 ORDER BY name`, [tenantId]);
+        return sendJson(res, 200, { tags: r.rows });
+      }
+
+      // 컬렉션 CRUD
+      if (req.method === 'GET' && pathname === '/api/reference-collections') {
+        const r = await pgPool.query(
+          `SELECT c.*, count(ci.reference_id) as item_count FROM reference_collections c
+           LEFT JOIN reference_collection_items ci ON ci.collection_id=c.id
+           WHERE c.tenant_id=$1 GROUP BY c.id ORDER BY c.updated_at DESC`, [tenantId]);
+        return sendJson(res, 200, { collections: r.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/reference-collections') {
+        const body = await readJson(req);
+        if (!body.name?.trim()) return sendJson(res, 400, { error: '컬렉션 이름이 필요합니다.' });
+        const r = await pgPool.query(`INSERT INTO reference_collections (tenant_id, advertiser_id, name, description, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+          [tenantId, body.advertiserId || null, body.name.trim(), body.description || null, body.createdBy || 'admin']);
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      const collectionMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)$/);
+      if (req.method === 'PATCH' && collectionMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`UPDATE reference_collections SET name=COALESCE($3,name), description=COALESCE($4,description), updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+          [collectionMatch[1], tenantId, body.name || null, body.description ?? null]);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && collectionMatch) {
+        await pgPool.query(`DELETE FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const collectionItemsMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items$/);
+      if (req.method === 'POST' && collectionItemsMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`INSERT INTO reference_collection_items (collection_id, reference_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [collectionItemsMatch[1], body.referenceId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const collectionItemMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items\/([^/]+)$/);
+      if (req.method === 'DELETE' && collectionItemMatch) {
+        await pgPool.query(`DELETE FROM reference_collection_items WHERE collection_id=$1 AND reference_id=$2`, [collectionItemMatch[1], collectionItemMatch[2]]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 수집 규칙 CRUD
+      if (req.method === 'GET' && pathname === '/api/reference-collection-rules') {
+        const r = await pgPool.query(`SELECT rr.*, a.name as advertiser_name FROM reference_collection_rules rr LEFT JOIN advertisers a ON a.id=rr.advertiser_id WHERE rr.tenant_id=$1 ORDER BY rr.created_at DESC`, [tenantId]);
+        return sendJson(res, 200, { rules: r.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/reference-collection-rules') {
+        const body = await readJson(req);
+        if (!body.name?.trim()) return sendJson(res, 400, { error: '수집 이름이 필요합니다.' });
+        const r = await pgPool.query(
+          `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+          [tenantId, body.advertiserId || null, body.name.trim(), body.contentKind || 'BOTH', body.platforms || [], body.keywords || [], body.excludeKeywords || [],
+           body.language || null, body.country || null, body.dateRangeDays || 30, JSON.stringify(body.minMetrics || {}), body.mode || 'manual', body.createdBy || 'admin']);
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      const ruleMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)$/);
+      if (req.method === 'PATCH' && ruleMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [ruleMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', body.name);
+        if (body.isActive !== undefined) set('is_active', !!body.isActive);
+        if (body.keywords !== undefined) set('keywords', body.keywords);
+        if (body.minMetrics !== undefined) set('min_metrics', JSON.stringify(body.minMetrics));
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        await pgPool.query(`UPDATE reference_collection_rules SET ${sets.join(', ')}, updated_at=now() WHERE id=$1 AND tenant_id=$2`, params);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && ruleMatch) {
+        await pgPool.query(`DELETE FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      // 수집 규칙 복제
+      const ruleDuplicateMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/duplicate$/);
+      if (req.method === 'POST' && ruleDuplicateMatch) {
+        const r = await pgPool.query(
+          `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
+           SELECT tenant_id, advertiser_id, name || ' (복제)', content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by
+           FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2 RETURNING id`, [ruleDuplicateMatch[1], tenantId]);
+        if (!r.rows.length) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      // 규칙을 지금 즉시 1회 실행 (수동 트리거 - 백그라운드 자동 스케줄러는 별도 자동화 단계에서 연결)
+      const ruleRunMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/run$/);
+      if (req.method === 'POST' && ruleRunMatch) {
+        const rule = await pgPool.query(`SELECT * FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleRunMatch[1], tenantId]);
+        if (!rule.rows.length) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        const rr = rule.rows[0];
+        const results = {};
+        for (const key of (rr.platforms?.length ? rr.platforms : Object.keys(REFERENCE_CONNECTORS))) {
+          const connector = REFERENCE_CONNECTORS[key];
+          if (!connector) continue;
+          if (!connector.implemented) { results[key] = { status: 'connector_unimplemented', saved: 0 }; continue; }
+          let saved = 0;
+          for (const keyword of (rr.keywords?.length ? rr.keywords : [''])) {
+            const search = await connector.search({ query: keyword, limit: 25 });
+            for (const item of search.items) {
+              try {
+                await pgPool.query(
+                  `INSERT INTO references_store (tenant_id, advertiser_id, reference_type, platform, source_type, external_id, url, canonical_url, title, body, author_name, author_followers, thumbnail_url, media_type, content_type, published_at, views, likes, comments, shares, saves, available_metrics, raw_metadata, created_by)
+                   VALUES ($1,$2,$3,$4,'collected',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT DO NOTHING`,
+                  [tenantId, rr.advertiser_id, connector.referenceType, connector.platform, item.externalId, item.url, item.canonicalUrl, item.title, item.body,
+                   item.authorName, item.authorFollowers ?? null, item.thumbnailUrl, item.mediaType, item.contentType, item.publishedAt,
+                   item.views ?? null, item.likes ?? null, item.comments ?? null, item.shares ?? null, item.saves ?? null, item.availableMetrics || [],
+                   item.rawMetadata ? JSON.stringify(item.rawMetadata) : null, 'rule:' + rr.name]
+                );
+                saved++;
+              } catch { /* 중복 등은 건너뜁니다 */ }
+            }
+            results[key] = { status: search.status, saved, message: search.message };
+          }
+        }
+        await pgPool.query(`UPDATE reference_collection_rules SET last_collected_at=now(), last_collected_count=$3 WHERE id=$1 AND tenant_id=$2`,
+          [ruleRunMatch[1], tenantId, Object.values(results).reduce((a, r) => a + (r.saved || 0), 0)]);
+        return sendJson(res, 200, { results });
+      }
+
+      return sendJson(res, 404, { error: 'Not found' });
+    }
+
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
       const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
       const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);

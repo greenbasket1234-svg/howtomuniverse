@@ -293,3 +293,150 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_activity_logs_tenant ON activity_logs(tenant_id, created_at DESC);
+
+-- ============================================================
+-- 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집 메뉴)
+-- 광고/일반 콘텐츠를 수집·저장·분류하고, 광고주·컬렉션과 연결하며,
+-- 콘텐츠 제작 기능으로 전달하기 위한 테이블들입니다.
+-- ============================================================
+
+-- 수집 규칙(자동/수동 수집 조건을 저장해두고 재사용)
+CREATE TABLE IF NOT EXISTS reference_collection_rules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  content_kind TEXT NOT NULL DEFAULT 'BOTH', -- 'ADVERTISEMENT' | 'ORGANIC_CONTENT' | 'BOTH'
+  platforms TEXT[] NOT NULL DEFAULT '{}',    -- ['meta','youtube','tiktok','threads']
+  keywords TEXT[] NOT NULL DEFAULT '{}',
+  exclude_keywords TEXT[] NOT NULL DEFAULT '{}',
+  language TEXT,
+  country TEXT,
+  date_range_days INTEGER DEFAULT 30,
+  min_metrics JSONB NOT NULL DEFAULT '{}'::jsonb, -- 예: {"views":100000,"comments":100,"followers":10000}
+  mode TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'auto'
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  last_collected_at TIMESTAMPTZ,
+  last_collected_count INTEGER,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ref_rules_tenant ON reference_collection_rules(tenant_id);
+
+-- 레퍼런스 본체
+CREATE TABLE IF NOT EXISTS references_store (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
+
+  reference_type TEXT NOT NULL, -- 'ADVERTISEMENT' | 'ORGANIC_CONTENT'
+  platform TEXT NOT NULL,       -- 'meta' | 'instagram' | 'facebook' | 'youtube' | 'tiktok' | 'threads' | 'manual'
+  source_type TEXT NOT NULL DEFAULT 'collected', -- 'collected' | 'manual_url'
+
+  external_id TEXT,             -- 플랫폼 원본 ID (중복 방지 기준 1)
+  url TEXT,
+  canonical_url TEXT,           -- 정규화된 URL (중복 방지 기준 2)
+
+  title TEXT,
+  body TEXT,
+  headline TEXT,
+  description TEXT,
+  cta TEXT,
+
+  author_id TEXT,
+  author_name TEXT,
+  author_followers BIGINT,      -- null = 미제공, 0 = 실제 0
+
+  thumbnail_url TEXT,
+  media_url TEXT,
+  media_type TEXT, -- 'image' | 'video' | 'carousel' | 'text'
+  content_type TEXT, -- '영상' | '숏폼' | '이미지' | '카드뉴스' | '텍스트' | '광고' | '기타'
+
+  ad_status TEXT, -- 광고 전용: 'active' | 'inactive' 등
+  ad_started_at TIMESTAMPTZ,
+
+  published_at TIMESTAMPTZ,
+  collected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  -- 성과 지표: null=플랫폼이 제공 안 함, 0=실제 값 0 (반드시 구분)
+  views BIGINT,
+  likes BIGINT,
+  comments BIGINT,
+  shares BIGINT,
+  saves BIGINT,
+
+  available_metrics TEXT[] NOT NULL DEFAULT '{}', -- 이 레퍼런스에서 실제로 제공된 지표 목록
+
+  status TEXT NOT NULL DEFAULT 'unread', -- 'unread' | 'reviewing' | 'saved' | 'used_in_production' | 'archived'
+  is_favorite BOOLEAN NOT NULL DEFAULT false,
+  note TEXT,
+
+  raw_text TEXT,
+  transcript TEXT,
+  raw_metadata JSONB,
+
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_references_tenant ON references_store(tenant_id, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_references_advertiser ON references_store(advertiser_id);
+CREATE INDEX IF NOT EXISTS idx_references_platform ON references_store(tenant_id, platform);
+CREATE INDEX IF NOT EXISTS idx_references_type ON references_store(tenant_id, reference_type);
+-- 중복 방지: 같은 테넌트 안에서 플랫폼+원본ID, 또는 canonical_url이 겹치면 안 됩니다.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_references_platform_external ON references_store(tenant_id, platform, external_id) WHERE external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_references_canonical_url ON references_store(tenant_id, canonical_url) WHERE canonical_url IS NOT NULL;
+
+-- 태그
+CREATE TABLE IF NOT EXISTS reference_tags (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, name)
+);
+CREATE TABLE IF NOT EXISTS reference_tag_links (
+  reference_id UUID NOT NULL REFERENCES references_store(id) ON DELETE CASCADE,
+  tag_id UUID NOT NULL REFERENCES reference_tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (reference_id, tag_id)
+);
+
+-- 컬렉션 (폴더 대신 컬렉션 - 하나의 레퍼런스가 여러 컬렉션에 속할 수 있음)
+CREATE TABLE IF NOT EXISTS reference_collections (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ref_collections_tenant ON reference_collections(tenant_id);
+CREATE TABLE IF NOT EXISTS reference_collection_items (
+  collection_id UUID NOT NULL REFERENCES reference_collections(id) ON DELETE CASCADE,
+  reference_id UUID NOT NULL REFERENCES references_store(id) ON DELETE CASCADE,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (collection_id, reference_id)
+);
+
+-- 메모(레퍼런스별 여러 개 남길 수 있는 자유 메모 - note 필드와 별개로 이력 남기고 싶을 때 사용)
+CREATE TABLE IF NOT EXISTS reference_notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reference_id UUID NOT NULL REFERENCES references_store(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- "이 레퍼런스로 제작" 사용 이력 (어떤 레퍼런스가 실제로 제작에 얼마나 쓰였는지 추적)
+CREATE TABLE IF NOT EXISTS reference_usage (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reference_id UUID NOT NULL REFERENCES references_store(id) ON DELETE CASCADE,
+  used_for TEXT NOT NULL, -- 'ad_copy' | 'blog' | 'video_script' | 'image_ad' | 'document'
+  reference_scope TEXT,   -- '구조만 참고' | '후킹 참고' | '톤앤매너 참고' | '주제 참고' | '전체적인 방향 참고'
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ref_usage_reference ON reference_usage(reference_id);
