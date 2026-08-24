@@ -2743,3 +2743,11 @@ body{font-size:15.5px;line-height:1.55}
 .metric-negative{color:#dc2626;font-weight:700}
 .metric-warning{color:#c2410c;font-weight:700}
 .metric-emphasis{color:#2f5bd6;font-weight:800}
+
+/* 소재 라이브러리: 슬라이드/영상 카드가 정지 썸네일 대신 실제 미리보기로 보이도록 */
+.library-thumb-slide{position:relative}
+.library-thumb-slide img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .5s ease}
+.library-slide-dots{position:absolute;bottom:8px;left:0;right:0;display:flex;justify-content:center;gap:4px;z-index:2}
+.library-slide-dots span{width:5px;height:5px;border-radius:999px;background:rgba(255,255,255,.5)}
+.library-slide-dots span.active{background:#fff;width:14px;border-radius:3px}
+.library-thumb-video video{width:100%;height:100%;object-fit:cover;background:#000}

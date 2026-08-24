@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Grid3X3, List, Search, X, Play } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
@@ -13,6 +13,51 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
 const channelLabel=(v:string)=>v==='meta'?'Meta':v==='naver'?'네이버':v;
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
+
+// 슬라이드 소재는 정지된 대표 이미지 한 장 대신, 카드 안에서 실제로 카드들이 자동으로
+// 넘어가는 미리보기를 보여줍니다. IntersectionObserver로 화면에 보이는 카드만 타이머를
+// 돌려서, 소재가 많아도 화면 밖 카드까지 다 애니메이션이 도는 부담을 줄입니다.
+function SlideThumb({images,name}:{images:string[];name:string}){
+  const [idx,setIdx]=useState(0);
+  const [visible,setVisible]=useState(false);
+  const ref=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    const el=ref.current; if(!el) return;
+    const io=new IntersectionObserver(([entry])=>setVisible(entry.isIntersecting),{threshold:0.2});
+    io.observe(el);
+    return ()=>io.disconnect();
+  },[]);
+  useEffect(()=>{
+    if(!visible||images.length<2) return;
+    const t=setInterval(()=>setIdx(i=>(i+1)%images.length),1800);
+    return ()=>clearInterval(t);
+  },[visible,images.length]);
+  return <div ref={ref} className="library-thumb-square library-thumb-slide">
+    {images.map((url,i)=><img key={url} src={url} alt={`${name} ${i+1}`} style={{opacity:i===idx?1:0}}/>)}
+    <div className="library-slide-dots">{images.map((_,i)=><span key={i} className={i===idx?'active':''}/>)}</div>
+  </div>;
+}
+
+// 영상 소재도 정지된 썸네일+재생 아이콘 대신, 카드 안에서 바로 재생되는 미리보기로 보여줍니다.
+// 실제 원본 영상 소스가 없는 경우(매체 권한 등으로)는 정지 썸네일로 자연스럽게 폴백합니다.
+function VideoThumb({videoUrl,posterUrl,name}:{videoUrl:string;posterUrl?:string|null;name:string}){
+  const [visible,setVisible]=useState(false);
+  const ref=useRef<HTMLDivElement>(null);
+  const videoRef=useRef<HTMLVideoElement>(null);
+  useEffect(()=>{
+    const el=ref.current; if(!el) return;
+    const io=new IntersectionObserver(([entry])=>setVisible(entry.isIntersecting),{threshold:0.2});
+    io.observe(el);
+    return ()=>io.disconnect();
+  },[]);
+  useEffect(()=>{
+    const v=videoRef.current; if(!v) return;
+    if(visible) v.play().catch(()=>{}); else v.pause();
+  },[visible]);
+  return <div ref={ref} className="library-thumb-square library-thumb-video">
+    <video ref={videoRef} src={videoUrl} poster={posterUrl||undefined} muted loop playsInline preload="metadata" aria-label={name}/>
+  </div>;
+}
 
 type Kind='이미지'|'영상'|'슬라이드'|'키워드';
 type Item = {
@@ -85,12 +130,18 @@ export function CreativeLibraryPage(){
     </div>
     <div className="status-banner neutral" style={{marginBottom:12}}>{connected.length?`실제 성과 연동: ${connected.map(channelLabel).join(', ')}`:'연동된 소재 성과 매체가 없습니다.'}{unavailable.length?` · ${unavailable.map(c=>`${channelLabel(c.channel)} ${c.status==='connector_unimplemented'?'커넥터 미구현':c.status==='error'?'수집 오류':'미연동'}`).join(' / ')}`:''}</div>
     {error&&<div className="status-banner danger">{error}</div>}
-    {isLoading?<div className="card empty-state">소재 데이터를 불러오는 중입니다.</div>:filtered.length===0?<div className="card empty-state"><div className="empty-state-title">선택 기간에 소재 데이터가 없습니다.</div><div>매체 연결 및 동기화 상태를 확인해주세요. 연결되지 않은 매체는 0으로 표시하지 않습니다.</div></div>:view==='grid'?<div className="library-grid-compact actual-creative-grid">{filtered.map((r,i)=><article key={r.key} className="library-card" onClick={()=>setSelected(r)}><div className="library-thumb-square">
-      {r.kind==='키워드'?<span style={{fontSize:20}}>🔑</span>:r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
-      {r.kind==='영상'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 6px',display:'flex',alignItems:'center'}}><Play size={11} fill="#fff"/></span>}
-      {r.kind==='슬라이드'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 8px',fontSize:11,fontWeight:700}}>슬라이드 {r.carouselImages?.length||''}</span>}
-      {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6}}>{i+1}</span>}
-    </div><div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {r.dbCount.toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
+    {isLoading?<div className="card empty-state">소재 데이터를 불러오는 중입니다.</div>:filtered.length===0?<div className="card empty-state"><div className="empty-state-title">선택 기간에 소재 데이터가 없습니다.</div><div>매체 연결 및 동기화 상태를 확인해주세요. 연결되지 않은 매체는 0으로 표시하지 않습니다.</div></div>:view==='grid'?<div className="library-grid-compact actual-creative-grid">{filtered.map((r,i)=><article key={r.key} className="library-card" style={{position:'relative'}} onClick={()=>setSelected(r)}>
+      {r.kind==='영상'&&r.videoUrl
+        ? <VideoThumb videoUrl={r.videoUrl} posterUrl={r.thumbnailUrl} name={r.name}/>
+        : r.kind==='슬라이드'&&r.carouselImages&&r.carouselImages.length>1
+          ? <SlideThumb images={r.carouselImages} name={r.name}/>
+          : <div className="library-thumb-square">
+              {r.kind==='키워드'?<span style={{fontSize:20}}>🔑</span>:r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
+              {r.kind==='영상'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 6px',display:'flex',alignItems:'center'}}><Play size={11} fill="#fff"/></span>}
+              {r.kind==='슬라이드'&&<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 8px',fontSize:11,fontWeight:700}}>슬라이드 {r.carouselImages?.length||''}</span>}
+            </div>}
+      {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6,zIndex:2}}>{i+1}</span>}
+      <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {r.dbCount.toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
       <th>소재</th><th>종류</th><th>매체</th><th>광고주</th><th>캠페인</th>
       <th className="num sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
