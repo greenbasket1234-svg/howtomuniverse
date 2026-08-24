@@ -10,7 +10,13 @@ const channelLabel=(v:string)=>v==='meta'?'Meta':v==='naver'?'네이버':v;
 export function CreativeDetailPage(){
   const {creativeId=''}=useParams();
   const {rows,loading,error}=useMetricRows<CreativeMetricRow>('/metrics/creatives');
-  const creative=rows.find(r=>String(r.adId)===creativeId);
+  // 소재 목록에서 넘어오는 링크는 `${channel}-${adId}` 형태의 합성 ID를 씁니다(예: 'meta-123456789').
+  // adId 자체에 '-'가 들어있을 수도 있어, 첫 '-' 앞은 채널로, 나머지 전부는 adId로 나눕니다.
+  const dashIndex=creativeId.indexOf('-');
+  const linkedChannel=dashIndex>=0?creativeId.slice(0,dashIndex):'';
+  const linkedAdId=dashIndex>=0?creativeId.slice(dashIndex+1):creativeId;
+  const creative=rows.find(r=>String(r.adId)===linkedAdId&&(!linkedChannel||r.channel===linkedChannel))
+    ?? rows.find(r=>String(r.adId)===creativeId); // 예전 방식(채널 접두사 없는 순수 adId) 링크도 대비합니다.
   if(loading)return <div><Link to="/creatives/library" className="breadcrumb-back">← 소재 라이브러리</Link><div className="card empty-state">소재를 불러오는 중입니다.</div></div>;
   if(error)return <div><Link to="/creatives/library" className="breadcrumb-back">← 소재 라이브러리</Link><div className="status-banner danger">{error}</div></div>;
   if(!creative)return <div><Link to="/creatives/library" className="breadcrumb-back">← 소재 라이브러리</Link><div className="card empty-state"><div className="empty-state-title">선택 기간에 해당 소재 성과가 없습니다.</div><div>기간을 변경하거나 소재 라이브러리에서 다시 선택해주세요.</div></div></div>;
