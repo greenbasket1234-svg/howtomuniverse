@@ -218,6 +218,22 @@ export function Sidebar() {
             {renderedSection.items.map((item, index) => {
               const active = isUniverseItemActive(pathname, item);
               const label = `${item.label}${item.planned ? ' (미구현)' : ''}`;
+              // 콘텐츠 제작소처럼 완전히 다른 배포 서비스로 이동하는 항목은 내부 라우팅(Link)이 아니라
+              // 새 탭에서 여는 일반 링크로 처리합니다(Link는 이 앱 안에서의 이동만 위한 것입니다).
+              if (item.external) {
+                return (
+                  <a
+                    key={item.key}
+                    href={item.path}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ '--stagger': index } as CSSProperties}
+                    className="universe-secondary-item"
+                  >
+                    {label}
+                  </a>
+                );
+              }
               return (
                 <Link
                   key={item.key}

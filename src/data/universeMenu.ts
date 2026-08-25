@@ -6,7 +6,12 @@ export type UniverseMenuItem = {
   prefixPath?: string;
   badge?: string;
   planned?: boolean;
+  /** true면 내부 라우팅(Link)이 아니라 완전히 다른 배포 서비스로 이동하는 외부 링크로 취급합니다. */
+  external?: boolean;
 };
+
+/** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로 지정합니다. */
+const CONTENT_STUDIO_URL = import.meta.env?.VITE_CONTENT_STUDIO_URL || 'https://content.howtom.example.com';
 
 export type UniverseMenuGroup = {
   key: 'home' | 'operations' | 'insights' | 'content' | 'automation' | 'assets' | 'advertisers' | 'settings' | 'admin';
@@ -68,6 +73,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
   {
     key: 'content', label: '콘텐츠', path: '/content', planet: 'saturn',
     items: [
+      { key: 'content-studio', label: '콘텐츠 제작소 ↗', path: CONTENT_STUDIO_URL, icon: 'palette', external: true },
       { key: 'content-home', label: '콘텐츠 홈', path: '/content', icon: 'palette' },
       { key: 'references', label: '레퍼런스', path: '/content/references', icon: 'creative-library' },
       { key: 'ad-creation', label: '광고 제작', path: '/content/ad-creation', icon: 'palette' },
