@@ -7,7 +7,6 @@ import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import type { DailyMetricRow } from '../types/metrics';
-import { ChannelTag } from '../components/ChannelTag';
 
 // 이 화면의 광고 성과 Source of Truth는 /api/metrics/funnel 하나입니다.
 // CRM 유효DB·계약 등 매체 API가 제공하지 않는 단계는 가짜 숫자로 채우지 않습니다.
@@ -102,7 +101,7 @@ export function ConversionFunnelPage(){
         <th className="num sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);return <tr key={`${row.channel}-${i}`}><td><ChannelTag channel={row.channel}/></td><td>{statusLabel(connection?.status)}</td><td className="num metric-emphasis">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num"><b>{row.dbCount.toLocaleString()}</b></td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{money(row.revenue)}</td><td className="num">{row.dbCount?money(row.cpa):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td></tr>})}
+        {sortedRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);return <tr key={`${row.channel}-${i}`}><td><b>{row.channel}</b></td><td>{statusLabel(connection?.status)}</td><td className="num metric-emphasis">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num"><b>{row.dbCount.toLocaleString()}</b></td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{money(row.revenue)}</td><td className="num">{row.dbCount?money(row.cpa):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td></tr>})}
         {!loading&&visibleRows.length===0&&<tr><td colSpan={10} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 퍼널 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
     </section>

@@ -7,7 +7,6 @@ import type { DailyMetricRow } from '../types/metrics';
 import { derived, formatMetric, performanceDatasetFromMetricRows, sumRows } from '../analytics/integratedPerformance';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
-import { ChannelTag } from '../components/ChannelTag';
 
 const mediaLabel=(c:string)=>c==='meta'?'Meta':c==='naver'?'네이버':c;
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
@@ -34,7 +33,7 @@ export function IntegratedPerformanceAnalysisPage(){
       <th className="sortable-th" onClick={()=>mediaSort.toggleSort('cpa')}>CPA{mediaSort.arrow('cpa')}</th>
       <th className="sortable-th" onClick={()=>mediaSort.toggleSort('revenue')}>매출{mediaSort.arrow('revenue')}</th>
       <th className="sortable-th" onClick={()=>mediaSort.toggleSort('roas')}>ROAS{mediaSort.arrow('roas')}</th>
-    </tr></thead><tbody>{loading?<tr><td colSpan={9} className="empty-cell">불러오는 중...</td></tr>:media.length?media.map(r=><tr key={r.channel}><td><ChannelTag channel={r.channel}/></td><td className="metric-emphasis">{formatMetric('spend',r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{r.ctr.toFixed(2)}%</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{r.dbCount?formatMetric('cpa',r.cpa):'-'}</td><td>{formatMetric('revenue',r.revenue)}</td><td className={roasClass(r.roas)}>{r.spend?`${r.roas.toFixed(0)}%`:'-'}</td></tr>):<tr><td colSpan={9} className="empty-cell">선택 기간에 실제 매체 데이터가 없습니다.</td></tr>}</tbody></table></div></article>
+    </tr></thead><tbody>{loading?<tr><td colSpan={9} className="empty-cell">불러오는 중...</td></tr>:media.length?media.map(r=><tr key={r.channel}><td><b>{mediaLabel(r.channel)}</b></td><td className="metric-emphasis">{formatMetric('spend',r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{r.ctr.toFixed(2)}%</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{r.dbCount?formatMetric('cpa',r.cpa):'-'}</td><td>{formatMetric('revenue',r.revenue)}</td><td className={roasClass(r.roas)}>{r.spend?`${r.roas.toFixed(0)}%`:'-'}</td></tr>):<tr><td colSpan={9} className="empty-cell">선택 기간에 실제 매체 데이터가 없습니다.</td></tr>}</tbody></table></div></article>
     <article className="card"><h3>광고주별 성과</h3><div className="table-scroll"><table className="ops-table"><thead><tr>
       <th className="sortable-th" onClick={()=>advSort.toggleSort('name')}>광고주{advSort.arrow('name')}</th>
       <th className="sortable-th" onClick={()=>advSort.toggleSort('spend')}>광고비{advSort.arrow('spend')}</th>

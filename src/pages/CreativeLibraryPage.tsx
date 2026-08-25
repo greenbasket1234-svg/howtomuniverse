@@ -6,7 +6,6 @@ import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import { ModalPortal } from '../components/ModalPortal';
-import { ChannelTag } from '../components/ChannelTag';
 import { apiFetch } from '../hooks/useApi';
 import type { CreativeMetricRow, KeywordMetricRow } from '../types/metrics';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
@@ -182,16 +181,16 @@ export function CreativeLibraryPage(){
               {r.kind==='키워드'?<span style={{fontSize:20}}>🔑</span>:r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
             </div>}
       {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6,zIndex:2}}>{i+1}</span>}
-      <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><ChannelTag channel={r.channel}/></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {r.dbCount.toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
+      <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {r.dbCount.toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
       <th>소재</th><th>종류</th><th>매체</th><th>광고주</th><th>캠페인</th>
       <th className="num sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('dbCount')}>전환{arrow('dbCount')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
-    </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
+    </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{r.dbCount.toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
     {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
-      <div className="modal-head"><div><h3>{selected.name}</h3><p style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>{selected.advertiserName||selected.advertiserId} · <ChannelTag channel={selected.channel}/> · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
+      <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
       {(selected.kind==='영상'||selected.kind==='슬라이드')&&previewLoading
         ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
         : previewUrl

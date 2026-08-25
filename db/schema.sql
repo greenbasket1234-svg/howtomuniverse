@@ -293,7 +293,6 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_activity_logs_tenant ON activity_logs(tenant_id, created_at DESC);
-
 -- ============================================================
 -- 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집 메뉴)
 -- 광고/일반 콘텐츠를 수집·저장·분류하고, 광고주·컬렉션과 연결하며,

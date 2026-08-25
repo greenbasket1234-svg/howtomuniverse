@@ -4,13 +4,17 @@ import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet,
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
 import { ChannelTag } from '../components/ChannelTag';
+import { MetricsDateBar } from '../components/MetricsDateBar';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey } from '../types/operations';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { AutomationEditor } from './SearchAdManagementPages';
 import { apiFetch } from '../hooks/useApi';
+import { metricQuery } from '../hooks/useMetrics';
 import type { CampaignMetricRow } from '../types/metrics';
+import { splitHighLowPerformers } from '../utils/performanceScoring';
 
 const statusLabel: Record<CampaignStatus,string> = {on:'운영 중',off:'중지',scheduled:'예약 대기',review:'심사 중',error:'오류',unsupported:'지원 불가'};
 const statusTone: Record<CampaignStatus,'success'|'warning'|'danger'|'neutral'|'accent'> = {on:'success',off:'neutral',scheduled:'accent',review:'warning',error:'danger',unsupported:'neutral'};
@@ -21,14 +25,12 @@ export function CampaignManagementPage() {
   const [advertisers]=useAdvertisers();
   const reloadCampaigns=()=>{setCampaignError('');apiFetch<Campaign[]>('/campaigns').then(live=>setRows(live||[])).catch(error=>{setRows([]);setCampaignError(error instanceof Error?error.message:String(error))});};
   useEffect(()=>{reloadCampaigns();},[]);
-  // 최근 30일 실제 성과를 불러와서, 캠페인명 기준으로 매칭해 고성과/저성과를 판별합니다.
+  // 다른 인사이트 화면들과 같은 상단 기간 선택기(오늘/7일/30일 등)를 그대로 씁니다.
+  const {range}=useMetricsQuery();
   const [perf,setPerf] = useState<CampaignMetricRow[]>([]);
   useEffect(()=>{
-    const until=new Date().toISOString().slice(0,10);
-    const sinceDate=new Date(); sinceDate.setDate(sinceDate.getDate()-29);
-    const since=sinceDate.toISOString().slice(0,10);
-    apiFetch<{rows:CampaignMetricRow[]}>(`/metrics/campaigns?from=${since}&to=${until}`).then(r=>setPerf(r.rows||[])).catch(()=>setPerf([]));
-  },[]);
+    apiFetch<{rows:CampaignMetricRow[]}>(`/metrics/campaigns?${metricQuery(range)}`).then(r=>setPerf(r.rows||[])).catch(()=>setPerf([]));
+  },[range.from,range.to]);
   // 상단 전역 광고주 검색과 연결합니다 (화면마다 따로 있던 광고주 선택 드롭다운을 없애고 하나로 통일).
   const { filterValue } = useAdvertiserFilter();
   const matchedAdvertiser = advertisers.find(a => matchesAdvertiserFilter(a.name, filterValue));
@@ -57,7 +59,7 @@ export function CampaignManagementPage() {
   const toggleSort = (key: SortKey) => { if (sortKey===key) setSortDir(sortDir==='asc'?'desc':'asc'); else { setSortKey(key); setSortDir('asc'); } };
   const sortArrow = (key: SortKey) => sortKey===key ? (sortDir==='asc'?' ▲':' ▼') : '';
 
-  // 캠페인명 기준으로 최근 30일 실제 성과를 매칭합니다(관리용 캠페인 목록과 성과 API의 ID 체계가 달라 이름으로 연결).
+  // 캠페인명 기준으로 선택한 기간의 실제 성과를 매칭합니다(관리용 캠페인 목록과 성과 API의 ID 체계가 달라 이름으로 연결).
   const perfByName = useMemo(()=>{
     const m = new Map<string, {spend:number;clicks:number;impressions:number;dbCount:number;revenue:number}>();
     for (const p of perf) {
@@ -68,15 +70,13 @@ export function CampaignManagementPage() {
     return m;
   },[perf]);
   const withPerf = useMemo(()=>filtered.map(r=>{
-    const p = perfByName.get(r.name);
-    const ctr = p&&p.impressions ? p.clicks/p.impressions*100 : undefined;
-    const roas = p&&p.spend ? (p.revenue/p.spend*100) : undefined;
-    const cpa = p&&p.dbCount ? p.spend/p.dbCount : undefined;
-    return {...r, perf:p, ctr, roas, cpa};
-  }),[filtered,perfByName]);
-  // 고성과: ROAS 200%↑ 또는(매출 미추적 시) 전환 확보 + CTR 1%↑. 저성과: 광고비는 썼는데 전환이 0건이거나 ROAS 100% 미만.
-  const highPerf = useMemo(()=>withPerf.filter(r=>r.perf&&r.perf.spend>0&&((r.roas??0)>=200||(r.roas===undefined&&(r.ctr??0)>=1&&r.perf.dbCount>0))).sort((a,b)=>(b.roas??b.ctr??0)-(a.roas??a.ctr??0)).slice(0,8),[withPerf]);
-  const lowPerf = useMemo(()=>withPerf.filter(r=>r.perf&&r.perf.spend>0&&(r.perf.dbCount===0||(r.roas!==undefined&&r.roas<100))).sort((a,b)=>b.perf!.spend-a.perf!.spend).slice(0,8),[withPerf]);
+    const advertiserName = advertisers.find(a => a.id === r.advertiserId)?.name || '';
+    const p = perfByName.get(r.name) || {spend:0,clicks:0,impressions:0,dbCount:0,revenue:0};
+    return { id:r.id, name:r.name, advertiserName, spend:p.spend, clicks:p.clicks, impressions:p.impressions, dbCount:p.dbCount, revenue:p.revenue,
+      ctr: p.impressions?p.clicks/p.impressions*100:0, roas: p.spend?p.revenue/p.spend*100:0, cvr: p.clicks?p.dbCount/p.clicks*100:0 };
+  }),[filtered,perfByName,advertisers]);
+  // ROAS·전환수·CVR·클릭수를 종합해서 판단합니다(ROAS 하나만 보지 않습니다).
+  const { high: highPerf, low: lowPerf } = useMemo(()=>splitHighLowPerformers(withPerf, 8), [withPerf]);
 
   const stats = {
     total: filtered.length,
@@ -95,6 +95,7 @@ export function CampaignManagementPage() {
   return <div>
     <PageHeader title="캠페인 관리" description="매체별 캠페인을 한 곳에서 업로드하고, ON/OFF 및 날짜·시간 예약을 관리합니다."
       action={<div className="toolbar-actions"><button className="btn" onClick={()=>setShowUpload(true)}><FileSpreadsheet size={15}/>대량 업로드</button><button className="btn btn-primary" onClick={()=>setShowUpload(true)}><Plus size={15}/>캠페인 업로드</button></div>} />
+    <MetricsDateBar/>
 
     {campaignError&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{campaignError}</div>}
     <div className="summary-grid summary-grid-compact">
@@ -124,10 +125,10 @@ export function CampaignManagementPage() {
     </div><div className="footnote">Instagram은 Meta, YouTube는 Google Ads 계정 체계를 공유합니다. Karrot은 공식 권한 확보 전까지 보고서·수동 상태 관리 GATE로 동작합니다. 네이버 캠페인은 "네이버 검색광고 관리" 메뉴에서도 같은 ON/OFF·예산 데이터를 확인·수정할 수 있습니다(행의 바로가기 버튼).</div></div>
 
     <div className="keyword-analysis-cards">
-      <div className="card"><div className="card-title">고성과 캠페인 (최근 30일)</div>{highPerf.length?highPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.name}</Badge> {r.roas!==undefined?`ROAS ${r.roas.toFixed(0)}%`:`CTR ${(r.ctr??0).toFixed(2)}%`} · 전환 {r.perf?.dbCount??0}건</p>):<p className="muted-text">최근 30일 안에 확실한 고성과 캠페인이 없습니다.</p>}</div>
-      <div className="card"><div className="card-title">저성과 캠페인 (최근 30일)</div>{lowPerf.length?lowPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.name}</Badge> 광고비 ₩{Math.round(r.perf?.spend||0).toLocaleString()} · 전환 {r.perf?.dbCount??0}건{r.roas!==undefined?` · ROAS ${r.roas.toFixed(0)}%`:''}</p>):<p className="muted-text">최근 30일 안에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.advertiserName} {r.name}</Badge> ROAS {r.roas.toFixed(0)}% · CVR {r.cvr.toFixed(1)}% · 전환 {r.dbCount}건 · 클릭 {r.clicks.toLocaleString()}</p>):<p className="muted-text">선택 기간에 확실한 고성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.advertiserName} {r.name}</Badge> 광고비 ₩{Math.round(r.spend).toLocaleString()} · 전환 {r.dbCount}건 · CVR {r.cvr.toFixed(1)}% · ROAS {r.roas.toFixed(0)}%</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
     </div>
-    <div className="footnote">고성과·저성과는 최근 30일 실제 매체 성과(캠페인명 기준 매칭)를 바탕으로 판단합니다. 성과 데이터가 없는 캠페인(연동 전·집행 전)은 집계에서 제외됩니다.</div>
+    <div className="footnote">고성과·저성과는 선택하신 기간의 실제 매체 성과(캠페인명 기준 매칭)를 ROAS·전환수·CVR·클릭수 종합 기준으로 판단합니다. 성과 데이터가 없는 캠페인(연동 전·집행 전)은 집계에서 제외됩니다.</div>
 
     {showUpload && <div className="modal-backdrop" onClick={()=>setShowUpload(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-title">캠페인 업로드</div><p className="muted-text">개별 등록 또는 CSV/XLSX 대량 업로드를 선택하세요. 실제 API 키가 연결되면 사전 검증 후 매체로 전송됩니다.</p><div className="upload-drop"><Upload size={24}/><strong>파일을 놓거나 선택하세요</strong><span>CSV, XLSX · 최대 10MB</span></div><div className="modal-actions"><button className="btn" onClick={()=>setShowUpload(false)}>취소</button><button className="btn btn-primary" onClick={()=>setShowUpload(false)}>검증만 실행</button></div></div></div>}
     {scheduleTarget && (

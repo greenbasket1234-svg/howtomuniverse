@@ -3,12 +3,12 @@ import { ExternalLink, Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { Badge } from '../components/Badge';
-import { ChannelTag, CampaignTypeTag } from '../components/ChannelTag';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import type { KeywordMetricRow } from '../types/metrics';
+import { splitHighLowPerformers } from '../utils/performanceScoring';
 
 type Channel='naver'|'google'|'kakao'|'daangn';
 const config:Record<Channel,{label:string;color:string;link:string}>={naver:{label:'네이버',color:'#03c75a',link:'https://manage.searchad.naver.com/'},google:{label:'구글',color:'#4285f4',link:'https://ads.google.com/'},kakao:{label:'카카오',color:'#f5c400',link:'https://moment.kakao.com/'},daangn:{label:'당근',color:'#ff6f0f',link:'https://business.daangn.com/'}};
@@ -26,19 +26,20 @@ export function NaverKeywordReportPage(){
   const campaigns=useMemo(()=>['전체',...new Set(rows.map(r=>r.campaignName).filter((c):c is string=>Boolean(c)))],[rows]);
   const {sorted:sortedVisible,toggleSort,arrow}=useSortableRows(visible,'spend',(r,k)=>(r as any)[k]);
   const totals=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,conv:a.conv+r.dbCount,revenue:a.revenue+r.revenue}),{spend:0,impressions:0,clicks:0,conv:0,revenue:0}),[visible]);
-  // 키워드 단위 데이터를 캠페인 단위로 묶어서, 어느 캠페인이 잘 되고 안 되는지 한눈에 보여줍니다.
-  const byCampaign=useMemo(()=>{
-    const m=new Map<string,{name:string;spend:number;impressions:number;clicks:number;dbCount:number;revenue:number}>();
-    for(const r of visible){
-      const key=r.campaignName||'(캠페인 없음)';
-      const cur=m.get(key)||{name:key,spend:0,impressions:0,clicks:0,dbCount:0,revenue:0};
-      cur.spend+=r.spend;cur.impressions+=r.impressions;cur.clicks+=r.clicks;cur.dbCount+=r.dbCount;cur.revenue+=r.revenue||0;
-      m.set(key,cur);
+  // 키워드 단위: ROAS·전환수·CVR·클릭수를 종합해서 고성과/저성과를 판단합니다(ROAS 하나만 보지 않습니다).
+  const { high: highKeywords, low: lowKeywords } = useMemo(()=>splitHighLowPerformers(visible, 8), [visible]);
+  // 캠페인 단위: 같은 캠페인의 키워드들을 합산한 뒤, 광고주명과 함께 종합 점수로 판단합니다.
+  const byCampaign = useMemo(()=>{
+    const m = new Map<string, {advertiserName:string;campaignName:string;spend:number;clicks:number;dbCount:number;revenue:number}>();
+    for (const r of visible) {
+      const key = `${r.advertiserName||''}__${r.campaignName||'(캠페인 없음)'}`;
+      const cur = m.get(key) || {advertiserName:r.advertiserName||'', campaignName:r.campaignName||'(캠페인 없음)', spend:0, clicks:0, dbCount:0, revenue:0};
+      cur.spend += r.spend; cur.clicks += r.clicks; cur.dbCount += r.dbCount; cur.revenue += r.revenue||0;
+      m.set(key, cur);
     }
-    return [...m.values()].map(c=>({...c,ctr:c.impressions?c.clicks/c.impressions*100:0,roas:c.spend?c.revenue/c.spend*100:0}));
-  },[visible]);
-  const highCampaigns=useMemo(()=>byCampaign.filter(c=>c.spend>0&&((c.revenue>0&&c.roas>=200)||(c.revenue===0&&c.ctr>=1&&c.dbCount>0))).sort((a,b)=>(b.revenue?b.roas:b.ctr)-(a.revenue?a.roas:a.ctr)).slice(0,8),[byCampaign]);
-  const lowCampaigns=useMemo(()=>byCampaign.filter(c=>c.spend>0&&(c.dbCount===0||(c.revenue>0&&c.roas<100))).sort((a,b)=>b.spend-a.spend).slice(0,8),[byCampaign]);
+    return [...m.values()];
+  }, [visible]);
+  const { high: highCampaigns, low: lowCampaigns } = useMemo(()=>splitHighLowPerformers(byCampaign, 8), [byCampaign]);
   const current=config[channel];
   const conn=(meta?.connections||[]).filter(c=>c.channel===channel);
   const status=conn.some(c=>c.status==='connected')?'connected':conn.some(c=>c.status==='connector_unimplemented')?'connector_unimplemented':conn.some(c=>c.status==='error')?'error':'disconnected';
@@ -68,14 +69,17 @@ export function NaverKeywordReportPage(){
         <th className="sortable-th" onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.campaignType&&r.campaignType!=='-'?<CampaignTypeTag type={r.campaignType}/>:'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
+        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.campaignType&&r.campaignType!=='-'?<Badge tone="neutral">{r.campaignType}</Badge>:'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
         {!loading&&sortedVisible.length===0&&<tr><td colSpan={16} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 실제 키워드 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
       <div className="footnote">모든 수치는 같은 from/to 기간으로 서버에서 집계됩니다. 미연동 매체는 빈 데이터와 상태로 구분됩니다.</div>
     </section>
     <div className="keyword-analysis-cards">
-      <div className="card"><div className="card-title">고성과 캠페인</div>{highCampaigns.length?highCampaigns.map(c=><p key={c.name} className="analysis-item"><Badge tone="success">{c.name}</Badge> {c.revenue>0?`ROAS ${c.roas.toFixed(0)}%`:`CTR ${c.ctr.toFixed(2)}%`} · 전환 {c.dbCount}건</p>):<p className="muted-text">뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
-      <div className="card"><div className="card-title">저성과 캠페인</div>{lowCampaigns.length?lowCampaigns.map(c=><p key={c.name} className="analysis-item"><Badge tone="danger">{c.name}</Badge> 광고비 {won(c.spend)} · 전환 {c.dbCount}건{c.revenue>0?` · ROAS ${c.roas.toFixed(0)}%`:''}</p>):<p className="muted-text">뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 캠페인</div>{highCampaigns.length?highCampaigns.map((c,i)=><p key={i} className="analysis-item"><span className="badge badge-success">{c.advertiserName} {c.campaignName}</span> {c.revenue>0?`ROAS ${(c.revenue/c.spend*100).toFixed(0)}%`:''} · CVR {c.clicks?(c.dbCount/c.clicks*100).toFixed(1):'0.0'}% · 전환 {c.dbCount}건 · 클릭 {c.clicks.toLocaleString()}</p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 캠페인</div>{lowCampaigns.length?lowCampaigns.map((c,i)=><p key={i} className="analysis-item"><span className="badge badge-danger">{c.advertiserName} {c.campaignName}</span> 광고비 {won(c.spend)} · 전환 {c.dbCount}건 · CVR {c.clicks?(c.dbCount/c.clicks*100).toFixed(1):'0.0'}%{c.revenue>0?` · ROAS ${(c.revenue/c.spend*100).toFixed(0)}%`:''}</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 키워드</div>{highKeywords.length?highKeywords.map((r,i)=><p key={i} className="analysis-item"><span className="badge badge-success">{r.advertiserName} {r.keyword}</span> {r.revenue>0?`ROAS ${(r.revenue/r.spend*100).toFixed(0)}%`:''} · CVR {r.clicks?(r.dbCount/r.clicks*100).toFixed(1):'0.0'}% · 전환 {r.dbCount}건 · 클릭 {r.clicks.toLocaleString()}</p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 키워드가 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 키워드</div>{lowKeywords.length?lowKeywords.map((r,i)=><p key={i} className="analysis-item"><span className="badge badge-danger">{r.advertiserName} {r.keyword}</span> 광고비 {won(r.spend)} · 전환 {r.dbCount}건 · CVR {r.clicks?(r.dbCount/r.clicks*100).toFixed(1):'0.0'}%{r.revenue>0?` · ROAS ${(r.revenue/r.spend*100).toFixed(0)}%`:''}</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 키워드가 없습니다.</p>}</div>
     </div>
+    <div className="footnote">고성과·저성과는 ROAS·전환수·CVR·클릭수를 종합한 점수로 판단합니다(ROAS만 단독으로 보지 않습니다). 매출을 추적하지 않는 경우 CVR·전환수·클릭수만으로 판단합니다.</div>
   </>;
 }
