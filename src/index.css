@@ -2807,3 +2807,16 @@ body{font-size:15.5px;line-height:1.55}
 .daily-bar-chart i{display:block;width:100%;max-width:22px;background:linear-gradient(180deg,#5b8cff,#2f5bd6);border-radius:3px 3px 0 0;min-height:2px}
 .daily-bar-chart small{font-size:9.5px;color:#94a3b8;writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap}
 @media(max-width:1180px){.campaign-live-grid{grid-template-columns:1fr}.campaign-live-detail{position:static}}
+
+/* 고성과/저성과 목록 - 광고주명과 캠페인명(혹은 키워드명)을 한 줄에 뭉치지 않고 분리 표시 */
+.analysis-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-bottom:1px solid #eef2f7;font-size:13px;border-left:3px solid transparent;border-radius:0 6px 6px 0}
+.analysis-item-high{border-left-color:#16a34a;background:#f0fdf4}
+.analysis-item-low{border-left-color:#dc2626;background:#fef2f2}
+.analysis-target-high{color:#15803d}
+.analysis-target-low{color:#b91c1c}
+.analysis-item:last-child{border-bottom:none}
+.analysis-name-block{display:flex;flex-direction:column;gap:1px;min-width:0}
+.analysis-advertiser{font-size:11px;color:#8592a6;font-weight:650}
+.analysis-target{font-size:13.5px;color:#1e293b;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.analysis-metrics{font-size:12px;color:#5d6879;white-space:nowrap;flex-shrink:0}
+.campaign-live-detail .panel-subtitle{margin:0;color:#64748b;font-size:12.5px}
