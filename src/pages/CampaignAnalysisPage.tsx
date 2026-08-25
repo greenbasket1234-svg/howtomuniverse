@@ -19,8 +19,20 @@ export function CampaignAnalysisPage(){
   const channels=useMemo(()=>['all',...new Set(rows.map(r=>r.channel))],[rows]);
   const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(`${r.campaignName} ${r.advertiserName||''}`).toLowerCase().includes(query.toLowerCase())),[rows,filterValue,channel,query]);
   const {sorted,toggleSort,arrow}=useSortableRows(visible,'spend',(r,k)=>k==='roas'?Number(r.roas||0):k==='ctr'?Number(r.ctr||0):k==='cpa'?Number(r.cpa||0):(r as any)[k]);
-  const current=visible.find(r=>r.campaignId===selected)||visible[0];
-  const series=useMemo(()=>current?daily.filter(r=>r.campaignId===current.campaignId&&r.advertiserId===current.advertiserId&&r.channel===current.channel).sort((a,b)=>a.date.localeCompare(b.date)):[],[daily,current]);
+  const rowKey=(r:CampaignMetricRow)=>`${r.advertiserId}-${r.channel}-${r.campaignId}`;
+  const selectedRow=selected?visible.find(r=>rowKey(r)===selected):undefined;
+  // 아무 캠페인도 선택하지 않았을 때는 임의로 첫 번째 캠페인만 보여주지 않고, 지금 필터된
+  // 범위(광고주 필터·매체 필터·검색어 적용 후) 전체를 합산해서 보여줍니다.
+  const aggregate=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,revenue:a.revenue+(r.revenue||0)}),{spend:0,clicks:0,dbCount:0,revenue:0}),[visible]);
+  const aggregateRoas=aggregate.spend?aggregate.revenue/aggregate.spend*100:0;
+  const visibleKeySet=useMemo(()=>new Set(visible.map(rowKey)),[visible]);
+  const series=useMemo(()=>{
+    if(selectedRow) return daily.filter(r=>rowKey(r)===rowKey(selectedRow)).sort((a,b)=>a.date.localeCompare(b.date));
+    // 전체 보기일 때는 지금 필터된 캠페인들의 일별 데이터를 날짜별로 합산합니다.
+    const byDate=new Map<string,number>();
+    for(const r of daily){ if(!visibleKeySet.has(rowKey(r)))continue; byDate.set(r.date,(byDate.get(r.date)||0)+r.spend); }
+    return [...byDate.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([date,spend])=>({date,spend}));
+  },[daily,selectedRow,visibleKeySet]);
   const maxSpend=Math.max(1,...series.map(r=>r.spend));
   const connected=meta?.connections?.filter(c=>c.status==='connected')||[];
   // 고성과: ROAS 200%↑ 또는(매출 미추적 시) 전환 확보 + CTR 1%↑. 저성과: 광고비는 썼는데 전환이 0건이거나 ROAS 100% 미만.
@@ -44,11 +56,21 @@ export function CampaignAnalysisPage(){
       <th className="sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('revenue')}>매출{arrow('revenue')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
-    </tr></thead><tbody>{loading?<tr><td colSpan={11} className="empty-cell">불러오는 중...</td></tr>:sorted.length===0?<tr><td colSpan={11} className="empty-cell">선택 기간에 실제 캠페인 성과가 없습니다.</td></tr>:sorted.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.campaignId}`} className={current?.campaignId===r.campaignId?'selected-row':''} onClick={()=>setSelected(r.campaignId)}><td><b>{r.campaignName}</b><small>{r.campaignId}</small></td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{r.dbCount?won(r.cpa||0):'-'}</td><td>{won(r.revenue)}</td><td className={Number(r.roas||0)>=200?'metric-positive':Number(r.roas||0)>0&&Number(r.roas||0)<100?'metric-negative':''}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></article>
-    <aside className="card campaign-live-detail">{current?<><div className="panel-title"><BarChart3 size={18}/><div><h3>{current.advertiserName} {current.campaignName}</h3><p><ChannelTag channel={current.channel}/></p></div></div><div className="detail-kpi-grid"><div><span>광고비</span><b>{won(current.spend)}</b></div><div><span>클릭</span><b>{current.clicks.toLocaleString()}</b></div><div><span>전환</span><b>{current.dbCount.toLocaleString()}</b></div><div><span>ROAS</span><b>{Number(current.roas||0).toFixed(0)}%</b></div></div><h4>일별 광고비 추이</h4><div className="daily-bar-chart">{series.map(r=><div key={r.date} title={`${r.date} ${won(r.spend)}`}><i style={{height:`${Math.max(2,r.spend/maxSpend*100)}%`}}/><small>{r.date.slice(5)}</small></div>)}</div></>:<div className="empty-cell">캠페인을 선택하세요.</div>}</aside></section>
+    </tr></thead><tbody>{loading?<tr><td colSpan={11} className="empty-cell">불러오는 중...</td></tr>:sorted.length===0?<tr><td colSpan={11} className="empty-cell">선택 기간에 실제 캠페인 성과가 없습니다.</td></tr>:sorted.map(r=><tr key={rowKey(r)} className={selected===rowKey(r)?'selected-row':''} onClick={()=>setSelected(selected===rowKey(r)?'':rowKey(r))}><td><b>{r.campaignName}</b><small>{r.campaignId}</small></td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{r.dbCount?won(r.cpa||0):'-'}</td><td>{won(r.revenue)}</td><td className={Number(r.roas||0)>=200?'metric-positive':Number(r.roas||0)>0&&Number(r.roas||0)<100?'metric-negative':''}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></article>
+    <aside className="card campaign-live-detail">
+      <div className="panel-title"><BarChart3 size={18}/><div>{selectedRow?<><h3>{selectedRow.advertiserName}</h3><p className="panel-subtitle">{selectedRow.campaignName}</p></>:<><h3>전체 캠페인 합계</h3><p className="panel-subtitle">{visible.length}개 캠페인 · 지금 필터된 범위 기준{selectedRow?'':' (캠페인을 선택하면 개별로 볼 수 있습니다)'}</p></>}</div></div>
+      <div className="detail-kpi-grid">
+        <div><span>광고비</span><b>{won(selectedRow?selectedRow.spend:aggregate.spend)}</b></div>
+        <div><span>클릭</span><b>{(selectedRow?selectedRow.clicks:aggregate.clicks).toLocaleString()}</b></div>
+        <div><span>전환</span><b>{(selectedRow?selectedRow.dbCount:aggregate.dbCount).toLocaleString()}</b></div>
+        <div><span>ROAS</span><b>{(selectedRow?Number(selectedRow.roas||0):aggregateRoas).toFixed(0)}%</b></div>
+      </div>
+      <h4>일별 광고비 추이</h4>
+      <div className="daily-bar-chart">{series.map(r=><div key={r.date} title={`${r.date} ${won(r.spend)}`}><i style={{height:`${Math.max(2,r.spend/maxSpend*100)}%`}}/><small>{r.date.slice(5)}</small></div>)}</div>
+    </aside></section>
     <div className="keyword-analysis-cards">
-      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={`${r.advertiserId}-${r.channel}-${r.campaignId}`} className="analysis-item" onClick={()=>setSelected(r.campaignId)} style={{cursor:'pointer'}}><span className="badge badge-success">{r.advertiserName} {r.campaignName}</span> {r.revenue>0?`ROAS ${Number(r.roas||0).toFixed(0)}%`:`CTR ${Number(r.ctr||0).toFixed(2)}%`} · 전환 {r.dbCount}건</p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
-      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={`${r.advertiserId}-${r.channel}-${r.campaignId}`} className="analysis-item" onClick={()=>setSelected(r.campaignId)} style={{cursor:'pointer'}}><span className="badge badge-danger">{r.advertiserName} {r.campaignName}</span> 광고비 {won(r.spend)} · 전환 {r.dbCount}건{r.revenue>0?` · ROAS ${Number(r.roas||0).toFixed(0)}%`:''}</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={rowKey(r)} className="analysis-item" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser">{r.advertiserName}</small><b className="analysis-target">{r.campaignName}</b></span><span className="analysis-metrics">{r.revenue>0?`ROAS ${Number(r.roas||0).toFixed(0)}%`:`CTR ${Number(r.ctr||0).toFixed(2)}%`} · 전환 {r.dbCount}건</span></p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={rowKey(r)} className="analysis-item" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser">{r.advertiserName}</small><b className="analysis-target">{r.campaignName}</b></span><span className="analysis-metrics">광고비 {won(r.spend)} · 전환 {r.dbCount}건{r.revenue>0?` · ROAS ${Number(r.roas||0).toFixed(0)}%`:''}</span></p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
     </div>
     <div className="footnote">고성과·저성과는 선택하신 기간의 실제 매체 성과 기준입니다. 항목을 클릭하면 위 표에서 바로 확인할 수 있습니다.</div>
   </>;
