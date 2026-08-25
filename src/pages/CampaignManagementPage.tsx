@@ -107,7 +107,7 @@ export function CampaignManagementPage() {
 
     <div className="card compact-card">
       <div className="filter-row">
-        {matchedAdvertiser && <span className="footnote" style={{margin:0}}>광고주 필터: <b>{matchedAdvertiser.name}</b> (상단 검색에서 변경)</span>}
+        {matchedAdvertiser && <span className="footnote" style={{margin:0}}>상단 검색에서 변경 가능</span>}
         <select value={platform} onChange={e=>setPlatform(e.target.value as any)} className="select-control"><option value="all">전체 매체</option>{platforms.map(([k,l])=><option key={k} value={k}>{l}</option>)}</select>
         <div className="campaign-search-box"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="캠페인명 검색"/></div>
         <button className="btn" onClick={reloadCampaigns}><RefreshCw size={14}/>동기화</button>
