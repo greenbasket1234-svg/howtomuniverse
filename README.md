@@ -220,3 +220,16 @@ Railway Volume은 `/data`에 마운트하는 것을 권장합니다.
 **버전:** 1.2.0  
 **기준:** 2026-08-19  
 **상태:** Central Metrics / Meta + Naver actual API pipeline / Zero State
+
+## 13. HOWTOM 콘텐츠 제작소 분리 (PHASE 1)
+
+콘텐츠/레퍼런스 기능은 향후 별도 웹앱 `HOWTOM 콘텐츠 제작소`로 단계적으로 이전합니다.
+현재 Universe의 기존 콘텐츠 기능은 아직 삭제하지 않으며, Content Studio PHASE 2 이전 완료 후 정리합니다.
+
+Universe에서 Content Studio로 이동하는 외부 링크는 빌드 환경변수로 지정합니다.
+
+```text
+VITE_CONTENT_STUDIO_URL=https://<content-studio-domain>
+```
+
+두 앱은 같은 PostgreSQL과 동일한 `advertiser_id`를 사용합니다. Content Studio PHASE 1은 로그인, 광고주 목록 조회, 앱 전환, 홈/Stub 라우트만 제공합니다.
