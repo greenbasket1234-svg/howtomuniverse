@@ -2705,6 +2705,79 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
   }
 }
 
+// ============================================================
+// 자동 동기화 스케줄러
+// ------------------------------------------------------------
+// 새 동기화 로직을 따로 만들지 않고, 이미 검증된 handleApi의 '/api/integrations/sync'
+// 경로를 내부적으로 그대로 호출합니다(실제 HTTP 요청 없이, 가짜 req/res로 흉내).
+// 이렇게 하면 수동 동기화와 자동 동기화가 항상 완전히 같은 코드로 동작합니다.
+// ============================================================
+const EventEmitter = (await import('node:events')).EventEmitter;
+
+/** handleApi를 실제 HTTP 요청 없이 내부에서 호출합니다. */
+async function callApiInternally(method, pathname, bodyObj) {
+  const now = Math.floor(Date.now() / 1000);
+  const internalToken = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + 300 });
+  const req = new EventEmitter();
+  req.method = method;
+  req.url = pathname;
+  req.headers = { authorization: `Bearer ${internalToken}`, 'content-type': 'application/json' };
+  process.nextTick(() => { req.emit('data', Buffer.from(JSON.stringify(bodyObj || {}))); req.emit('end'); });
+
+  let statusCode = 0; let responseBody = null;
+  const res = {
+    writeHead(status) { statusCode = status; },
+    end(body) { try { responseBody = body ? JSON.parse(body) : null; } catch { responseBody = body; } },
+    getHeader() { return undefined; },
+    setHeader() {},
+  };
+  await handleApi(req, res, pathname);
+  return { status: statusCode, body: responseBody };
+}
+
+/** 지금 이 순간 연결되어 있는 모든 Meta/네이버 계정을 최근 N일 기준으로 자동 동기화합니다. */
+async function runScheduledSyncForAllAccounts(days = 3) {
+  if (!pgPool) { console.log('[자동 동기화] DATABASE_URL이 없어 건너뜁니다.'); return; }
+  const accounts = await pgPool.query(
+    `SELECT tenant_id, advertiser_id, channel FROM media_accounts WHERE status='connected' AND channel IN ('meta','naver')`
+  );
+  console.log(`[자동 동기화] 시작 - 연결된 계정 ${accounts.rows.length}개, 최근 ${days}일 기준`);
+  let success = 0, failed = 0;
+  for (const row of accounts.rows) {
+    try {
+      const result = await callApiInternally('POST', '/api/integrations/sync', { advertiserId: row.advertiser_id, channel: row.channel, days });
+      if (result.status === 200 && result.body?.ok) success++;
+      else { failed++; console.error(`[자동 동기화 실패] ${row.channel} advertiser=${row.advertiser_id}:`, result.body?.error || `HTTP ${result.status}`); }
+    } catch (error) {
+      failed++;
+      console.error(`[자동 동기화 예외] ${row.channel} advertiser=${row.advertiser_id}:`, error?.message || error);
+    }
+    // 매체 API에 요청이 한꺼번에 몰리지 않도록 계정 사이에 약간의 간격을 둡니다.
+    await new Promise(r => setTimeout(r, 800));
+  }
+  console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개`);
+}
+
+/** 매일 07:00, 09:00, 13:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
+const AUTO_SYNC_HOURS_KST = [7, 9, 13, 17, 19];
+let lastAutoSyncKey = '';
+function scheduleAutoSync() {
+  setInterval(() => {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const get = (type) => parts.find(p => p.type === type)?.value;
+    const hour = Number(get('hour')); const minute = Number(get('minute'));
+    const dateKey = `${get('year')}-${get('month')}-${get('day')}-${hour}`;
+    // 같은 시각(예: 07시)에 여러 번 실행되지 않도록, 그 시각의 첫 1분(0분)에만 실행하고 키로 중복을 막습니다.
+    if (minute === 0 && AUTO_SYNC_HOURS_KST.includes(hour) && lastAutoSyncKey !== dateKey) {
+      lastAutoSyncKey = dateKey;
+      console.log(`[자동 동기화] 예약 시각 도달: 한국시간 ${hour}시`);
+      runScheduledSyncForAllAccounts().catch(error => console.error('[자동 동기화] 처리되지 않은 오류:', error?.message || error));
+    }
+  }, 60_000);
+  console.log(`[자동 동기화] 스케줄러 시작 - 매일 한국시간 ${AUTO_SYNC_HOURS_KST.join(', ')}시에 자동 실행됩니다.`);
+}
+if (pgPool) scheduleAutoSync();
+
 http.createServer(async (req,res)=>{
   let pathname;
   try {
