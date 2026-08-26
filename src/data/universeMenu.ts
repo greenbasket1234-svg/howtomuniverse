@@ -198,6 +198,10 @@ export function activeUniverseGroup(pathname: string): UniverseMenuGroup['key'] 
     return item?.group.key ?? 'content';
   }
   if (pathname.startsWith('/automation') || pathname.startsWith('/ad-schedule') || pathname.startsWith('/notification-send') || pathname.startsWith('/operations-history') || pathname.startsWith('/ad-accounts/data-sync')) return 'automation';
+  // /ad-accounts/connections는 유니버스 메인 메뉴 어디에도 자기 자리가 없고, 설정 > 매체 계정 연동
+  // 화면의 "열기" 버튼이 유일한 진입점입니다. 분류가 없어 기본값인 '운영센터'로 잘못 표시되던 문제를
+  // 고쳐, 설정에서 들어갔을 땐 계속 '설정'이 활성 상태로 유지되게 합니다.
+  if (pathname.startsWith('/ad-accounts/connections')) return 'settings';
   if (pathname.startsWith('/advertisers') || pathname.startsWith('/approval-queue') || pathname.startsWith('/shared-links') || pathname.startsWith('/settings/advertisers')) return 'advertisers';
   if (pathname.startsWith('/settings')) return 'settings';
   return 'operations';
