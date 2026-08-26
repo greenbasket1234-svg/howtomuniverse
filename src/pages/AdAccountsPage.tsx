@@ -36,6 +36,8 @@ export function AdAccountsPage() {
   const [naverSaving,    setNaverSaving]    = useState(false);
   const [toast,          setToast]          = useState('');
   const [syncing,        setSyncing]        = useState('');
+  const [autoSyncStatus, setAutoSyncStatus] = useState<{enabled:boolean;hoursKst:number[];lastRunAt:string|null;lastResult:{total:number;success:number;failed:number}|null}|null>(null);
+  useEffect(() => { apiFetch<typeof autoSyncStatus>('/integrations/auto-sync-status').then(setAutoSyncStatus).catch(() => setAutoSyncStatus(null)); }, []);
 
   const filtered = useMemo(
     () => advertisers.filter(a => a.name.includes(query.trim()) && matchesAdvertiserFilter(a.name, filterValue)),
@@ -148,6 +150,24 @@ export function AdAccountsPage() {
         description="매체별 광고계정과 브랜드를 연결하고 API 동기화 상태를 관리합니다."
         action={<Link className="btn primary" to="/advertisers"><Plus size={15} /> 광고주 등록</Link>}
       />
+
+      {autoSyncStatus && (
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', marginBottom: 16, background: autoSyncStatus.enabled ? '#f0fdf4' : '#fef2f2', borderColor: autoSyncStatus.enabled ? '#bbf7d0' : '#fecaca' }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: autoSyncStatus.enabled ? '#16a34a' : '#dc2626', flexShrink: 0 }} />
+          <div style={{ fontSize: 13.5 }}>
+            {autoSyncStatus.enabled ? (
+              <>
+                <b>자동 동기화 켜짐</b> · 매일 한국시간 {autoSyncStatus.hoursKst.join(', ')}시에 연결된 모든 매체를 자동으로 동기화합니다.
+                {autoSyncStatus.lastRunAt ? (
+                  <> · 마지막 실행: {new Date(autoSyncStatus.lastRunAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    {autoSyncStatus.lastResult && ` (성공 ${autoSyncStatus.lastResult.success}개 / 실패 ${autoSyncStatus.lastResult.failed}개)`}
+                  </>
+                ) : ' · 아직 실행 이력이 없습니다(다음 예약 시각에 처음 실행됩니다).'}
+              </>
+            ) : <><b>자동 동기화 꺼짐</b> · DATABASE_URL이 설정되지 않아 자동 동기화를 사용할 수 없습니다.</>}
+          </div>
+        </div>
+      )}
 
       <div className="account-layout">
         {/* 광고주 목록 */}

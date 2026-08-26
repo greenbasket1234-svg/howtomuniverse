@@ -1925,6 +1925,15 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       return { account_id: row.account_id, status: row.status, api_key: decryptSecret(row.api_key_encrypted), secret_key: decryptSecret(row.secret_key_encrypted) };
     }
 
+    if (req.method === 'GET' && pathname === '/api/integrations/auto-sync-status') {
+      return sendJson(res, 200, {
+        enabled: Boolean(pgPool),
+        hoursKst: AUTO_SYNC_HOURS_KST,
+        lastRunAt: autoSyncStatus.lastRunAt,
+        lastResult: autoSyncStatus.lastResult,
+      });
+    }
+
     if (req.method === 'POST' && pathname === '/api/integrations/sync') {
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
@@ -2756,6 +2765,9 @@ async function callApiInternally(method, pathname, bodyObj) {
 }
 
 /** 지금 이 순간 연결되어 있는 모든 Meta/네이버 계정을 최근 N일 기준으로 자동 동기화합니다. */
+/** 화면에서 "자동 동기화 상태"를 보여줄 수 있도록, 가장 최근 실행 결과를 메모리에 기록해둡니다. */
+let autoSyncStatus = { lastRunAt: null, lastResult: null };
+
 async function runScheduledSyncForAllAccounts(days = 3) {
   if (!pgPool) { console.log('[자동 동기화] DATABASE_URL이 없어 건너뜁니다.'); return; }
   const accounts = await pgPool.query(
@@ -2776,6 +2788,7 @@ async function runScheduledSyncForAllAccounts(days = 3) {
     await new Promise(r => setTimeout(r, 800));
   }
   console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개`);
+  autoSyncStatus = { lastRunAt: new Date().toISOString(), lastResult: { total: accounts.rows.length, success, failed } };
 }
 
 /** 매일 07:00, 09:00, 13:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
