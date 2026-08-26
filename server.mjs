@@ -2602,6 +2602,10 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     if (req.method === 'GET' && pathname === '/api/integrations/status') {
       const tenantId = await getCurrentTenantId();
       const db = await pgReadDb(tenantId);
+      console.log(`[데이터 수집 현황] tenantId=${tenantId}, 광고주 ${db.advertisers.length}명`);
+      for (const adv of db.advertisers) {
+        console.log(`[데이터 수집 현황]   - ${adv.name}(${adv.id}): 계정 ${(adv.accounts || []).length}개 ${JSON.stringify(adv.accounts)}`);
+      }
       const rows = [];
       for (const adv of db.advertisers) {
         for (const acc of adv.accounts || []) {
@@ -2614,6 +2618,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           });
         }
       }
+      console.log(`[데이터 수집 현황] 최종 결과 ${rows.length}행`);
       return sendJson(res, 200, { rows });
     }
 
