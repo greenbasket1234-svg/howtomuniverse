@@ -1712,8 +1712,13 @@ async function handleApi(req, res, pathname) {
         }
       }
       for (const ev of connectEvents) {
-        addLog({ action: ev.type === 'connect' ? 'channel_connected' : 'channel_disconnected', advertiserId: id, advertiserName: existing.name, channel: ev.channel });
+        try {
+          await addLog({ action: ev.type === 'connect' ? 'channel_connected' : 'channel_disconnected', advertiserId: id, advertiserName: existing.name, channel: ev.channel });
+        } catch (err) {
+          console.error('[매체 연결 기록 실패]', ev.channel, ev.type, err?.message || err);
+        }
       }
+      if (connectEvents.length) console.log(`[매체 연결] ${existing.name} - ${connectEvents.map(e => `${e.channel}:${e.type}`).join(', ')}`);
       const [updated] = await pgFetchAdvertisers(tenantId, id);
       return sendJson(res, 200, redactAdvertiser(updated));
     }

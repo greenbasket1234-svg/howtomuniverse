@@ -197,11 +197,13 @@ export function activeUniverseGroup(pathname: string): UniverseMenuGroup['key'] 
     const item = universeMenuGroups.flatMap(group => group.items.map(item => ({ group, item }))).find(({ item }) => item.path === pathname);
     return item?.group.key ?? 'content';
   }
-  if (pathname.startsWith('/automation') || pathname.startsWith('/ad-schedule') || pathname.startsWith('/notification-send') || pathname.startsWith('/operations-history') || pathname.startsWith('/ad-accounts/data-sync')) return 'automation';
-  // /ad-accounts/connections는 유니버스 메인 메뉴 어디에도 자기 자리가 없고, 설정 > 매체 계정 연동
-  // 화면의 "열기" 버튼이 유일한 진입점입니다. 분류가 없어 기본값인 '운영센터'로 잘못 표시되던 문제를
-  // 고쳐, 설정에서 들어갔을 땐 계속 '설정'이 활성 상태로 유지되게 합니다.
-  if (pathname.startsWith('/ad-accounts/connections')) return 'settings';
+  if (pathname.startsWith('/automation') || pathname.startsWith('/ad-schedule') || pathname.startsWith('/notification-send') || pathname.startsWith('/operations-history')) return 'automation';
+  // /ad-accounts/connections, /ad-accounts/data-sync는 같은 화면(AdAccountsHubLayout) 안의 탭
+  // 2개일 뿐이라, 유니버스 메인 메뉴 어디에도 자기 자리가 없습니다. 설정 > 매체 계정 연동
+  // 화면의 "열기" 버튼이 유일한 진입점이라, 두 탭 모두 같은 '설정' 그룹으로 통일합니다.
+  // (예전엔 data-sync만 'automation'으로 잘못 분류되어 있어, 이 탭을 열면 AI 자동화 메뉴가
+  // 대신 활성화되는 버그가 있었습니다.)
+  if (pathname.startsWith('/ad-accounts/connections') || pathname.startsWith('/ad-accounts/data-sync')) return 'settings';
   if (pathname.startsWith('/advertisers') || pathname.startsWith('/approval-queue') || pathname.startsWith('/shared-links') || pathname.startsWith('/settings/advertisers')) return 'advertisers';
   if (pathname.startsWith('/settings')) return 'settings';
   return 'operations';
