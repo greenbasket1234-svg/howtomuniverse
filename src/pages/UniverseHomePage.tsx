@@ -40,7 +40,7 @@ export function UniverseHomePage(){
     if(sa!==sb) return sb-sa;
     return b.spend-a.spend;
   }),[creative.rows,filterValue]);
-  const overview=useMemo(()=>visibleDaily.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,revenue:a.revenue+r.revenue}),{spend:0,clicks:0,dbCount:0,revenue:0}),[visibleDaily]);
+  const overview=useMemo(()=>visibleDaily.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,purchases:a.purchases+(r.purchases||0),revenue:a.revenue+r.revenue}),{spend:0,clicks:0,dbCount:0,purchases:0,revenue:0}),[visibleDaily]);
   const byAdvertiser=useMemo(()=>{const m=new Map<string,{name:string;spend:number;clicks:number;db:number;revenue:number}>();visibleDaily.forEach(r=>{const name=r.advertiserName||r.advertiserId;const v=m.get(name)||{name,spend:0,clicks:0,db:0,revenue:0};v.spend+=r.spend;v.clicks+=r.clicks;v.db+=r.dbCount;v.revenue+=r.revenue;m.set(name,v)});return [...m.values()].sort((a,b)=>{
     // 매출을 추적하는 광고주는 ROAS로, 아니면 전환(DB) 수로 성과를 비교합니다.
     const scoreOf=(r:typeof a)=>r.revenue>0&&r.spend>0?r.revenue/r.spend*100:r.db>0?r.db*10:-1;
@@ -58,6 +58,7 @@ export function UniverseHomePage(){
       <Link to="/dashboard" className="home-dashboard-kpi home-kpi-featured"><span className="home-kpi-label"><WalletCards size={15}/><span>광고비</span></span><strong>{money(overview.spend)}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
       <Link to="/reports" className="home-dashboard-kpi"><span className="home-kpi-label"><MousePointerClick size={15}/><span>클릭</span></span><strong>{overview.clicks.toLocaleString()}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
       <Link to="/db-management" className="home-dashboard-kpi"><span className="home-kpi-label"><Database size={15}/><span>DB/전환</span></span><strong>{overview.dbCount.toLocaleString()}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
+      <Link to="/conversion-funnel" className="home-dashboard-kpi"><span className="home-kpi-label"><Target size={15}/><span>구매 전환</span></span><strong>{overview.purchases.toLocaleString()}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
       <Link to="/conversion-funnel" className="home-dashboard-kpi"><span className="home-kpi-label"><Target size={15}/><span>CPA</span></span><strong>{overview.dbCount?money(overview.spend/overview.dbCount):'-'}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
       <Link to="/report-center" className="home-dashboard-kpi"><span className="home-kpi-label"><TrendingUp size={15}/><span>ROAS</span></span><strong>{pct(roas)}</strong><em><small>{hasPerformance?periodLabel:'데이터 없음'}</small></em></Link>
       <Link to="/approval-queue" className="home-dashboard-kpi approval"><span className="home-kpi-label"><CheckCircle2 size={15}/><span>승인 대기</span></span><strong>0<small>건</small></strong><em><small>요청 없음</small></em></Link>
