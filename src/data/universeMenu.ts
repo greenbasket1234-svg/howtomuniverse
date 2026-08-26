@@ -175,10 +175,16 @@ export const universePermissionItems = universeMenuGroups.flatMap(group =>
   group.items.map(item => ({ key: item.key, label: `${group.label} ${item.label}` })),
 );
 
-export function isUniverseItemActive(pathname: string, item: UniverseMenuItem): boolean {
+export function isUniverseItemActive(pathname: string, item: UniverseMenuItem, siblingItems: UniverseMenuItem[] = []): boolean {
   const matchPath = item.prefixPath ?? item.path;
   if (matchPath === '/home') return pathname === '/home';
-  return pathname === item.path || pathname.startsWith(`${matchPath}/`);
+  if (pathname === item.path) return true;
+  // '콘텐츠 홈'(/content)처럼 상위 경로 자체가 하나의 메뉴 항목인 경우, '레퍼런스'(/content/references)
+  // 같은 형제 메뉴가 정확히 그 하위 경로와 일치하면 그 형제만 활성화하고, 이 항목은 활성화하지 않습니다.
+  // 이게 없으면 하위 메뉴 화면에서 상위 메뉴까지 같이 눌린 것처럼 보이는 버그가 생깁니다.
+  const exactlyMatchedBySibling = siblingItems.some(other => other !== item && pathname === other.path);
+  if (exactlyMatchedBySibling) return false;
+  return pathname.startsWith(`${matchPath}/`);
 }
 
 export function activeUniverseGroup(pathname: string): UniverseMenuGroup['key'] {

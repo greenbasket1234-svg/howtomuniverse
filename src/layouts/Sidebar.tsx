@@ -92,13 +92,25 @@ export function Sidebar() {
   });
 
   useEffect(() => {
-    if (pathname !== '/home') return;
-    setActiveSectionKey(null);
-    setManualCollapsed(false);
-    try {
-      sessionStorage.removeItem(ACTIVE_SECTION_KEY);
-      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, 'false');
-    } catch { /* ignore */ }
+    if (pathname === '/home') {
+      setActiveSectionKey(null);
+      setManualCollapsed(false);
+      try {
+        sessionStorage.removeItem(ACTIVE_SECTION_KEY);
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, 'false');
+      } catch { /* ignore */ }
+      return;
+    }
+    // 실제로 다른 페이지로 이동했을 때만(주소가 바뀌었을 때만) 열려있던 메뉴판을 그 페이지가
+    // 속한 그룹으로 다시 맞춥니다. 그렇지 않으면 예전에 클릭해서 열어뒀던 메뉴판이 계속 "눌린"
+    // 상태로 남아, 실제 위치인 다른 메뉴와 함께 2개가 활성화된 것처럼 보이는 버그가 생깁니다.
+    // (메인 메뉴 버튼만 눌러서 그 메뉴판을 미리 열어보는 동작은 페이지 이동이 없으므로 영향받지 않습니다.)
+    const resolved = activeUniverseGroup(pathname);
+    setActiveSectionKey(prev => {
+      if (prev === resolved) return prev;
+      try { sessionStorage.setItem(ACTIVE_SECTION_KEY, resolved); } catch { /* ignore */ }
+      return resolved;
+    });
   }, [pathname]);
 
   const activeSection = groups.find(group => group.key === activeSectionKey) ?? null;
@@ -216,7 +228,7 @@ export function Sidebar() {
           </div>
           <nav className="universe-secondary-nav" key={renderedSection.key}>
             {renderedSection.items.map((item, index) => {
-              const active = isUniverseItemActive(pathname, item);
+              const active = isUniverseItemActive(pathname, item, renderedSection.items);
               const label = `${item.label}${item.planned ? ' (미구현)' : ''}`;
               // 콘텐츠 제작소처럼 완전히 다른 배포 서비스로 이동하는 항목은 내부 라우팅(Link)이 아니라
               // 새 탭에서 여는 일반 링크로 처리합니다(Link는 이 앱 안에서의 이동만 위한 것입니다).
