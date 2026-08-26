@@ -40,6 +40,7 @@ export function CreativeFatiguePage(){
   const connected=data?.meta.connections.filter(c=>c.status==='connected')||[];
   const kindCount=(k:'이미지'|'영상'|'키워드')=>allRows.filter(r=>kindOf(r)===k).length;
   return <div><PageHeader title="소재 피로도 관리" description="동일 creative_daily_metrics에서 최근 3일·7일 구간의 CPM·CTR·CPC 변화를 계산합니다." action={<div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재·캠페인 검색"/></div>}/><MetricsDateBar/>
+    {(()=>{const from=new Date(range.from),to=new Date(range.to);const days=Math.round((to.getTime()-from.getTime())/86400000)+1;return days>90&&<div className="card" style={{color:'#a35b00',background:'#fff7e6',borderColor:'#ffe4b3',marginBottom:12,padding:'10px 14px',fontSize:13}}>선택하신 기간이 90일을 넘어서, 소재(광고) 단위 데이터는 <b>최근 90일까지만</b> 집계됩니다(성능상 제한). 캠페인 분석·통합 홈의 합계와 다를 수 있어요.</div>;})()}
     <div className="media-type-toggle" style={{marginBottom:12}}>
       {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
     </div>

@@ -3,6 +3,7 @@ import { ExternalLink, Search, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useMetricsQuery } from '../context/MetricsQueryContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import type { CreativeMetricRow } from '../types/metrics';
 import { ModalPortal } from '../components/ModalPortal';
@@ -29,6 +30,8 @@ export function MetaCreativeReportPage(){
     }
   },[detail?.adId]);
   const {filterValue}=useAdvertiserFilter();
+  const {range}=useMetricsQuery();
+  const rangeDays=useMemo(()=>{const from=new Date(range.from),to=new Date(range.to);return Math.round((to.getTime()-from.getTime())/86400000)+1;},[range.from,range.to]);
   const channels=useMemo(()=>['all',...new Set(rows.map(r=>r.channel))],[rows]);
   const filtered=useMemo(()=>[...rows].filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(kind==='전체'||kindOf(r)===kind)&&(`${r.adName} ${r.campaignName||''} ${r.advertiserName||''}`).toLowerCase().includes(query.trim().toLowerCase())).sort((a,b)=>{const av=Number(a[sortKey]||0),bv=Number(b[sortKey]||0);return sortDir==='desc'?bv-av:av-bv}),[rows,filterValue,channel,kind,query,sortKey,sortDir]);
   const toggleSort=(k:SortKey)=>{if(k===sortKey)setSortDir(v=>v==='desc'?'asc':'desc');else{setSortKey(k);setSortDir('desc')}};
@@ -38,6 +41,7 @@ export function MetaCreativeReportPage(){
   return <>
     <PageHeader title="소재 성과" description="Meta·네이버 등 연결된 매체의 실제 소재 일별 성과를 선택 기간으로 집계합니다." action={<a className="btn secondary" href="https://adsmanager.facebook.com/adsmanager/manage/campaigns" target="_blank" rel="noreferrer">Meta 광고 관리자 <ExternalLink size={14}/></a>}/>
     <MetricsDateBar/>
+    {rangeDays>90&&<div className="card" style={{color:'#a35b00',background:'#fff7e6',borderColor:'#ffe4b3',marginBottom:12,padding:'10px 14px',fontSize:13}}>선택하신 기간이 90일을 넘어서, 소재(광고) 단위 데이터는 <b>최근 90일까지만</b> 집계됩니다(소재 수가 많으면 수집 시간이 오래 걸려 성능상 제한). 캠페인 분석·통합 홈의 합계와 다를 수 있어요.</div>}
     <div className="media-type-toggle" style={{marginBottom:12}}>
       {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
     </div>

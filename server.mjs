@@ -767,7 +767,8 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
         dbCount: Number(row.ccnt || 0),
-        purchases: Number(row.ccnt || 0),
+        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
+        purchases: 0,
         revenue: Number(row.convAmt || 0),
         thumbnailUrl: null,
         mediaType: 'text', // 네이버 파워링크는 이미지/영상 없이 제목+설명 텍스트로만 구성된 키워드 기반 소재입니다.
@@ -837,7 +838,8 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
         dbCount: Number(row.ccnt || 0),
-        purchases: Number(row.ccnt || 0),
+        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
+        purchases: 0,
         revenue: Number(row.convAmt || 0),
       });
     }
@@ -864,7 +866,8 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
         dbCount: Number(row.ccnt || 0),
-        purchases: Number(row.ccnt || 0),
+        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
+        purchases: 0,
         revenue: Number(row.convAmt || 0),
       });
     }
@@ -1084,7 +1087,8 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
         dbCount: Number(row.ccnt || 0),
-        purchases: Number(row.ccnt || 0),
+        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
+        purchases: 0,
         revenue: Number(row.convAmt || 0),
       });
     }
