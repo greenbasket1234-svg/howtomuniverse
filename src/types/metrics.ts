@@ -27,6 +27,10 @@ export type BaseMetricRow = {
   spend: number;
   dbCount: number;
   purchases: number;
+  // 이커머스 퍼널 단계별 전환(Meta 전용 - 네이버는 API가 이 구분을 제공하지 않아 항상 0입니다).
+  addToCart?: number;
+  completeRegistration?: number;
+  initiateCheckout?: number;
   revenue: number;
   ctr?: number;
   cpc?: number;

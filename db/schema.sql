@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
   db_count BIGINT NOT NULL DEFAULT 0,
   purchases BIGINT NOT NULL DEFAULT 0,
   revenue NUMERIC NOT NULL DEFAULT 0,
+  add_to_cart BIGINT NOT NULL DEFAULT 0,
+  complete_registration BIGINT NOT NULL DEFAULT 0,
+  initiate_checkout BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(advertiser_id, channel, date)
 );
@@ -123,6 +126,9 @@ CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(t
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant_date ON campaign_daily_metrics(tenant_id, date);
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
+ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS initiate_checkout BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   id BIGSERIAL PRIMARY KEY,

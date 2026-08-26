@@ -234,7 +234,7 @@ async function pgReadDb(tenantId, filters = {}) {
               )) FILTER (WHERE m.id IS NOT NULL), '[]') as accounts
        FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM daily_metrics WHERE ${dm.where}`, dm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM daily_metrics WHERE ${dm.where}`, dm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
@@ -332,12 +332,25 @@ function metaCampaignStatus(effectiveStatus) {
 // 화면 값과 안 맞음). 반드시 우선순위상 "하나만" 골라 씁니다 — 절대 합산하지 않습니다.
 const PURCHASE_ACTION_PRIORITY = ['omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
 const LEAD_ACTION_PRIORITY = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
+// 장바구니 담기/회원가입/결제시작은 서로 다른 이커머스 퍼널 단계라 하나로 합치지 않고 각각 따로 집계합니다.
+// 리드/구매와 마찬가지로 같은 이벤트를 여러 action_type으로 중복 보고하므로, 종류별로 "우선순위상 하나만" 고릅니다.
+const ADD_TO_CART_ACTION_PRIORITY = ['omni_add_to_cart', 'add_to_cart', 'offsite_conversion.fb_pixel_add_to_cart'];
+const COMPLETE_REGISTRATION_ACTION_PRIORITY = ['omni_complete_registration', 'complete_registration', 'offsite_conversion.fb_pixel_complete_registration'];
+const INITIATE_CHECKOUT_ACTION_PRIORITY = ['omni_initiated_checkout', 'initiate_checkout', 'offsite_conversion.fb_pixel_initiate_checkout'];
 function pickAction(list, priorityTypes) {
   for (const type of priorityTypes) {
     const match = (list || []).find(a => a.action_type === type);
     if (match) return Number(match.value || 0);
   }
   return 0;
+}
+/** 장바구니 담기/회원가입/결제시작 3개를 한 번에 계산해서 객체로 돌려줍니다. */
+function pickFunnelActions(list) {
+  return {
+    addToCart: pickAction(list, ADD_TO_CART_ACTION_PRIORITY),
+    completeRegistration: pickAction(list, COMPLETE_REGISTRATION_ACTION_PRIORITY),
+    initiateCheckout: pickAction(list, INITIATE_CHECKOUT_ACTION_PRIORITY),
+  };
 }
 
 async function metaFetchInsights(accountId, since, until) {
@@ -368,6 +381,7 @@ async function metaFetchInsights(accountId, since, until) {
     // 구매 건수는 actions(횟수), 구매 전환값(매출)은 action_values(금액)에서 가져옵니다.
     purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
     revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
+    ...pickFunnelActions(row.actions),
   }));
 }
 
@@ -409,6 +423,7 @@ async function metaFetchLevelInsights(accountId, since, until, level) {
     dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY),
     purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
     revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
+    ...pickFunnelActions(row.actions),
   }));
 }
 
@@ -1082,13 +1097,16 @@ function aggregateDailyFromDetailed(rows) {
   const byDate = new Map();
   for (const row of rows || []) {
     if (!row.date) continue;
-    const cur = byDate.get(row.date) || { date: row.date, impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 };
+    const cur = byDate.get(row.date) || { date: row.date, impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0 };
     cur.impressions += Number(row.impressions || 0);
     cur.clicks += Number(row.clicks || 0);
     cur.spend += Number(row.spend || 0);
     cur.dbCount += Number(row.dbCount || 0);
     cur.purchases += Number(row.purchases || 0);
     cur.revenue += Number(row.revenue || 0);
+    cur.addToCart += Number(row.addToCart || 0);
+    cur.completeRegistration += Number(row.completeRegistration || 0);
+    cur.initiateCheckout += Number(row.initiateCheckout || 0);
     byDate.set(row.date, cur);
   }
   return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
@@ -1793,15 +1811,17 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue)
-         SELECT $1, $2, $3, d, imp, clk, sp, dbc, pur, rev
-         FROM UNNEST($4::date[], $5::bigint[], $6::bigint[], $7::numeric[], $8::bigint[], $9::bigint[], $10::numeric[]) AS t(d, imp, clk, sp, dbc, pur, rev)
+        `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
+         SELECT $1, $2, $3, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
+         FROM UNNEST($4::date[], $5::bigint[], $6::bigint[], $7::numeric[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::bigint[]) AS t(d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk)
          ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
            impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
-           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => r.date), valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)),
-         valid.map(r => metricNumber(r.spend)), valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+         valid.map(r => metricNumber(r.spend)), valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout))]
       );
     }
     async function upsertCampaignDailyMetrics(tenantId, advertiserId, channel, rows) {
