@@ -2778,31 +2778,49 @@ async function callApiInternally(method, pathname, bodyObj) {
 /** 화면에서 "자동 동기화 상태"를 보여줄 수 있도록, 가장 최근 실행 결과를 메모리에 기록해둡니다. */
 let autoSyncStatus = { lastRunAt: null, lastResult: null };
 
+/** 프라미스가 정해진 시간 안에 끝나지 않으면 강제로 실패 처리합니다(매체 API가 응답 없이 멈추는 경우 대비). */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} - ${ms / 1000}초 내에 응답이 없어 건너뜁니다.`)), ms)),
+  ]);
+}
+
 async function runScheduledSyncForAllAccounts(days = 3) {
   if (!pgPool) { console.log('[자동 동기화] DATABASE_URL이 없어 건너뜁니다.'); return; }
   const accounts = await pgPool.query(
-    `SELECT tenant_id, advertiser_id, channel FROM media_accounts WHERE status='connected' AND channel IN ('meta','naver')`
+    `SELECT m.tenant_id, m.advertiser_id, m.channel, a.name as advertiser_name
+     FROM media_accounts m JOIN advertisers a ON a.id = m.advertiser_id
+     WHERE m.status='connected' AND m.channel IN ('meta','naver')
+     ORDER BY m.channel, a.name`
   );
-  console.log(`[자동 동기화] 시작 - 연결된 계정 ${accounts.rows.length}개, 최근 ${days}일 기준`);
+  console.log(`[자동 동기화] 시작 - 연결된 계정 ${accounts.rows.length}개(meta ${accounts.rows.filter(r => r.channel === 'meta').length}, naver ${accounts.rows.filter(r => r.channel === 'naver').length}), 최근 ${days}일 기준`);
   let success = 0, failed = 0;
   for (const row of accounts.rows) {
+    const label = `${row.channel} · ${row.advertiser_name}`;
     try {
-      const result = await callApiInternally('POST', '/api/integrations/sync', { advertiserId: row.advertiser_id, channel: row.channel, days });
-      if (result.status === 200 && result.body?.ok) success++;
-      else { failed++; console.error(`[자동 동기화 실패] ${row.channel} advertiser=${row.advertiser_id}:`, result.body?.error || `HTTP ${result.status}`); }
+      // 계정 하나가 응답 없이 멈춰도(예: 매체 API 타임아웃) 여기서 3분 뒤 강제로 다음 계정으로 넘어갑니다.
+      // 이게 없으면 순서대로 도는 나머지 계정들이 전부 시도조차 되지 않고 멈춰버립니다.
+      const result = await withTimeout(
+        callApiInternally('POST', '/api/integrations/sync', { advertiserId: row.advertiser_id, channel: row.channel, days }),
+        180_000,
+        label
+      );
+      if (result.status === 200 && result.body?.ok) { success++; console.log(`[자동 동기화 성공] ${label}`); }
+      else { failed++; console.error(`[자동 동기화 실패] ${label}:`, result.body?.error || `HTTP ${result.status}`); }
     } catch (error) {
       failed++;
-      console.error(`[자동 동기화 예외] ${row.channel} advertiser=${row.advertiser_id}:`, error?.message || error);
+      console.error(`[자동 동기화 예외] ${label}:`, error?.message || error);
     }
     // 매체 API에 요청이 한꺼번에 몰리지 않도록 계정 사이에 약간의 간격을 둡니다.
     await new Promise(r => setTimeout(r, 800));
   }
-  console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개`);
+  console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개 (총 ${accounts.rows.length}개 중)`);
   autoSyncStatus = { lastRunAt: new Date().toISOString(), lastResult: { total: accounts.rows.length, success, failed } };
 }
 
-/** 매일 07:00, 09:00, 13:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
-const AUTO_SYNC_HOURS_KST = [7, 9, 13, 17, 19];
+/** 매일 07:00, 09:00, 14:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
+const AUTO_SYNC_HOURS_KST = [7, 9, 14, 17, 19];
 let lastAutoSyncKey = '';
 function scheduleAutoSync() {
   setInterval(() => {
