@@ -1974,7 +1974,11 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             metaFetchCampaignInsights(account.account_id, since, until),
             metaFetchAdInsights(account.account_id, adSince, until),
           ]);
-          const dailyRows = aggregateDailyFromDetailed(campaignRows);
+          // '통합 홈' 등 계정 전체 화면은, 캠페인별로 따로 가져와서 다시 합산한 값이 아니라
+          // Meta가 계정 레벨에서 직접 집계해 내려주는 accountRows를 그대로 저장합니다.
+          // 매체(광고관리자 등)가 레벨(계정/캠페인)마다 내부적으로 조금씩 다르게 집계할 수 있어,
+          // 캠페인 합산본을 저장하면 광고관리자에서 보는 계정 전체 숫자와 어긋날 수 있기 때문입니다.
+          const dailyRows = accountRows;
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (adRows.length) {
@@ -1982,8 +1986,8 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
             await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, enrichedAdRows);
           }
-          const storedRes = await pgPool.query(`SELECT * FROM daily_metrics WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3 AND date>=$4 AND date<=$5`, [tenantId, advertiserId, channel, since, until]);
-          const validation = await recordValidation(tenantId, advertiserId, channel, since, until, accountRows, storedRes.rows, 'Meta account insights vs HOWTOM campaign aggregation', account.account_id);
+          // 진단용: 캠페인 레벨을 합산한 값이 계정 레벨 원천과 얼마나 다른지 기록합니다(저장 기준은 위에서 이미 계정 레벨로 확정).
+          const validation = await recordValidation(tenantId, advertiserId, channel, since, until, accountRows, campaignRows, 'Meta 계정 레벨 원천(저장 기준) vs 캠페인 합산(진단용)', account.account_id);
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
           return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: adRows.length, since, until, validation });
         } catch (error) {
@@ -2012,17 +2016,16 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
           const creativeRows = await naverFetchCreativeDailyMetrics(credentials, detailSince, until);
           const keywordRows = await naverFetchKeywordDailyMetrics(credentials, detailSince, until);
+          // 네이버는 Meta와 달리 "계정 레벨 전용" API가 따로 없습니다(naverFetchDailyMetrics도
+          // 결국 캠페인 데이터를 다시 합산할 뿐이라, 별도로 부르면 네이버 API만 두 번 호출하는
+          // 낭비였습니다). 그래서 네이버는 이미 가져온 campaignRows를 합산해 그대로 저장합니다.
           const dailyRows = aggregateDailyFromDetailed(campaignRows);
           await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (creativeRows.length) await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, creativeRows);
           if (keywordRows.length) await upsertKeywordDailyMetrics(tenantId, advertiserId, channel, keywordRows);
-          // 같은 네이버 /stats 원천에서 계정 합계를 별도로 한 번 계산해 저장값과 대조합니다.
-          const sourceRows = await naverFetchDailyMetrics(credentials, since, until);
-          const storedRes = await pgPool.query(`SELECT * FROM daily_metrics WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3 AND date>=$4 AND date<=$5`, [tenantId, advertiserId, channel, since, until]);
-          const validation = await recordValidation(tenantId, advertiserId, channel, since, until, sourceRows, storedRes.rows, 'Naver account aggregate vs HOWTOM campaign aggregation', account.account_id);
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until, validation });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until });
         } catch (error) {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
           await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg });
