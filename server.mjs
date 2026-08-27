@@ -923,7 +923,10 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
     byType.set(tp, cur);
   }
   for (const [tp, v] of byType) console.log(`[naver-keywords] 유형=${tp} 캠페인${v.campaigns}개 광고그룹${v.adgroups}개 키워드${v.keywords}개`);
-  const selected = keywords.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
+  // 예전엔 상위 300개로 제한했지만, 순서상 300번째 밖으로 밀려난 캠페인의 키워드가 통째로
+  // 누락되는 문제가 있었습니다(소재와 동일한 문제). 2000개까지는 안전하게 전체 수집합니다.
+  const selected = keywords.slice(0, 2000);
+  if (keywords.length > 2000) console.log(`[naver-keywords 경고] 키워드가 ${keywords.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
   const result = [];
   await mapWithConcurrency(selected, 4, async kw => {
     const adgroupId = kw.nccAdgroupId || '';
