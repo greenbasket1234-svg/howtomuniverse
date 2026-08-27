@@ -679,15 +679,16 @@ async function naverFetchAdMasters(credentials) {
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const adgroups = [];
   await mapWithConcurrency(campaigns, 4, async c => {
-    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error(`[naver-adgroups 실패] 캠페인="${c.name}"(${naverCampaignTypeKo(c.campaignTp)}):`, err?.message || err); return []; });
     if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '', campaignType: campaignTypeMap.get(c.nccCampaignId) || '' })));
   });
   const adgroupNameMap = new Map(adgroups.map(ag => [ag.nccAdgroupId, ag.name || '']));
   const ads = [];
   await mapWithConcurrency(adgroups, 4, async ag => {
-    const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []);
+    const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(err => { console.error(`[naver-ads 실패] 캠페인="${ag.campaignName}"(${ag.campaignType}) 광고그룹="${ag.name}":`, err?.message || err); return []; });
     if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' })));
   });
+  console.log(`[naver-ad-masters] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 소재 ${ads.length}개. 유형별 캠페인 수: ${JSON.stringify(campaigns.reduce((a, c) => { const t = naverCampaignTypeKo(c.campaignTp); a[t] = (a[t] || 0) + 1; return a; }, {}))}`);
   return { ads, adgroupNameMap };
 }
 
@@ -2161,6 +2162,35 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (creativeRows.length) await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, creativeRows);
           if (keywordRows.length) await upsertKeywordDailyMetrics(tenantId, advertiserId, channel, keywordRows);
+
+          // 진단용: 캠페인 레벨 합계와 소재 레벨 합계를 캠페인별로 대조해서, 소재 레벨에서
+          // 어느 캠페인이 얼마나 누락되는지 확인합니다("소재 관리" 합계가 "통합 홈"과 다르다는
+          // 문제의 원인 파악용).
+          {
+            const campaignTotals = new Map();
+            for (const r of campaignRows) {
+              const key = r.campaignId || r.campaignName;
+              const cur = campaignTotals.get(key) || { name: r.campaignName, dbCount: 0, purchases: 0 };
+              cur.dbCount += Number(r.dbCount || 0); cur.purchases += Number(r.purchases || 0);
+              campaignTotals.set(key, cur);
+            }
+            const creativeTotals = new Map();
+            for (const r of creativeRows) {
+              const key = r.campaignId || r.campaignName;
+              const cur = creativeTotals.get(key) || { dbCount: 0, purchases: 0, adCount: 0 };
+              cur.dbCount += Number(r.dbCount || 0); cur.purchases += Number(r.purchases || 0); cur.adCount++;
+              creativeTotals.set(key, cur);
+            }
+            for (const [key, camp] of campaignTotals) {
+              if (camp.dbCount + camp.purchases === 0) continue;
+              const creative = creativeTotals.get(key);
+              const creativeTotal = creative ? creative.dbCount + creative.purchases : 0;
+              const campTotal = camp.dbCount + camp.purchases;
+              if (creativeTotal !== campTotal) {
+                console.log(`[네이버 소재 커버리지 대조] 캠페인="${camp.name}" 캠페인레벨(DB${camp.dbCount}+구매${camp.purchases}=${campTotal}) vs 소재레벨 합계(${creative ? `DB${creative.dbCount}+구매${creative.purchases}=${creativeTotal}, 소재 ${creative.adCount}개` : '소재 데이터 없음'}) ${creativeTotal < campTotal ? '⚠️ 소재 레벨에서 누락됨' : ''}`);
+              }
+            }
+          }
 
           // 네이버는 purchaseCcnt/purchaseConvAmt를 원천으로 삼아 저장한 뒤, 같은 기간의
           // daily_metrics를 다시 읽어 구매 전환이 DB 저장 과정에서 변형되지 않았는지 즉시 검증합니다.

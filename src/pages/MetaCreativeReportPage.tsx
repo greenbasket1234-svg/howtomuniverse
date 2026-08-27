@@ -42,6 +42,7 @@ export function MetaCreativeReportPage(){
     <PageHeader title="소재 성과" description="Meta·네이버 등 연결된 매체의 실제 소재 일별 성과를 선택 기간으로 집계합니다." action={<a className="btn secondary" href="https://adsmanager.facebook.com/adsmanager/manage/campaigns" target="_blank" rel="noreferrer">Meta 광고 관리자 <ExternalLink size={14}/></a>}/>
     <MetricsDateBar/>
     {rangeDays>90&&<div className="card" style={{color:'#a35b00',background:'#fff7e6',borderColor:'#ffe4b3',marginBottom:12,padding:'10px 14px',fontSize:13}}>선택하신 기간이 90일을 넘어서, 소재(광고) 단위 데이터는 <b>최근 90일까지만</b> 집계됩니다(소재 수가 많으면 수집 시간이 오래 걸려 성능상 제한). 캠페인 분석·통합 홈의 합계와 다를 수 있어요.</div>}
+    <div className="card" style={{color:'#5a5a5a',background:'#f5f5f5',borderColor:'#e0e0e0',marginBottom:12,padding:'10px 14px',fontSize:13}}>네이버는 소재가 많으면 동기화 시간이 오래 걸려 <b>상위 300개까지만</b> 수집됩니다. 캠페인 분석·통합 홈의 합계보다 이 화면 합계가 적을 수 있어요.</div>
     <div className="media-type-toggle" style={{marginBottom:12}}>
       {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
     </div>
