@@ -774,7 +774,7 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
     for (const r of resultRows) {
       if (r.ccnt !== undefined && r.purchaseCcnt !== undefined && Number(r.ccnt) > 0) {
         const same = Number(r.ccnt) === Number(r.purchaseCcnt);
-        console.log(`[네이버 전환필드 대조] id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} convAmt=${r.convAmt} purchaseConvAmt=${r.purchaseConvAmt} ${same ? '⚠️ 두 값이 동일함(구매 전용 필드가 아닐 수 있음)' : '✅ 서로 다름(정상적으로 구분되는 것으로 보임)'}`);
+        console.log(`[네이버 전환필드 대조] id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} cartCcnt=${r.cartCcnt ?? '(미요청)'} signUpCcnt=${r.signUpCcnt ?? '(미요청)'} paymentCcnt=${r.paymentCcnt ?? '(미요청)'} convAmt=${r.convAmt} purchaseConvAmt=${r.purchaseConvAmt} ${same ? '⚠️ ccnt와 purchaseCcnt가 동일함(구매 전용 필드가 아닐 수 있음)' : '✅ 서로 다름(정상적으로 구분되는 것으로 보임)'}`);
       }
     }
     return resultRows;
@@ -827,19 +827,20 @@ function splitNaverConversions(row) {
   const totalConversions = numOrZero('ccnt');
   const purchases = numOrZero('purchaseCcnt');
   const revenue = numOrZero('purchaseConvAmt');
-  // DB(리드) 전환 = 전체 전환(ccnt) - 구매(purchaseCcnt). 네이버 /stats API는 '리드 전용' 필드를
-  // 따로 제공하지 않아 완벽하진 않지만, 이렇게 계산하지 않으면 DB 전환이 항상 0으로 표시되어
-  // 오히려 더 부정확합니다(실제 전환이 있는데도 없는 것처럼 보임). purchaseCcnt가 이 계정/캠페인
-  // 유형에서 실제로 '구매 전용'이 맞는지는 [네이버 전환필드 대조] 로그로 별도 확인 중입니다.
-  // purchaseCcnt가 신뢰할 수 없는 것으로 확인되면(=ccnt와 항상 같음), 그때는 이 값을 0으로 보지 않고
-  // 전체 전환(ccnt)을 그대로 DB 전환으로 처리하도록 다시 조정할 수 있습니다.
-  const dbCount = Math.max(0, totalConversions - purchases);
   // 장바구니 담기/회원가입/결제시작은 계정마다 지원 여부가 달라, 필드가 실제로 응답에
   // 있을 때만 값을 채웁니다(naverProbeFunnelFieldSupport에서 미지원으로 확인되면
   // 애초에 요청 필드에 안 들어가 있어서 항상 0으로 정직하게 남습니다).
   const addToCart = numOrZero('cartCcnt');
   const completeRegistration = numOrZero('signUpCcnt');
   const initiateCheckout = numOrZero('paymentCcnt');
+  // DB(리드) 전환 = 전체 전환(ccnt) - 구매 - 장바구니담기 - 회원가입 - 결제시작.
+  // 이전에는 구매만 빼고 있어서, 이 계정에 장바구니 담기/회원가입 등 활동이 있으면
+  // 그게 전부 DB 전환에 그대로 섞여 들어가는 버그가 있었습니다(전환 종류가 서로 겹쳐 보이는
+  // 원인). 네이버 /stats API는 '리드 전용' 필드를 따로 제공하지 않아 완벽하진 않지만,
+  // 이미 종류를 알고 있는 전환들을 전부 뺀 나머지만 DB로 처리해야 종류가 겹치지 않습니다.
+  // purchaseCcnt가 이 계정/캠페인 유형에서 실제로 신뢰할 수 있는지는 [네이버 전환필드 대조]
+  // 로그로 별도 확인 중입니다.
+  const dbCount = Math.max(0, totalConversions - purchases - addToCart - completeRegistration - initiateCheckout);
   return { dbCount, purchases, revenue, addToCart, completeRegistration, initiateCheckout };
 }
 
