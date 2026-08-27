@@ -4,7 +4,7 @@ import type { MonthlyReportData, MonthlyKpiTotals, MediaPerformanceRow } from '.
 
 function totals(overrides: Partial<MonthlyKpiTotals> = {}): MonthlyKpiTotals {
   return {
-    impressions: 0, clicks: 0, spend: 0, leads: 0, revenue: 0,
+    impressions: 0, clicks: 0, spend: 0, leads: 0, purchases: 0, revenue: 0,
     reach: 0, payments: 0, refunds: 0,
     ctr: 0, cpc: 0, cvr: 0, cpa: 0, roas: 0, cpm: 0, frequency: 0, netRevenue: 0,
     ...overrides,
@@ -14,7 +14,7 @@ function totals(overrides: Partial<MonthlyKpiTotals> = {}): MonthlyKpiTotals {
 function mediaRow(overrides: Partial<MediaPerformanceRow> = {}): MediaPerformanceRow {
   return {
     platform: '메타', impressions: 100000, clicks: 2000, ctr: 2, cpc: 500,
-    spend: 1000000, leads: 100, cvr: 5, cpa: 10000, revenue: 5000000, roas: 500,
+    spend: 1000000, leads: 100, purchases: 80, cvr: 5, cpa: 10000, purchaseCvr: 4, purchaseCpa: 12500, revenue: 5000000, roas: 500,
     reach: 70000, cpm: 10000, frequency: 1.4, payments: 4650000, refunds: 279000, netRevenue: 4371000,
     ...overrides,
   };
@@ -22,7 +22,7 @@ function mediaRow(overrides: Partial<MediaPerformanceRow> = {}): MediaPerformanc
 
 function baseData(overrides: Partial<MonthlyReportData> = {}): MonthlyReportData {
   const current = totals({
-    impressions: 100000, clicks: 2000, spend: 1000000, leads: 100, revenue: 5000000,
+    impressions: 100000, clicks: 2000, spend: 1000000, leads: 100, purchases: 80, revenue: 5000000,
     reach: 70000, payments: 4650000, refunds: 279000,
     ctr: 2, cpc: 500, cvr: 5, cpa: 10000, roas: 500, cpm: 10000, frequency: 1.4, netRevenue: 4371000,
   });
@@ -86,6 +86,25 @@ describe('buildNextMonthProposal - 핵심 숫자 일관성', () => {
     if (proposal.newPlatformSuggestion) {
       expect(proposal.newPlatformSuggestion.expectedRevenue).toBe(0);
     }
+  });
+
+  it('매출형 구매 전환 목표는 DB 전환 수와 무관하게 Purchase 실적만으로 계산된다', () => {
+    const lowLeadData = baseData({
+      reportType: 'revenue',
+      current: totals({ impressions: 100000, clicks: 2000, spend: 1000000, leads: 10, purchases: 80, revenue: 5000000 }),
+      mediaTable: [mediaRow({ leads: 10, purchases: 80 })],
+    });
+    const highLeadData = baseData({
+      reportType: 'revenue',
+      current: totals({ impressions: 100000, clicks: 2000, spend: 1000000, leads: 9999, purchases: 80, revenue: 5000000 }),
+      mediaTable: [mediaRow({ leads: 9999, purchases: 80 })],
+    });
+
+    const lowLeadProposal = buildNextMonthProposal(lowLeadData);
+    const highLeadProposal = buildNextMonthProposal(highLeadData);
+
+    expect(lowLeadProposal.target.purchases).toBe(highLeadProposal.target.purchases);
+    expect(lowLeadProposal.target.purchases).toBeGreaterThan(0);
   });
 
   it('자동 제안의 마지막 요약 문장 숫자가 KPI 카드 숫자와 일치해야 한다(DB형)', () => {

@@ -24,13 +24,13 @@ export type LineItem = {
 };
 
 export type RowMetricKey =
-  | 'revenue' | 'ad_spend' | 'db_count' | 'clicks' | 'impressions'
-  | 'cpc' | 'cost_per_db' | 'ctr' | 'conversion_rate' | 'roas'
+  | 'revenue' | 'ad_spend' | 'db_count' | 'purchase_count' | 'clicks' | 'impressions'
+  | 'cpc' | 'cost_per_db' | 'cost_per_purchase' | 'ctr' | 'conversion_rate' | 'purchase_conversion_rate' | 'roas'
   | 'add_to_cart' | 'complete_registration';
 
 export const ROW_METRIC_FORMAT: Record<RowMetricKey, 'currency' | 'count' | 'percent'> = {
-  revenue: 'currency', ad_spend: 'currency', db_count: 'count', clicks: 'count', impressions: 'count',
-  cpc: 'currency', cost_per_db: 'currency', ctr: 'percent', conversion_rate: 'percent', roas: 'percent',
+  revenue: 'currency', ad_spend: 'currency', db_count: 'count', purchase_count: 'count', clicks: 'count', impressions: 'count',
+  cpc: 'currency', cost_per_db: 'currency', cost_per_purchase: 'currency', ctr: 'percent', conversion_rate: 'percent', purchase_conversion_rate: 'percent', roas: 'percent',
   add_to_cart: 'count', complete_registration: 'count',
 };
 
@@ -39,6 +39,7 @@ export const ROW_METRIC_FORMAT: Record<RowMetricKey, 'currency' | 'count' | 'per
 export const PERCENT_DECIMALS: Partial<Record<RowMetricKey, number>> = {
   ctr: 2,
   conversion_rate: 2,
+  purchase_conversion_rate: 2,
   roas: 0,
 };
 
@@ -46,14 +47,11 @@ export const PERCENT_DECIMALS: Partial<Record<RowMetricKey, number>> = {
 // null은 "-"(미지원/해당없음)로, 0은 "0" 또는 "0.00%"로 표시됩니다 — 3차 검토에서 정한 구분.
 export function computeMetric(metric: RowMetricKey, raw: RawFields): number | null {
   const has = (v: number | undefined): v is number => v !== undefined;
-  // '전환'은 DB전환(리드)만 세면 안 됩니다 - 구매 목적 캠페인은 dbCount가 0이어도 purchases로
-  // 실제 전환이 있을 수 있습니다. 장바구니 담기·회원가입은 참고 지표일 뿐 실제 전환이 아니므로
-  // 이 합계에서 제외합니다(요청: CVR·CPA는 구매+DB 전환 개수만 반영).
-  const totalConversions = has(raw.dbCount) || has(raw.purchases) ? (raw.dbCount ?? 0) + (raw.purchases ?? 0) : undefined;
   switch (metric) {
     case 'revenue': return has(raw.revenue) ? raw.revenue : null;
     case 'ad_spend': return has(raw.spend) ? raw.spend : null;
-    case 'db_count': return has(totalConversions) ? totalConversions : null;
+    case 'db_count': return has(raw.dbCount) ? raw.dbCount : null;
+    case 'purchase_count': return has(raw.purchases) ? raw.purchases : null;
     case 'clicks': return has(raw.clicks) ? raw.clicks : null;
     case 'impressions': return has(raw.impressions) ? raw.impressions : null;
     case 'add_to_cart': return has(raw.addToCart) ? raw.addToCart : null;
@@ -62,14 +60,20 @@ export function computeMetric(metric: RowMetricKey, raw: RawFields): number | nu
       if (!has(raw.clicks) || !has(raw.spend)) return null;
       return raw.clicks ? raw.spend / raw.clicks : 0;
     case 'cost_per_db':
-      if (!has(totalConversions) || !has(raw.spend)) return null;
-      return totalConversions ? raw.spend / totalConversions : 0;
+      if (!has(raw.dbCount) || !has(raw.spend)) return null;
+      return raw.dbCount ? raw.spend / raw.dbCount : 0;
+    case 'cost_per_purchase':
+      if (!has(raw.purchases) || !has(raw.spend)) return null;
+      return raw.purchases ? raw.spend / raw.purchases : 0;
     case 'ctr':
       if (!has(raw.impressions) || !has(raw.clicks)) return null;
       return raw.impressions ? (raw.clicks / raw.impressions) * 100 : 0;
     case 'conversion_rate':
-      if (!has(raw.clicks) || !has(totalConversions)) return null;
-      return raw.clicks ? (totalConversions / raw.clicks) * 100 : 0;
+      if (!has(raw.clicks) || !has(raw.dbCount)) return null;
+      return raw.clicks ? (raw.dbCount / raw.clicks) * 100 : 0;
+    case 'purchase_conversion_rate':
+      if (!has(raw.clicks) || !has(raw.purchases)) return null;
+      return raw.clicks ? (raw.purchases / raw.clicks) * 100 : 0;
     case 'roas':
       if (!has(raw.spend) || !has(raw.revenue)) return null;
       return raw.spend ? (raw.revenue / raw.spend) * 100 : 0;

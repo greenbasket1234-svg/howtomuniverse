@@ -172,6 +172,7 @@ function buildCustomCards(data: MonthlyReportData): KpiCard[] {
     ctr: () => ({ label: 'CTR', value: pct(current.ctr), change: safeChangePoint(data, current.ctr, previous.ctr), diff: fmtPercentRelativeDiff(data, current.ctr, previous.ctr) }),
     cpc: () => ({ label: 'CPC', value: money(current.cpc), change: safeChangeRate(data, current.cpc, previous.cpc), diff: fmtDiff(data, current.cpc, previous.cpc, 'currency'), goodWhenUp: false }),
     leads: () => ({ label: 'DB', value: `${current.leads.toLocaleString()}건`, change: safeChangeRate(data, current.leads, previous.leads), diff: fmtDiff(data, current.leads, previous.leads, 'count') }),
+    purchases: () => ({ label: '구매 전환', value: `${current.purchases.toLocaleString()}건`, change: safeChangeRate(data, current.purchases, previous.purchases), diff: fmtDiff(data, current.purchases, previous.purchases, 'count') }),
     conversionRate: () => ({ label: 'CVR', value: pct(current.cvr), change: safeChangePoint(data, current.cvr, previous.cvr), diff: fmtPercentRelativeDiff(data, current.cvr, previous.cvr) }),
     cpa: () => ({ label: 'CPA', value: money(current.cpa), change: safeChangeRate(data, current.cpa, previous.cpa), diff: fmtDiff(data, current.cpa, previous.cpa, 'currency'), goodWhenUp: false }),
     revenue: () => ({ label: '매출', value: money(current.revenue), change: safeChangeRate(data, current.revenue, previous.revenue), diff: fmtDiff(data, current.revenue, previous.revenue, 'currency') }),
@@ -201,6 +202,7 @@ function getKpiCards(data: MonthlyReportData): KpiCard[] {
     ],
     revenue: [
       { label: '광고비', value: money(current.spend), change: safeChangeRate(data, current.spend, previous.spend), diff: fmtDiff(data, current.spend, previous.spend, 'currency') },
+      data.profileMetrics.includes('purchases') && { label: '구매 전환', value: `${current.purchases.toLocaleString()}건`, change: safeChangeRate(data, current.purchases, previous.purchases), diff: fmtDiff(data, current.purchases, previous.purchases, 'count') },
       data.profileMetrics.includes('payments') && { label: '결제', value: money(current.payments), change: safeChangeRate(data, current.payments, previous.payments), diff: fmtDiff(data, current.payments, previous.payments, 'currency') },
       data.profileMetrics.includes('refunds') && { label: '환불', value: money(current.refunds), change: safeChangeRate(data, current.refunds, previous.refunds), diff: fmtDiff(data, current.refunds, previous.refunds, 'currency'), goodWhenUp: false },
       data.profileMetrics.includes('payments') && data.profileMetrics.includes('refunds') && { label: '순매출', value: money(current.netRevenue), change: safeChangeRate(data, current.netRevenue, previous.netRevenue), diff: fmtDiff(data, current.netRevenue, previous.netRevenue, 'currency') },
@@ -356,6 +358,7 @@ const CUSTOM_METRIC_DEFS: Partial<Record<string, { label: string; field: keyof M
   ctr: { label: 'CTR', field: 'ctr', totalField: 'ctr', format: 'pct' },
   cpc: { label: 'CPC', field: 'cpc', totalField: 'cpc', format: 'money' },
   leads: { label: 'DB', field: 'leads', totalField: 'leads', format: 'number' },
+  purchases: { label: '구매 전환', field: 'purchases', totalField: 'purchases', format: 'number' },
   conversionRate: { label: 'CVR', field: 'cvr', totalField: 'cvr', format: 'pct' },
   cpa: { label: 'CPA', field: 'cpa', totalField: 'cpa', format: 'money' },
   revenue: { label: '매출', field: 'revenue', totalField: 'revenue', format: 'money' },
@@ -395,6 +398,7 @@ export function MediaPerformancePage({ data }: { data: MonthlyReportData }) {
     ],
     revenue: [
       { label: '광고비', render: m => money(m.spend) },
+      ...(data.profileMetrics.includes('purchases') ? [{ label: '구매 전환', render: (m: MonthlyReportData['mediaTable'][number]) => m.purchases.toLocaleString() }] : []),
       ...(data.profileMetrics.includes('payments') ? [{ label: '결제', render: (m: MonthlyReportData['mediaTable'][number]) => money(m.payments) }] : []),
       ...(data.profileMetrics.includes('refunds') ? [{ label: '환불', render: (m: MonthlyReportData['mediaTable'][number]) => money(m.refunds) }] : []),
       ...(data.profileMetrics.includes('payments') && data.profileMetrics.includes('refunds') ? [{ label: '순매출', render: (m: MonthlyReportData['mediaTable'][number]) => money(m.netRevenue) }] : []),
@@ -420,7 +424,7 @@ export function MediaPerformancePage({ data }: { data: MonthlyReportData }) {
   const columnGroups: { name: string; cols: MediaCol[] }[] = data.reportType === 'integrated'
     ? [
         { name: '유입·광고비', cols: buildCustomMediaCols(['spend', 'impressions', 'reach', 'frequency', 'clicks', 'ctr', 'cpc'] as MonthlyReportData['profileMetrics']) },
-        { name: '전환 성과', cols: buildCustomMediaCols(['leads', 'conversionRate', 'cpa'] as MonthlyReportData['profileMetrics']) },
+        { name: '전환 성과', cols: buildCustomMediaCols(['leads', 'purchases', 'conversionRate', 'cpa'] as MonthlyReportData['profileMetrics']) },
         { name: '매출 성과', cols: buildCustomMediaCols(['revenue', 'payments', 'refunds', 'netRevenue', 'roas'] as MonthlyReportData['profileMetrics']) },
       ].filter(group => group.cols.length > 0)
     : baseDataCols.length > 7
@@ -546,6 +550,7 @@ export function MonthlyComparisonPage({ data, insights }: { data: MonthlyReportD
     ],
     revenue: [
       { label: '광고비', current: money(current.spend), previous: money(previous.spend), change: safeChangeRate(data, current.spend, previous.spend), diff: fmtDiff(data, current.spend, previous.spend, 'currency') },
+      ...(data.profileMetrics.includes('purchases') ? [{ label: '구매 전환', current: `${current.purchases.toLocaleString()}건`, previous: `${previous.purchases.toLocaleString()}건`, change: safeChangeRate(data, current.purchases, previous.purchases), diff: fmtDiff(data, current.purchases, previous.purchases, 'count') }] : []),
       ...(data.profileMetrics.includes('payments') ? [{ label: '결제', current: money(current.payments), previous: money(previous.payments), change: safeChangeRate(data, current.payments, previous.payments), diff: fmtDiff(data, current.payments, previous.payments, 'currency') }] : []),
       ...(data.profileMetrics.includes('refunds') ? [{ label: '환불', current: money(current.refunds), previous: money(previous.refunds), change: safeChangeRate(data, current.refunds, previous.refunds), diff: fmtDiff(data, current.refunds, previous.refunds, 'currency'), goodWhenUp: false }] : []),
       ...(data.profileMetrics.includes('payments') && data.profileMetrics.includes('refunds') ? [{ label: '순매출', current: money(current.netRevenue), previous: money(previous.netRevenue), change: safeChangeRate(data, current.netRevenue, previous.netRevenue), diff: fmtDiff(data, current.netRevenue, previous.netRevenue, 'currency') }] : []),
@@ -624,9 +629,9 @@ export function HighlightPage({ data }: { data: MonthlyReportData }) {
   const isClick = data.reportType === 'click';
   const isReach = data.reportType === 'reach';
   const isCustom = (data.reportType === 'custom' || data.reportType === 'integrated');
-  const RAW_KEYS = new Set(['spend', 'impressions', 'reach', 'clicks', 'leads', 'revenue', 'payments', 'refunds']);
+  const RAW_KEYS = new Set(['spend', 'impressions', 'reach', 'clicks', 'leads', 'purchases', 'revenue', 'payments', 'refunds']);
   const efficiencyPriority = ['roas', 'cpa', 'cpc', 'conversionRate', 'ctr'] as const;
-  const volumePriority = ['revenue', 'leads', 'clicks', 'reach', 'impressions', 'payments'] as const;
+  const volumePriority = ['revenue', 'purchases', 'leads', 'clicks', 'reach', 'impressions', 'payments'] as const;
   const customEfficiencyKey = efficiencyPriority.find(key => data.profileMetrics.includes(key) && data.mediaTable.some(row => (row[CUSTOM_METRIC_DEFS[key]!.field] as number) > 0));
   const customVolumeKey = volumePriority.find(key => data.profileMetrics.includes(key)) ?? data.profileMetrics.find(m => RAW_KEYS.has(m) && m !== 'spend') ?? data.profileMetrics.find(m => RAW_KEYS.has(m));
   const bestBy = isCustom
@@ -761,7 +766,7 @@ export function MediaComparisonPage({ data }: { data: MonthlyReportData }) {
   const isReach = data.reportType === 'reach';
   const isCustom = (data.reportType === 'custom' || data.reportType === 'integrated');
   const CHART_COLORS = ['#2563eb', '#f59e0b', '#16a34a', '#db2777', '#8b5cf6', '#0891b2'];
-  const RAW_KEYS = new Set(['spend', 'impressions', 'reach', 'clicks', 'leads', 'revenue', 'payments', 'refunds']);
+  const RAW_KEYS = new Set(['spend', 'impressions', 'reach', 'clicks', 'leads', 'purchases', 'revenue', 'payments', 'refunds']);
 
   if (data.reportType === 'integrated') {
     const settlementSeries = [

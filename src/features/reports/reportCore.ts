@@ -15,7 +15,7 @@ export type ReportType = 'lead' | 'revenue' | 'click' | 'reach' | 'integrated' |
 export type ClickMode = 'simple' | 'efficiency';
 export type ReportTab = 'preview' | 'media' | 'data' | 'api' | 'input' | 'upload' | 'template' | 'savedTemplates' | 'generated' | 'monthly';
 export type CellFormat = 'number' | 'currency' | 'percent' | 'decimal';
-export type MetricKey = 'leads' | 'clicks' | 'impressions' | 'reach' | 'frequency' | 'spend' | 'cpa' | 'cpc' | 'ctr' | 'conversionRate' | 'revenue' | 'roas' | 'payments' | 'refunds' | 'netRevenue';
+export type MetricKey = 'leads' | 'purchases' | 'clicks' | 'impressions' | 'reach' | 'frequency' | 'spend' | 'cpa' | 'cpc' | 'ctr' | 'conversionRate' | 'revenue' | 'roas' | 'payments' | 'refunds' | 'netRevenue';
 
 export type DailyReportProfile = {
   advertiserName: string;
@@ -32,6 +32,7 @@ export type DailyReportProfile = {
 
 export type MetricBundle = {
   leads?: number[];
+  purchases?: number[];
   clicks?: number[];
   impressions?: number[];
   reach?: number[];
@@ -81,7 +82,7 @@ export type GeneratedReport = {
   createdAt: string;
   rowCount: number;
   rows?: ReportRow[];
-  summary?: { clicks: number; spend: number; leads: number; revenue: number; impressions?: number; reach?: number; cpc: number; cpa: number; roas: number; frequency?: number };
+  summary?: { clicks: number; spend: number; leads: number; purchases?: number; revenue: number; impressions?: number; reach?: number; cpc: number; cpa: number; roas: number; frequency?: number };
   source?: 'api' | 'manual' | 'upload' | 'demo' | 'sample';
   isSample?: boolean;
   periodType?: 'daily' | 'weekly' | 'monthly';
@@ -121,6 +122,7 @@ export const REPORT_TYPE_LABEL: Record<ReportType, string> = {
 
 export const METRIC_LABELS: Record<MetricKey, string> = {
   leads: 'DB 개수',
+  purchases: '구매 전환',
   clicks: '클릭수',
   impressions: '노출수',
   reach: '도달',
@@ -296,7 +298,7 @@ export function defaultProfileFor(advertiserName: string): DailyReportProfile {
       advertiserName,
       reportType,
       platforms: ['메타', '네이버', 'GFA', '카카오키워드', '카카오모먼트', '모비온', 'ADN', '구글', '카페24', '스마트스토어'],
-      metrics: ['revenue', 'spend', 'roas'],
+      metrics: ['purchases', 'revenue', 'spend', 'roas'],
       showFutureDates: true,
       futureDateDisplay: 'zero',
     };
@@ -345,7 +347,7 @@ export function reachProfileFor(advertiserName: string): DailyReportProfile {
 
 export const ALL_REPORT_METRICS: MetricKey[] = [
   'spend', 'impressions', 'reach', 'frequency', 'clicks', 'ctr', 'cpc',
-  'leads', 'conversionRate', 'cpa', 'revenue', 'payments', 'refunds',
+  'leads', 'purchases', 'conversionRate', 'cpa', 'revenue', 'payments', 'refunds',
   'netRevenue', 'roas',
 ];
 
@@ -448,6 +450,7 @@ export function inferFormat(metric: MetricKey): CellFormat {
 
 export function totalLabel(metric: MetricKey) {
   if (metric === 'leads') return '총 DB 개수';
+  if (metric === 'purchases') return '총 구매 전환';
   if (metric === 'clicks') return '총 클릭수';
   if (metric === 'impressions') return '총 노출수';
   if (metric === 'reach') return '총 도달';
@@ -464,7 +467,7 @@ export function totalLabel(metric: MetricKey) {
 }
 
 export function metricGroup(metric: MetricKey) {
-  if (['leads', 'clicks', 'impressions', 'reach'].includes(metric)) return '성과 데이터';
+  if (['leads', 'purchases', 'clicks', 'impressions', 'reach'].includes(metric)) return '성과 데이터';
   if (['spend', 'cpa', 'cpc'].includes(metric)) return '광고비 효율';
   if (['ctr', 'conversionRate', 'roas', 'frequency'].includes(metric)) return '비율 지표';
   return '매출 데이터';
@@ -533,7 +536,7 @@ export function deriveMetric(metric: MetricKey, bundle: MetricBundle, days: numb
 }
 
 export function mergeBundles(source: SourceMap, platforms: string[], days: number): MetricBundle {
-  const keys: (keyof MetricBundle)[] = ['leads', 'clicks', 'impressions', 'reach', 'spend', 'revenue', 'payments', 'refunds'];
+  const keys: (keyof MetricBundle)[] = ['leads', 'purchases', 'clicks', 'impressions', 'reach', 'spend', 'revenue', 'payments', 'refunds'];
   return keys.reduce((acc, key) => {
     acc[key] = Array.from({ length: days }, (_, index) => platforms.reduce((total, platform) => total + byIndex(source[platform]?.[key], index), 0));
     return acc;
@@ -551,7 +554,7 @@ export function buildRows(profile: DailyReportProfile, month: string, sourceOver
 
   const includeTotal = (metric: MetricKey) => {
     if (profile.reportType === 'revenue' && metric === 'revenue') return true;
-    if (['leads','clicks','impressions','reach','frequency','spend','cpa','cpc','ctr','conversionRate','revenue','roas','payments','refunds','netRevenue'].includes(metric)) return true;
+    if (['leads','purchases','clicks','impressions','reach','frequency','spend','cpa','cpc','ctr','conversionRate','revenue','roas','payments','refunds','netRevenue'].includes(metric)) return true;
     return false;
   };
 
@@ -708,7 +711,7 @@ export function buildCustomMetricRows(
     });
 }
 
-export const RAW_METRICS: MetricKey[] = ['leads', 'clicks', 'impressions', 'reach', 'spend', 'revenue', 'payments', 'refunds'];
+export const RAW_METRICS: MetricKey[] = ['leads', 'purchases', 'clicks', 'impressions', 'reach', 'spend', 'revenue', 'payments', 'refunds'];
 
 export function rowsToSource(rows: ReportRow[], days: number): SourceMap {
   const source: SourceMap = {};

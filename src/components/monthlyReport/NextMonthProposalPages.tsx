@@ -48,7 +48,7 @@ export function ProposalCoverPage({ data }: { data: NextMonthProposalData }) {
       <div style={{ color: CYAN, fontWeight: 800, letterSpacing: 1.5 }}>NEXT MONTH MEDIA OPERATION PROPOSAL</div><h1 style={{ fontSize: 42, lineHeight: 1.25, margin: '32px 0 12px' }}>{data.advertiserName}<br />다음달 제안서</h1><p style={{ color: '#b8c7db', fontSize: 18 }}>{monthLabel(data.sourceMonth)} 월간 성과를 기준으로 설계한 {monthLabel(data.targetMonth)} 운영안</p></div>
     {(() => {
       const cards = data.reportType === 'revenue'
-        ? [['제안 광고비', money(data.target.spend)], ['기대 전체 주문 매출', money(data.target.revenue)], ['기대 ROAS', pct(data.target.roas)]]
+        ? [['제안 광고비', money(data.target.spend)], ['기대 구매 전환', `${data.target.purchases.toLocaleString()}건`], ['기대 전체 주문 매출', money(data.target.revenue)]]
         : data.reportType === 'click'
         ? [['제안 광고비', money(data.target.spend)], ['기대 클릭', `${data.target.clicks.toLocaleString()}회`], ['기대 CPC', money(data.target.cpc)]]
         : data.reportType === 'reach'
@@ -69,6 +69,7 @@ export function ProposalKpiPage({ data }: { data: NextMonthProposalData }) {
     data.reportType === 'revenue'
       ? [
           <KpiCard key="spend" label="광고비" current={money(data.current.spend)} target={money(data.target.spend)} diff={fmtProposalDiff(data.current.spend, data.target.spend, 'currency')} />,
+          <KpiCard key="purchases" label="구매 전환" current={data.current.purchases.toLocaleString()} target={data.target.purchases.toLocaleString()} diff={fmtProposalDiff(data.current.purchases, data.target.purchases, 'count')} />,
           <KpiCard key="revenue" label="매출" current={money(data.current.revenue)} target={money(data.target.revenue)} diff={fmtProposalDiff(data.current.revenue, data.target.revenue, 'currency')} />,
           <KpiCard key="netRevenue" label="순매출" current={money(data.current.netRevenue)} target={money(data.target.netRevenue)} diff={fmtProposalDiff(data.current.netRevenue, data.target.netRevenue, 'currency')} />,
           <KpiCard key="roas" label="ROAS" current={pct(data.current.roas)} target={pct(data.target.roas)} good={data.target.roas >= data.current.roas} diff={fmtProposalPercentDiff(data.current.roas, data.target.roas)} />,
@@ -131,6 +132,7 @@ export function ProposalMediaPages({ data }: { data: NextMonthProposalData }) {
     data.reportType === 'revenue'
       ? [
           { label: '기대 클릭', render: row => row.expectedClicks.toLocaleString() },
+          { label: '기대 구매 전환', render: row => row.expectedPurchases.toLocaleString() },
           { label: '기대 광고 귀속 매출', render: row => money(row.expectedRevenue) },
           { label: '기대 ROAS', render: row => pct(row.expectedRoas) },
         ]
@@ -330,7 +332,7 @@ export function ProposalNewPlatformPage({ data }: { data: NextMonthProposalData 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
             {(() => {
               const cells = data.reportType === 'revenue'
-                ? [['시범 예산', money(suggestion.proposedBudget)], ['예상 노출·클릭', `${suggestion.expectedImpressions.toLocaleString()} / ${suggestion.expectedClicks.toLocaleString()}`], ['기대 광고 귀속 매출', money(suggestion.expectedRevenue)], ['기대 ROAS', `${suggestion.expectedRoas}%`]]
+                ? [['시범 예산', money(suggestion.proposedBudget)], ['예상 노출·클릭', `${suggestion.expectedImpressions.toLocaleString()} / ${suggestion.expectedClicks.toLocaleString()}`], ['예상 구매 전환', suggestion.expectedPurchases > 0 ? `${suggestion.expectedPurchases.toLocaleString()}건` : '학습 후 산출'], ['기대 광고 귀속 매출', money(suggestion.expectedRevenue)]]
                 : data.reportType === 'click'
                 ? [['시범 예산', money(suggestion.proposedBudget)], ['예상 노출', suggestion.expectedImpressions.toLocaleString()], ['예상 클릭', suggestion.expectedClicks.toLocaleString()], ['목표 CPC', money(suggestion.expectedClicks > 0 ? suggestion.proposedBudget / suggestion.expectedClicks : 0)]]
                 : data.reportType === 'reach'
@@ -381,6 +383,7 @@ export function ProposalPerformanceChartPage({ data }: { data: NextMonthProposal
     data.reportType === 'revenue'
       ? [
           { label: '광고비', current: data.current.spend, target: data.target.spend },
+          { label: '구매 전환', current: data.current.purchases, target: data.target.purchases },
           { label: '매출', current: data.current.revenue, target: data.target.revenue },
           { label: '순매출', current: data.current.netRevenue, target: data.target.netRevenue },
           { label: 'ROAS', current: data.current.roas, target: data.target.roas },

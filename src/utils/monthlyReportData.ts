@@ -5,7 +5,7 @@ function money(v: number) { return `₩${Math.round(v).toLocaleString()}`; }
 function pct(v: number) { return `${v.toFixed(1)}%`; }
 
 export type MonthlyKpiTotals = {
-  impressions: number; clicks: number; spend: number; leads: number; revenue: number;
+  impressions: number; clicks: number; spend: number; leads: number; purchases: number; revenue: number;
   reach: number; payments: number; refunds: number;
   ctr: number; cpc: number; cvr: number; cpa: number; roas: number; cpm: number; frequency: number; netRevenue: number;
 };
@@ -23,12 +23,13 @@ export function summarizeMonth(rows: ReportRow[], visibleDayIndexes?: number[]):
   const clicks = sumMetric(rows, 'clicks', visibleDayIndexes);
   const spend = sumMetric(rows, 'spend', visibleDayIndexes);
   const leads = sumMetric(rows, 'leads', visibleDayIndexes);
+  const purchases = sumMetric(rows, 'purchases', visibleDayIndexes);
   const revenue = sumMetric(rows, 'revenue', visibleDayIndexes);
   const reach = sumMetric(rows, 'reach', visibleDayIndexes);
   const payments = sumMetric(rows, 'payments', visibleDayIndexes);
   const refunds = sumMetric(rows, 'refunds', visibleDayIndexes);
   return {
-    impressions, clicks, spend, leads, revenue, reach, payments, refunds,
+    impressions, clicks, spend, leads, purchases, revenue, reach, payments, refunds,
     ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
     cpc: clicks > 0 ? spend / clicks : 0,
     cvr: clicks > 0 ? (leads / clicks) * 100 : 0,
@@ -62,7 +63,7 @@ export type MediaCustomMetricValue = {
 
 export type MediaPerformanceRow = {
   platform: string; impressions: number; clicks: number; ctr: number; cpc: number;
-  spend: number; leads: number; cvr: number; cpa: number; revenue: number; roas: number;
+  spend: number; leads: number; purchases: number; cvr: number; cpa: number; purchaseCvr: number; purchaseCpa: number; revenue: number; roas: number;
   reach: number; cpm: number; frequency: number; payments: number; refunds: number; netRevenue: number;
   // 사용자 지정형의 다음달 제안서에서는 이 값을 기준으로 매체별 증액·감액을 판단합니다.
   // 가능한 커스텀 수식은 매체별 원본 지표(광고비·클릭·DB·매출 등)를 다시 넣어 계산하고,
@@ -198,16 +199,19 @@ export function buildMediaPerformanceTable(rows: ReportRow[], visibleDayIndexes?
     const clicks = pick(platform, 'clicks');
     const spend = pick(platform, 'spend');
     const leads = pick(platform, 'leads');
+    const purchases = pick(platform, 'purchases');
     const revenue = pick(platform, 'revenue');
     const reach = pick(platform, 'reach');
     const payments = pick(platform, 'payments');
     const refunds = pick(platform, 'refunds');
     return {
-      platform, impressions, clicks, spend, leads, revenue, reach, payments, refunds,
+      platform, impressions, clicks, spend, leads, purchases, revenue, reach, payments, refunds,
       ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
       cpc: clicks > 0 ? spend / clicks : 0,
       cvr: clicks > 0 ? (leads / clicks) * 100 : 0,
       cpa: leads > 0 ? spend / leads : 0,
+      purchaseCvr: clicks > 0 ? (purchases / clicks) * 100 : 0,
+      purchaseCpa: purchases > 0 ? spend / purchases : 0,
       roas: spend > 0 ? (revenue / spend) * 100 : 0,
       cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
       frequency: reach > 0 ? impressions / reach : 0,
@@ -216,7 +220,7 @@ export function buildMediaPerformanceTable(rows: ReportRow[], visibleDayIndexes?
     };
   })
     // 실제로 집행 실적(노출·클릭·광고비·전환·매출)이 전혀 없는 매체는 "진행하지 않은 매체"로 보고 뺍니다.
-    .filter(m => m.impressions > 0 || m.clicks > 0 || m.spend > 0 || m.leads > 0 || m.revenue > 0)
+    .filter(m => m.impressions > 0 || m.clicks > 0 || m.spend > 0 || m.leads > 0 || m.purchases > 0 || m.revenue > 0)
     .sort((a, b) => b.spend - a.spend);
 }
 
@@ -515,7 +519,7 @@ export function generateMonthlyInsights(data: MonthlyReportData): string[] {
   };
 
   if (reportType === 'custom') {
-    const metricLabels: Partial<Record<string, string>> = { spend: '광고비', impressions: '노출수', reach: '도달', frequency: '빈도', clicks: '클릭수', ctr: 'CTR', cpc: 'CPC', leads: 'DB', conversionRate: 'CVR', cpa: 'CPA', revenue: '매출', roas: 'ROAS', payments: '결제', refunds: '환불', netRevenue: '순매출' };
+    const metricLabels: Partial<Record<string, string>> = { spend: '광고비', impressions: '노출수', reach: '도달', frequency: '빈도', clicks: '클릭수', ctr: 'CTR', cpc: 'CPC', leads: 'DB', purchases: '구매 전환', conversionRate: 'CVR', cpa: 'CPA', revenue: '매출', roas: 'ROAS', payments: '결제', refunds: '환불', netRevenue: '순매출' };
     data.profileMetrics.slice(0, 3).forEach(m => {
       const label = metricLabels[m];
       const curV = (current as unknown as Record<string, number>)[m === 'conversionRate' ? 'cvr' : m];

@@ -698,8 +698,6 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   // ccnt는 구매/가입/장바구니/신청·예약/기타를 모두 합친 '전체 전환수'라서
   // ccnt 자체를 DB 전환으로 저장하면 구매완료도 DB 전환에 섞이는 문제가 생깁니다.
   const PURCHASE_SPLIT_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
-  const LEGACY_CONVERSION_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
-  const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
   // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
   // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
   const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
@@ -711,12 +709,14 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
       timeIncrement: '1',
     }, credentials).catch(() => null);
 
-    // 최신 계정에서는 구매완료 전환 필드를 우선 요청합니다.
-    // 혹시 특정 계정/과거 구간에서 신규 필드 요청이 거절되더라도 전체 전환 자체가
-    // 사라지지 않도록 기존 ccnt/convAmt → 기본 지표 순서로 단계적으로 fallback 합니다.
-    let data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
-    if (!data) data = await fetchWithFields(LEGACY_CONVERSION_FIELDS);
-    if (!data) data = await fetchWithFields(BASIC_FIELDS);
+    // 구매 전환 KPI는 purchaseCcnt/purchaseConvAmt가 실제로 내려온 응답에서만 저장합니다.
+    // ccnt는 여러 전환유형의 합계라, 신규 구매 필드 요청이 실패했을 때 ccnt를 구매나 DB로
+    // fallback하면 다시 같은 오분류가 발생합니다. 따라서 정확성을 우선해 동기화를 실패시키고
+    // 기존 DB 값을 보존합니다. naverApiRequest 자체가 11001/5xx는 이미 최대 3회 재시도합니다.
+    const data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
+    if (!data) {
+      throw new Error('네이버 구매완료 전환 필드(purchaseCcnt/purchaseConvAmt)를 조회하지 못해 정확한 전환 분류를 보장할 수 없습니다. ccnt 전체 전환값으로 대체하지 않고 동기화를 중단합니다.');
+    }
     return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
   };
 
@@ -748,33 +748,33 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
 }
 
 /**
- * 네이버 STATS 전환을 HOWTOM의 DB 전환/구매 전환으로 분리합니다.
+ * 네이버 /stats 전환을 HOWTOM의 DB 전환/구매 전환으로 분리합니다.
  *
- * - ccnt: 전체 전환수(구매 포함)
- * - purchaseCcnt: 구매완료 전환수(2026-03 신규)
- * - purchaseConvAmt: 구매완료 전환매출액(2026-03 신규)
+ * 중요:
+ * - purchaseCcnt = 구매완료(Purchase) 전환 건수
+ * - purchaseConvAmt = 구매완료 전환값
+ * - ccnt = 구매/가입/장바구니/신청·예약 등 여러 conversionType이 섞인 "전체 전환"
  *
- * 신규 구매 필드가 내려오는 경우 구매를 ccnt에서 빼서 DB 전환에 중복 집계되지 않게 합니다.
- * 신규 필드가 없는 레거시 응답은 기존 동작을 유지하되 구매를 추측하지 않습니다.
+ * 따라서 ccnt 또는 (ccnt - purchaseCcnt)를 DB(Lead)로 추정하면 안 됩니다.
+ * /stats 응답에는 Lead 전용 필드가 없으므로, Lead는 AD_CONVERSION/DETAIL의
+ * conversionType=lead를 명시적으로 수집하기 전까지 0으로 둡니다.
+ * Purchase 필드가 없는 구형 응답에서도 ccnt로 구매를 추정하지 않습니다.
  */
 function splitNaverConversions(row) {
-  const totalConversions = Math.max(0, Number(row?.ccnt || 0) || 0);
   const hasPurchaseCount = row != null
     && Object.prototype.hasOwnProperty.call(row, 'purchaseCcnt')
     && row.purchaseCcnt !== null
+    && row.purchaseCcnt !== undefined
     && row.purchaseCcnt !== '';
   const hasPurchaseRevenue = row != null
     && Object.prototype.hasOwnProperty.call(row, 'purchaseConvAmt')
     && row.purchaseConvAmt !== null
+    && row.purchaseConvAmt !== undefined
     && row.purchaseConvAmt !== '';
 
   const purchases = hasPurchaseCount ? Math.max(0, Number(row.purchaseCcnt || 0) || 0) : 0;
-  const dbCount = hasPurchaseCount ? Math.max(0, totalConversions - purchases) : totalConversions;
-  const revenue = hasPurchaseRevenue
-    ? Math.max(0, Number(row.purchaseConvAmt || 0) || 0)
-    : Math.max(0, Number(row?.convAmt || 0) || 0);
-
-  return { dbCount, purchases, revenue };
+  const revenue = hasPurchaseRevenue ? Math.max(0, Number(row.purchaseConvAmt || 0) || 0) : 0;
+  return { dbCount: 0, purchases, revenue };
 }
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
@@ -1810,12 +1810,12 @@ async function handleApi(req, res, pathname) {
         if (account.last_sync_error) { statuses.push({ channel, label, status: 'error', error: account.last_sync_error }); continue; }
         const rows = (db.dailyMetrics || []).filter(r => String(r.advertiserId) === String(advertiser.id) && r.channel === channel && r.date >= since && r.date <= until);
         const byDate = new Map(rows.map(r => [r.date, r]));
-        const impressions=[], clicks=[], spend=[], leads=[], revenue=[], payments=[];
+        const impressions=[], clicks=[], spend=[], leads=[], purchases=[], revenue=[];
         for (let day=1;day<=daysInMonth;day++) {
           const iso=`${year}-${pad(monthNum)}-${pad(day)}`; const row=byDate.get(iso);
-          impressions.push(metricNumber(row?.impressions)); clicks.push(metricNumber(row?.clicks)); spend.push(metricNumber(row?.spend)); leads.push(metricNumber(row?.dbCount)); revenue.push(metricNumber(row?.revenue)); payments.push(metricNumber(row?.purchases));
+          impressions.push(metricNumber(row?.impressions)); clicks.push(metricNumber(row?.clicks)); spend.push(metricNumber(row?.spend)); leads.push(metricNumber(row?.dbCount)); purchases.push(metricNumber(row?.purchases)); revenue.push(metricNumber(row?.revenue));
         }
-        source[label]={ impressions, clicks, spend, leads, revenue, payments };
+        source[label]={ impressions, clicks, spend, leads, purchases, revenue };
         statuses.push({ channel, label, status: 'connected', lastSyncedAt: account.last_synced_at || null, rowCount: rows.length });
       }
       return sendJson(res, 200, { ok: true, source, statuses, mode: 'central-metrics', from: since, to: until, collectedAt: new Date().toISOString() });
@@ -1866,6 +1866,25 @@ async function handleApi(req, res, pathname) {
          valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout))]
       );
     }
+    async function readStoredDailyMetrics(tenantId, advertiserId, channel, since, until) {
+      const result = await pgPool.query(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, impressions, clicks, spend, db_count, purchases, revenue
+           FROM daily_metrics
+          WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3 AND date BETWEEN $4::date AND $5::date
+          ORDER BY date`,
+        [tenantId, advertiserId, channel, since, until]
+      );
+      return result.rows.map(row => ({
+        date: row.date,
+        impressions: metricNumber(row.impressions),
+        clicks: metricNumber(row.clicks),
+        spend: metricNumber(row.spend),
+        dbCount: metricNumber(row.db_count),
+        purchases: metricNumber(row.purchases),
+        revenue: metricNumber(row.revenue),
+      }));
+    }
+
     async function upsertCampaignDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && r.campaignId);
       if (!valid.length) return;
@@ -2057,8 +2076,21 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (creativeRows.length) await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, creativeRows);
           if (keywordRows.length) await upsertKeywordDailyMetrics(tenantId, advertiserId, channel, keywordRows);
+
+          // 네이버는 purchaseCcnt/purchaseConvAmt를 원천으로 삼아 저장한 뒤, 같은 기간의
+          // daily_metrics를 다시 읽어 구매 전환이 DB 저장 과정에서 변형되지 않았는지 즉시 검증합니다.
+          // 특히 purchases에 dbCount/ccnt가 섞이는 회귀가 생기면 여기서 validation.ok=false가 됩니다.
+          const storedDailyRows = await readStoredDailyMetrics(tenantId, advertiserId, channel, since, until);
+          const validation = await recordValidation(
+            tenantId, advertiserId, channel, since, until,
+            dailyRows, storedDailyRows,
+            'Naver /stats purchaseCcnt 원천 vs HOWTOM daily_metrics 저장값',
+            account.account_id,
+          );
+          if (!validation.ok) throw new Error(`네이버 원천 전환값과 HOWTOM 저장값이 일치하지 않습니다: ${JSON.stringify(validation.delta)}`);
+
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until, validation });
         } catch (error) {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
           await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg });
@@ -2093,11 +2125,21 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
     function withDerived(row) {
       const impressions = metricNumber(row.impressions), clicks = metricNumber(row.clicks), spend = metricNumber(row.spend), dbCount = metricNumber(row.dbCount), purchases = metricNumber(row.purchases), revenue = metricNumber(row.revenue);
-      // '전환'은 리드(DB전환)만 세면 안 됩니다. 판매/구매 목적 캠페인은 dbCount가 0이어도
-      // purchases(구매전환)로 실제 전환이 있을 수 있어, 이 경우를 놓치면 "매출은 있는데
-      // 전환은 0"으로 보이는 모순이 생깁니다. CVR·CPA는 리드+구매를 합친 총 전환 기준으로 계산합니다.
+      // DB(Lead)와 구매(Purchase)는 서로 다른 전환입니다. 합계는 "총 전환"을 표시하는 화면에서만
+      // totalConversions로 사용하고, DB/구매 전용 KPI는 각각의 전용 분모로 계산합니다.
       const totalConversions = dbCount + purchases;
-      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, totalConversions, ctr: impressions ? clicks / impressions * 100 : 0, cpc: clicks ? spend / clicks : 0, cpm: impressions ? spend / impressions * 1000 : 0, cvr: clicks ? totalConversions / clicks * 100 : 0, cpa: totalConversions ? spend / totalConversions : 0, roas: spend ? revenue / spend * 100 : 0 };
+      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, totalConversions,
+        ctr: impressions ? clicks / impressions * 100 : 0,
+        cpc: clicks ? spend / clicks : 0,
+        cpm: impressions ? spend / impressions * 1000 : 0,
+        cvr: clicks ? totalConversions / clicks * 100 : 0,
+        cpa: totalConversions ? spend / totalConversions : 0,
+        dbCvr: clicks ? dbCount / clicks * 100 : 0,
+        dbCpa: dbCount ? spend / dbCount : 0,
+        purchaseCvr: clicks ? purchases / clicks * 100 : 0,
+        purchaseCpa: purchases ? spend / purchases : 0,
+        roas: spend ? revenue / spend * 100 : 0 };
+
     }
     function groupMetrics(rows, keyFn, seedFn) {
       const map = new Map();

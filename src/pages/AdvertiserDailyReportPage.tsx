@@ -324,7 +324,7 @@ export function AdvertiserDailyReportPage() {
   const availableMetrics: MetricKey[] = profile.reportType === 'lead'
     ? ['leads','clicks','impressions','spend','cpa','cpc','ctr','conversionRate','reach']
     : profile.reportType === 'revenue'
-      ? ['revenue','spend','roas','payments','refunds','netRevenue','reach']
+      ? ['purchases','revenue','spend','roas','payments','refunds','netRevenue','reach']
       : profile.reportType === 'click'
         ? ['impressions','clicks','ctr','spend','cpc','reach']
         : profile.reportType === 'reach'
@@ -688,7 +688,7 @@ export function AdvertiserDailyReportPage() {
     }
     const blankProfile = newReportType === 'integrated' ? integratedProfileFor(name)
       : newReportType === 'reach' ? reachProfileFor(name)
-      : newReportType === 'revenue' ? { ...defaultProfileFor(name), reportType: 'revenue' as const, platforms: ['메타', '네이버', 'GFA', '카카오키워드', '카카오모먼트', '모비온', 'ADN', '구글', '카페24', '스마트스토어'], metrics: ['revenue', 'spend', 'roas'] as MetricKey[] }
+      : newReportType === 'revenue' ? { ...defaultProfileFor(name), reportType: 'revenue' as const, platforms: ['메타', '네이버', 'GFA', '카카오키워드', '카카오모먼트', '모비온', 'ADN', '구글', '카페24', '스마트스토어'], metrics: ['purchases', 'revenue', 'spend', 'roas'] as MetricKey[] }
       : newReportType === 'click' ? { ...defaultProfileFor(name), reportType: 'click' as const, clickMode: 'efficiency' as const, platforms: ['메타', '네이버', '구글', '카카오모먼트', 'GFA', '당근'], metrics: ['impressions', 'clicks', 'ctr', 'spend', 'cpc'] as MetricKey[] }
       : { ...defaultProfileFor(name), reportType: 'lead' as const, platforms: ['메타', '당근', '네이버', '구글 SA', 'YouTube AD', '틱톡'], metrics: ['leads', 'clicks', 'impressions', 'spend', 'cpa', 'cpc', 'ctr', 'conversionRate'] as MetricKey[] };
     const nextProfiles = { ...profiles, [name]: sanitizeReportProfile(blankProfile) };
@@ -741,7 +741,7 @@ export function AdvertiserDailyReportPage() {
     const next = type === 'integrated' ? integratedProfileFor(advertiserName)
       : type === 'reach' ? reachProfileFor(advertiserName)
       : type === 'custom' ? customProfileFor(advertiserName)
-      : type === 'revenue' ? { ...defaultProfileFor(advertiserName), reportType: 'revenue' as const, platforms: ['메타', '네이버', 'GFA', '카카오키워드', '카카오모먼트', '모비온', 'ADN', '구글', '카페24', '스마트스토어'], metrics: ['revenue', 'spend', 'roas'] as MetricKey[] }
+      : type === 'revenue' ? { ...defaultProfileFor(advertiserName), reportType: 'revenue' as const, platforms: ['메타', '네이버', 'GFA', '카카오키워드', '카카오모먼트', '모비온', 'ADN', '구글', '카페24', '스마트스토어'], metrics: ['purchases', 'revenue', 'spend', 'roas'] as MetricKey[] }
       : type === 'click' ? { ...defaultProfileFor(advertiserName), reportType: 'click' as const, clickMode: 'efficiency' as const, platforms: ['메타', '네이버', '구글', '카카오모먼트', 'GFA', '당근'], metrics: ['impressions', 'clicks', 'ctr', 'spend', 'cpc'] as MetricKey[] }
       : { ...defaultProfileFor(advertiserName), reportType: 'lead' as const, platforms: ['메타', '당근', '네이버', '구글 SA', 'YouTube AD', '틱톡'], metrics: ['leads', 'clicks', 'impressions', 'spend', 'cpa', 'cpc', 'ctr', 'conversionRate'] as MetricKey[] };
     updateProfile({ ...next, advertiserName });
@@ -1068,7 +1068,8 @@ export function AdvertiserDailyReportPage() {
     parsedRows.forEach((line, index) => {
       const label = line[0] || `업로드 행 ${index + 1}`;
       const values = pad31(line.slice(2).map(parseNumber), monthDays.length);
-      const metric: MetricKey = label.includes('DB') && !label.includes('당') ? 'leads'
+      const metric: MetricKey = (label.includes('구매 전환') || label.includes('구매전환') || label.includes('구매완료') || label.includes('구매 건수') || label.includes('구매수')) ? 'purchases'
+        : label.includes('DB') && !label.includes('당') ? 'leads'
         : label.includes('도달') ? 'reach'
         : label.includes('클릭률') || label.includes('클릭율') ? 'ctr'
         : label.includes('전환률') || label.includes('전환율') ? 'conversionRate'

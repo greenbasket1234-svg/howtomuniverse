@@ -15,6 +15,7 @@ export type ProposalMediaRow = MediaPerformanceRow & {
   expectedImpressions: number;
   expectedClicks: number;
   expectedLeads: number;
+  expectedPurchases: number;
   expectedRevenue: number;
   expectedRoas: number;
   reason: string;
@@ -28,6 +29,7 @@ export type NewPlatformSuggestion = {
   expectedImpressions: number;
   expectedClicks: number;
   expectedLeads: number;
+  expectedPurchases: number;
   expectedCpa: number;
   expectedReach: number;
   expectedCpm: number;
@@ -210,7 +212,7 @@ function normalizePlatformName(name: string): string {
 
 // 아직 쓰지 않는 매체 중 하나를 추천합니다. 데이터가 있는 매체 수가 적을수록(다각화 여지가
 // 있을수록) 추천하고, 이미 6개 이상 운영 중이면 추가 제안을 생략합니다.
-function suggestNewPlatform(data: MonthlyReportData, existingPlatforms: string[], avgCpa: number, avgCtr: number, avgRoas: number, avgReachRatio: number, totalBudgetForNext: number): NewPlatformSuggestion | undefined {
+function suggestNewPlatform(data: MonthlyReportData, existingPlatforms: string[], avgCpa: number, avgPurchaseCpa: number, avgCtr: number, avgRoas: number, avgReachRatio: number, totalBudgetForNext: number): NewPlatformSuggestion | undefined {
   if (existingPlatforms.length >= 8) return undefined;
   // 다음달 총 예산 자체가 없으면 시범 예산도 0원이 되어 의미 없는 제안이 생성됩니다.
   // 실제로 배정할 예산이 있을 때만 추천합니다.
@@ -229,7 +231,8 @@ function suggestNewPlatform(data: MonthlyReportData, existingPlatforms: string[]
   const safeCtr = avgCtr > 0 ? avgCtr * 0.85 : 0.008;
   const expectedImpressions = Math.round(proposedBudget / 15); // CPM 약 15원 가정(대략치)
   const expectedClicks = Math.round(expectedImpressions * safeCtr);
-  const expectedLeads = safeCpa > 0 ? Math.round(proposedBudget / safeCpa) : 0;
+  const expectedLeads = data.reportType === 'revenue' ? 0 : (safeCpa > 0 ? Math.round(proposedBudget / safeCpa) : 0);
+  const expectedPurchases = data.reportType === 'revenue' && avgPurchaseCpa > 0 ? Math.round(proposedBudget / (avgPurchaseCpa * 1.15)) : 0;
   // 매출 실적이 전혀 없는 광고주(DB형·클릭형·도달형 등)에서 임의의 ROAS 기본값(250%)으로
   // 매출을 만들어내면, 근거 없는 "전체 주문 매출"이 표지·자동 문구에 생길 수 있습니다.
   // 매출 실적이 있을 때만 벤치마크를 적용하고, 없으면 0으로 둡니다(매출형·통합형에서
@@ -244,6 +247,7 @@ function suggestNewPlatform(data: MonthlyReportData, existingPlatforms: string[]
     expectedImpressions,
     expectedClicks,
     expectedLeads,
+    expectedPurchases,
     expectedCpa: Math.round(safeCpa),
     expectedReach,
     expectedCpm,
@@ -275,6 +279,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
     const expectedImpressions = Math.round(row.impressions * performanceFactor);
     const expectedClicks = Math.round(row.clicks * performanceFactor);
     const expectedLeads = Math.round(row.leads * performanceFactor);
+    const expectedPurchases = Math.round(row.purchases * performanceFactor);
     const expectedRevenue = Math.round(row.revenue * performanceFactor);
     const customBasis = basis ? { ...basis, target: expectedCustomTarget(basis, performanceFactor, decision.change) } : undefined;
     return {
@@ -285,6 +290,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
       expectedImpressions,
       expectedClicks,
       expectedLeads,
+      expectedPurchases,
       expectedRevenue,
       expectedRoas: proposedSpend > 0 ? expectedRevenue / proposedSpend * 100 : 0,
       reason: decision.reason,
@@ -296,6 +302,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
   const impressions = sum(mediaRows, row => row.expectedImpressions);
   const clicks = sum(mediaRows, row => row.expectedClicks);
   const leads = sum(mediaRows, row => row.expectedLeads);
+  const purchases = sum(mediaRows, row => row.expectedPurchases);
   // 광고 매체 귀속 매출(paidMediaRows)과 카페24·스마트스토어 같은 주문 채널 매출을 각각 더하면,
   // 광고 귀속 매출이 이미 전체 주문 매출에 포함된 개념이라 매출이 이중으로 잡힙니다(예: 실제
   // 500% ROAS인데 다음달 예상이 765%로 튀는 문제). 그래서 매출은 "더하기"가 아니라, 광고
@@ -318,6 +325,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
     clicks,
     spend,
     leads,
+    purchases,
     revenue,
     reach,
     payments,
@@ -390,7 +398,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
   const pause = mediaRows.filter(row => row.action === '광고 중지').map(row => row.platform);
   const summaryLine =
     data.reportType === 'revenue'
-      ? `기대 성과는 매출 ${Math.round(revenue).toLocaleString()}원, ROAS ${(safeDivide(revenue, spend) * 100).toFixed(1)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
+      ? `기대 성과는 구매 전환 ${purchases.toLocaleString()}건, 매출 ${Math.round(revenue).toLocaleString()}원, ROAS ${(safeDivide(revenue, spend) * 100).toFixed(1)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
       : data.reportType === 'click'
       ? `기대 성과는 클릭 ${clicks.toLocaleString()}건, CTR ${(safeDivide(clicks, impressions) * 100).toFixed(2)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
       : data.reportType === 'reach'
@@ -424,6 +432,9 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
   const existingPlatforms = mediaRows.map(row => row.platform);
   const totalLeadsForCpa = sum(mediaRows, row => row.expectedLeads);
   const avgCpa = totalLeadsForCpa > 0 ? spend / totalLeadsForCpa : 0;
+  const totalCurrentPurchases = sum(paidMediaRows, row => row.purchases);
+  const totalCurrentPaidSpend = sum(paidMediaRows, row => row.spend);
+  const avgPurchaseCpa = totalCurrentPurchases > 0 ? totalCurrentPaidSpend / totalCurrentPurchases : 0;
   const totalImpressionsForCtr = sum(mediaRows, row => row.expectedImpressions);
   const totalClicksForCtr = sum(mediaRows, row => row.expectedClicks);
   const avgCtr = totalImpressionsForCtr > 0 ? totalClicksForCtr / totalImpressionsForCtr : 0;
@@ -431,7 +442,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
   const avgRoas = spend > 0 ? (totalRevenueForRoas / spend) * 100 : 0;
   const totalReachForRatio = sum(mediaRows, row => row.reach);
   const avgReachRatio = totalImpressionsForCtr > 0 ? totalReachForRatio / totalImpressionsForCtr : 0;
-  const newPlatformSuggestion = suggestNewPlatform(data, existingPlatforms, avgCpa, avgCtr, avgRoas, avgReachRatio, spend);
+  const newPlatformSuggestion = suggestNewPlatform(data, existingPlatforms, avgCpa, avgPurchaseCpa, avgCtr, avgRoas, avgReachRatio, spend);
   // 신규 매체 시범 예산·성과는 "다음달 총 광고비 제안"과 별개로 취급하지 않고, 실제로
   // 집행하면 합산되는 값이므로 표지·KPI에도 함께 반영합니다. 다만 spend·leads 같은 원본
   // 합계만 더하고 CTR·CPC·ROAS 같은 파생 지표를 그대로 두면 서로 안 맞는 숫자가 됩니다.
@@ -442,6 +453,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
     const totalClicks = target.clicks + newPlatformSuggestion.expectedClicks;
     const totalSpend = target.spend + newPlatformSuggestion.proposedBudget;
     const totalLeads = target.leads + newPlatformSuggestion.expectedLeads;
+    const totalPurchases = target.purchases + newPlatformSuggestion.expectedPurchases;
     // 신규 매체의 "광고 귀속 매출"을 그대로 전체 주문 매출에 더하면, 신규 매체가 사실은
     // 기존 매체의 전환을 일부 가져온 것일 수도 있어 총매출을 과대평가할 위험이 있습니다.
     // 보수적으로 그 중 약 40%만 순수 증분 매출로 보고 전체 목표에 반영합니다(광고 귀속
@@ -466,6 +478,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
       clicks: totalClicks,
       spend: totalSpend,
       leads: totalLeads,
+      purchases: totalPurchases,
       revenue: totalRevenue,
       reach: totalReach,
       payments: totalPayments,
@@ -487,7 +500,7 @@ export function buildNextMonthProposal(data: MonthlyReportData): NextMonthPropos
     // 제안서 안에서 KPI 카드 숫자와 이 문장의 숫자가 서로 달라 보입니다.
     const finalSummaryLine =
       data.reportType === 'revenue'
-        ? `기대 성과는 매출 ${Math.round(totalRevenue).toLocaleString()}원, ROAS ${targetWithNewPlatform.roas.toFixed(1)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
+        ? `기대 성과는 구매 전환 ${totalPurchases.toLocaleString()}건, 매출 ${Math.round(totalRevenue).toLocaleString()}원, ROAS ${targetWithNewPlatform.roas.toFixed(1)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
         : data.reportType === 'click'
         ? `기대 성과는 클릭 ${totalClicks.toLocaleString()}건, CTR ${targetWithNewPlatform.ctr.toFixed(2)}%이며 실제 주간 성과에 따라 10~15% 범위에서 재조정합니다.`
         : data.reportType === 'reach'

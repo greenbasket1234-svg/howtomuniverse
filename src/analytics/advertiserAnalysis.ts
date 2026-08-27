@@ -234,7 +234,7 @@ export function advertiserFunnel(summary:ReturnType<typeof derived>,reportType?:
   if(reportType==='revenue') return [
     {label:'노출',value:summary.impressions,rate:undefined},
     {label:'클릭',value:summary.clicks,rate:ctr},
-    {label:'구매/전환',value:summary.leads,rate:summary.clicks?summary.leads/summary.clicks*100:0},
+    {label:'구매 전환',value:summary.purchases,rate:summary.clicks?summary.purchases/summary.clicks*100:0},
   ];
   return [
     {label:'노출',value:summary.impressions,rate:undefined},
