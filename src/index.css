@@ -2820,3 +2820,5 @@ body{font-size:15.5px;line-height:1.55}
 .analysis-target{font-size:13.5px;color:#1e293b;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .analysis-metrics{font-size:12px;color:#5d6879;white-space:nowrap;flex-shrink:0}
 .campaign-live-detail .panel-subtitle{margin:0;color:#64748b;font-size:12.5px}
+.conversion-breakdown-cell{display:flex;flex-direction:column;gap:1px;align-items:flex-start}
+.conversion-breakdown-cell>small{color:#8592a6;font-size:11px;white-space:nowrap}
