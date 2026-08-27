@@ -845,7 +845,11 @@ function splitNaverConversions(row) {
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   const { ads: adsAll } = await naverFetchAdMasters(credentials);
-  const ads = adsAll.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
+  // 예전엔 상위 300개로 제한했지만, 이 캠페인·소재가 많은 계정에서 순서상 300번째 밖으로
+  // 밀려난 캠페인의 소재가 통째로 누락되는 문제가 있었습니다. 키워드(수만 개 단위)와 달리
+  // 소재는 보통 수백~수천 개 수준이라 2000개까지는 안전하게 전체 수집합니다.
+  const ads = adsAll.slice(0, 2000);
+  if (adsAll.length > 2000) console.log(`[naver-ad-masters 경고] 소재가 ${adsAll.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
   await mapWithConcurrency(ads, 4, async ad => {
