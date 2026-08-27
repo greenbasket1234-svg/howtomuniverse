@@ -1171,13 +1171,21 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
 
   if (options.probeOnly) {
     const columns = rows.length ? Object.keys(rows[0]) : [];
-    console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 리포트 컬럼 목록: ${JSON.stringify(columns)}`);
-    console.log(`[naver-report-sample] 전체 ${rows.length}행, 샘플 5행: ${JSON.stringify(rows.slice(0, 5), null, 2)}`);
-    // conversionType 같은 전환 유형 관련 컬럼이 있으면 실제 값 분포도 함께 보여줍니다.
-    const typeLikeCols = columns.filter(c => /conv|type/i.test(c));
-    for (const col of typeLikeCols) {
-      const uniqueValues = [...new Set(rows.map(r => r[col]))].slice(0, 20);
-      console.log(`[naver-report-sample] 컬럼 "${col}"의 실제 값 예시: ${JSON.stringify(uniqueValues)}`);
+    console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 컬럼 개수: ${columns.length}, 전체 ${rows.length}행`);
+    // 행 하나를 한 줄로 출력해야 여러 행이 뒤섞여 보이지 않습니다.
+    rows.slice(0, 8).forEach((r, i) => {
+      const values = columns.map(c => r[c]);
+      console.log(`[naver-report-sample] ROW${i} | ${values.map((v, idx) => `[${idx}]${v}`).join(' | ')}`);
+    });
+    // 'purchase', 'add_to_cart' 같은 전환 유형 문자열이 들어있는 컬럼 번호를 자동으로 찾습니다.
+    const KNOWN_TYPES = ['purchase', 'add_to_cart', 'sign_up', 'lead', 'application', 'reservation', 'other'];
+    for (const c of columns) {
+      const values = rows.map(r => String(r[c] ?? ''));
+      if (values.some(v => KNOWN_TYPES.includes(v))) {
+        const dist = {};
+        for (const v of values) dist[v] = (dist[v] || 0) + 1;
+        console.log(`[naver-report-sample] ★ 전환유형 컬럼 발견: 인덱스 [${c}] · 값 분포 ${JSON.stringify(dist)}`);
+      }
     }
     return rows;
   }
