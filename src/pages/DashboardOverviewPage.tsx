@@ -25,7 +25,7 @@ function buildLiveBrandReports(advertisers: { id: string; name: string; monthlyB
     for (const ch of channels) {
       data[ch] = {};
       for (const row of advRows.filter(r => r.channel === ch)) {
-        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, ...(tracksRevenue ? { revenue: row.revenue ?? 0 } : {}) };
+        data[ch][row.date] = { impressions: row.impressions, clicks: row.clicks, spend: row.spend, dbCount: row.dbCount, purchases: row.purchases ?? 0, addToCart: row.addToCart ?? 0, completeRegistration: row.completeRegistration ?? 0, ...(tracksRevenue ? { revenue: row.revenue ?? 0 } : {}) };
       }
     }
     return {
@@ -110,7 +110,19 @@ export function DashboardOverviewPage(){
   const [perfSortDir,setPerfSortDir]=useState<'asc'|'desc'>('desc');
   const togglePerfSort=(key:PerfSortKey)=>{if(perfSortKey===key)setPerfSortDir(perfSortDir==='asc'?'desc':'asc');else{setPerfSortKey(key);setPerfSortDir('desc')}};
   const perfSortArrow=(key:PerfSortKey)=>perfSortKey===key?(perfSortDir==='asc'?' ▲':' ▼'):'';
-  const perfValueOf=(name:string,r:{spend?:number;impressions?:number;clicks?:number;dbCount?:number;revenue?:number})=>{
+  // '전환' 셀에 합계 숫자만 보여주면 "DB전환 0인데 왜 전환이 있지?"처럼 헷갈릴 수 있어서,
+  // 합계 아래에 DB/구매 세부 내역을 작게 함께 보여줍니다. 장바구니·회원가입은 참고용이라
+  // 값이 있을 때만 이어서 보여주고, CVR·CPA 계산에는 포함하지 않습니다(요청사항).
+  const conversionCell=(r:RawFields)=>{
+    const total=computeMetric('db_count',r);
+    const parts:string[]=[];
+    if((r.dbCount??0)>0)parts.push(`DB ${(r.dbCount??0).toLocaleString()}`);
+    if((r.purchases??0)>0)parts.push(`구매 ${(r.purchases??0).toLocaleString()}`);
+    if((r.addToCart??0)>0)parts.push(`장바구니 ${(r.addToCart??0).toLocaleString()}`);
+    if((r.completeRegistration??0)>0)parts.push(`가입 ${(r.completeRegistration??0).toLocaleString()}`);
+    return <span className="conversion-breakdown-cell"><b>{total!=null?total.toLocaleString():'-'}</b>{parts.length>0&&<small>{parts.join(' · ')}</small>}</span>;
+  };
+  const perfValueOf=(name:string,r:RawFields)=>{
     if(perfSortKey==='name')return name;
     if(perfSortKey==='spend')return r.spend??0;
     if(perfSortKey==='impressions')return r.impressions??0;
@@ -118,10 +130,10 @@ export function DashboardOverviewPage(){
     if(perfSortKey==='clicks')return r.clicks??0;
     if(perfSortKey==='ctr')return computeMetric('ctr',r)??0;
     if(perfSortKey==='cpc')return computeMetric('cpc',r)??0;
-    if(perfSortKey==='conversions')return r.dbCount??0;
+    if(perfSortKey==='conversions')return computeMetric('db_count',r)??0;
     if(perfSortKey==='cvr')return computeMetric('conversion_rate',r)??0;
     if(perfSortKey==='revenue')return r.revenue??0;
-    if(perfSortKey==='cpa')return r.dbCount?(r.spend??0)/r.dbCount:0;
+    if(perfSortKey==='cpa')return computeMetric('cost_per_db',r)??0;
     return computeMetric('roas',r)??0;
   };
   const perfSort=<T,>(list:T[],nameOf:(item:T)=>string,rawOf:(item:T)=>{spend?:number;impressions?:number;clicks?:number;dbCount?:number;revenue?:number})=>[...list].sort((a,b)=>{
@@ -252,7 +264,7 @@ export function DashboardOverviewPage(){
         actions.push(`${worst.name}은 소재·타겟팅을 재점검하고, 개선이 없으면 예산 비중을 줄이는 것을 검토하세요.`);
       }
     }
-    const zeroConv = platformMap.filter(p=>(p.raw.spend??0)>0 && (p.raw.dbCount??0)===0 && (p.raw.revenue??0)===0);
+    const zeroConv = platformMap.filter(p=>(p.raw.spend??0)>0 && (computeMetric('db_count',p.raw)??0)===0 && (p.raw.revenue??0)===0);
     if(zeroConv.length){
       problems.push(`${zeroConv.map(p=>p.name).join(', ')} — 광고비는 있는데 전환·매출이 0입니다.`);
       actions.push(`${zeroConv.map(p=>p.name).join(', ')}은 소재를 점검하거나 예산 재배분을 검토하세요.`);
@@ -382,10 +394,10 @@ export function DashboardOverviewPage(){
         )}
       </div>
       <div className="capture-table-wrap"><table><thead><tr><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('name')}>{mode==='media'?'매체':mode==='account'?'계정(광고주)':'기간'}{perfSortArrow('name')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('spend')}>광고비{perfSortArrow('spend')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('impressions')}>노출{perfSortArrow('impressions')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('cpm')}>CPM{perfSortArrow('cpm')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('clicks')}>클릭{perfSortArrow('clicks')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('ctr')}>CTR{perfSortArrow('ctr')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('cpc')}>CPC{perfSortArrow('cpc')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('conversions')}>전환{perfSortArrow('conversions')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('cvr')}>전환율{perfSortArrow('cvr')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('revenue')}>전환매출{perfSortArrow('revenue')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('cpa')}>CPA{perfSortArrow('cpa')}</th><th style={{cursor:'pointer'}} onClick={()=>togglePerfSort('roas')}>ROAS{perfSortArrow('roas')}</th></tr></thead><tbody>
-        {mode==='media'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(platformMap,p=>p.name),p=>p.name,p=>p.raw),p=>p.name,p=>p.raw).map(p=>{const r=p.raw;return <tr key={p.name}><td><span className="media-name-cell"><i style={{background:p.color}}/>{p.name}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{(r.dbCount??0).toLocaleString()}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{r.dbCount?money((r.spend??0)/r.dbCount):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>})}
-        {mode==='account'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(brandSummaries,b=>b.report.config.brandName),b=>b.report.config.brandName,b=>b.total),b=>b.report.config.brandName,b=>b.total).map(({report,total:r})=><tr key={report.config.brandId}><td><span className="media-name-cell">{report.config.brandName}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{(r.dbCount??0).toLocaleString()}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{r.dbCount?money((r.spend??0)/r.dbCount):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>)}
-        {mode==='period'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(periodBuckets,b=>b.label),b=>b.label,b=>b.raw),b=>b.label,b=>b.raw).map(({label,raw:r})=><tr key={label}><td><span className="media-name-cell">{label}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{(r.dbCount??0).toLocaleString()}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{r.dbCount?money((r.spend??0)/r.dbCount):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>)}
-        <tr className="sum"><td>전체 합산</td><td>{money(total.spend??0)}</td><td>{(total.impressions??0).toLocaleString()}</td><td>{money(total.impressions?(total.spend??0)/total.impressions*1000:0)}</td><td>{(total.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',total)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',total)??0)}</td><td>{conversions}</td><td>{(computeMetric('conversion_rate',total)??0).toFixed(2)}%</td><td>{revenue?money(revenue):'-'}</td><td>{cpa!=null?money(cpa):'-'}</td><td>{roas!=null?`${roas.toFixed(0)}%`:'-'}</td></tr>
+        {mode==='media'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(platformMap,p=>p.name),p=>p.name,p=>p.raw),p=>p.name,p=>p.raw).map(p=>{const r=p.raw;return <tr key={p.name}><td><span className="media-name-cell"><i style={{background:p.color}}/>{p.name}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{conversionCell(r)}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{computeMetric('cost_per_db',r)!=null?money(computeMetric('cost_per_db',r)!):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>})}
+        {mode==='account'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(brandSummaries,b=>b.report.config.brandName),b=>b.report.config.brandName,b=>b.total),b=>b.report.config.brandName,b=>b.total).map(({report,total:r})=><tr key={report.config.brandId}><td><span className="media-name-cell">{report.config.brandName}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{conversionCell(r)}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{computeMetric('cost_per_db',r)!=null?money(computeMetric('cost_per_db',r)!):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>)}
+        {mode==='period'&&perfSort(applyPerfRangeFilter(applyPerfNameFilter(periodBuckets,b=>b.label),b=>b.label,b=>b.raw),b=>b.label,b=>b.raw).map(({label,raw:r})=><tr key={label}><td><span className="media-name-cell">{label}</span></td><td>{money(r.spend??0)}</td><td>{(r.impressions??0).toLocaleString()}</td><td>{money(r.impressions?(r.spend??0)/r.impressions*1000:0)}</td><td>{(r.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',r)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',r)??0)}</td><td>{conversionCell(r)}</td><td>{(computeMetric('conversion_rate',r)??0).toFixed(2)}%</td><td>{r.revenue!=null?money(r.revenue):'-'}</td><td>{computeMetric('cost_per_db',r)!=null?money(computeMetric('cost_per_db',r)!):'-'}</td><td>{computeMetric('roas',r)!=null?`${computeMetric('roas',r)!.toFixed(0)}%`:'-'}</td></tr>)}
+        <tr className="sum"><td>전체 합산</td><td>{money(total.spend??0)}</td><td>{(total.impressions??0).toLocaleString()}</td><td>{money(total.impressions?(total.spend??0)/total.impressions*1000:0)}</td><td>{(total.clicks??0).toLocaleString()}</td><td>{(computeMetric('ctr',total)??0).toFixed(2)}%</td><td>{money(computeMetric('cpc',total)??0)}</td><td>{conversionCell(total)}</td><td>{(computeMetric('conversion_rate',total)??0).toFixed(2)}%</td><td>{revenue?money(revenue):'-'}</td><td>{computeMetric('cost_per_db',total)!=null?money(computeMetric('cost_per_db',total)!):'-'}</td><td>{roas!=null?`${roas.toFixed(0)}%`:'-'}</td></tr>
       </tbody></table></div>
     </section>
 

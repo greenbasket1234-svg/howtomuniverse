@@ -11,7 +11,10 @@ export type RawFields = {
   impressions?: number;
   clicks?: number;
   spend?: number;
-  dbCount?: number; // 전환·DB·리드·친구추가 등 "액션 수" 전부 이 필드 하나로 통일
+  dbCount?: number; // DB 전환(리드·상담신청 등). 구글시트 수동입력 브랜드는 이 필드 하나로 "전환"을 통일해서 씁니다.
+  purchases?: number; // 구매 전환. 매체 API 자동수집 데이터에만 존재합니다.
+  addToCart?: number; // 장바구니 담기 - 참고용 지표. CVR·CPA 계산에는 포함하지 않습니다.
+  completeRegistration?: number; // 회원가입 완료 - 참고용 지표. CVR·CPA 계산에는 포함하지 않습니다.
   revenue?: number; // 매출
 };
 
@@ -22,11 +25,13 @@ export type LineItem = {
 
 export type RowMetricKey =
   | 'revenue' | 'ad_spend' | 'db_count' | 'clicks' | 'impressions'
-  | 'cpc' | 'cost_per_db' | 'ctr' | 'conversion_rate' | 'roas';
+  | 'cpc' | 'cost_per_db' | 'ctr' | 'conversion_rate' | 'roas'
+  | 'add_to_cart' | 'complete_registration';
 
 export const ROW_METRIC_FORMAT: Record<RowMetricKey, 'currency' | 'count' | 'percent'> = {
   revenue: 'currency', ad_spend: 'currency', db_count: 'count', clicks: 'count', impressions: 'count',
   cpc: 'currency', cost_per_db: 'currency', ctr: 'percent', conversion_rate: 'percent', roas: 'percent',
+  add_to_cart: 'count', complete_registration: 'count',
 };
 
 // 실제 시트를 보면 CTR·전환율은 소수 둘째 자리까지(예: 5.68%), ROAS는 정수로(예: 427%)
@@ -41,31 +46,37 @@ export const PERCENT_DECIMALS: Partial<Record<RowMetricKey, number>> = {
 // null은 "-"(미지원/해당없음)로, 0은 "0" 또는 "0.00%"로 표시됩니다 — 3차 검토에서 정한 구분.
 export function computeMetric(metric: RowMetricKey, raw: RawFields): number | null {
   const has = (v: number | undefined): v is number => v !== undefined;
+  // '전환'은 DB전환(리드)만 세면 안 됩니다 - 구매 목적 캠페인은 dbCount가 0이어도 purchases로
+  // 실제 전환이 있을 수 있습니다. 장바구니 담기·회원가입은 참고 지표일 뿐 실제 전환이 아니므로
+  // 이 합계에서 제외합니다(요청: CVR·CPA는 구매+DB 전환 개수만 반영).
+  const totalConversions = has(raw.dbCount) || has(raw.purchases) ? (raw.dbCount ?? 0) + (raw.purchases ?? 0) : undefined;
   switch (metric) {
     case 'revenue': return has(raw.revenue) ? raw.revenue : null;
     case 'ad_spend': return has(raw.spend) ? raw.spend : null;
-    case 'db_count': return has(raw.dbCount) ? raw.dbCount : null;
+    case 'db_count': return has(totalConversions) ? totalConversions : null;
     case 'clicks': return has(raw.clicks) ? raw.clicks : null;
     case 'impressions': return has(raw.impressions) ? raw.impressions : null;
+    case 'add_to_cart': return has(raw.addToCart) ? raw.addToCart : null;
+    case 'complete_registration': return has(raw.completeRegistration) ? raw.completeRegistration : null;
     case 'cpc':
       if (!has(raw.clicks) || !has(raw.spend)) return null;
       return raw.clicks ? raw.spend / raw.clicks : 0;
     case 'cost_per_db':
-      if (!has(raw.dbCount) || !has(raw.spend)) return null;
-      return raw.dbCount ? raw.spend / raw.dbCount : 0;
+      if (!has(totalConversions) || !has(raw.spend)) return null;
+      return totalConversions ? raw.spend / totalConversions : 0;
     case 'ctr':
       if (!has(raw.impressions) || !has(raw.clicks)) return null;
       return raw.impressions ? (raw.clicks / raw.impressions) * 100 : 0;
     case 'conversion_rate':
-      if (!has(raw.clicks) || !has(raw.dbCount)) return null;
-      return raw.clicks ? (raw.dbCount / raw.clicks) * 100 : 0;
+      if (!has(raw.clicks) || !has(totalConversions)) return null;
+      return raw.clicks ? (totalConversions / raw.clicks) * 100 : 0;
     case 'roas':
       if (!has(raw.spend) || !has(raw.revenue)) return null;
       return raw.spend ? (raw.revenue / raw.spend) * 100 : 0;
   }
 }
 
-const FIELD_KEYS: (keyof RawFields)[] = ['impressions', 'clicks', 'spend', 'dbCount', 'revenue'];
+const FIELD_KEYS: (keyof RawFields)[] = ['impressions', 'clicks', 'spend', 'dbCount', 'purchases', 'addToCart', 'completeRegistration', 'revenue'];
 
 export function sumFields(list: RawFields[]): RawFields {
   const result: RawFields = {};

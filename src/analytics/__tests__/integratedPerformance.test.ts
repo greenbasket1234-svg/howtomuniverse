@@ -40,7 +40,7 @@ describe('sumRows', () => {
 
   it('빈 배열이면 모든 값이 0이다', () => {
     const total = sumRows([]);
-    expect(total).toEqual({ spend: 0, impressions: 0, clicks: 0, leads: 0, revenue: 0, validLeads: 0, contracts: 0, platformLeads: 0 });
+    expect(total).toEqual({ spend: 0, impressions: 0, clicks: 0, leads: 0, purchases: 0, revenue: 0, validLeads: 0, contracts: 0, platformLeads: 0 });
   });
 
   it('platformLeads가 없으면 leads 값으로 대체해서 합산한다', () => {
