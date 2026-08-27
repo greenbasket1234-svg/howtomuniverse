@@ -694,26 +694,29 @@ async function naverFetchAdMasters(credentials) {
 /** 네이버 /stats의 ID 묶음을 일별 행으로 정규화합니다. timeIncrement=1이 무시되는 계정은 일자별 재요청합니다. */
 async function naverStatsForIdsDaily(credentials, ids, since, until) {
   if (!ids.length) return [];
-  const FULL_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
+  // 2026-03부터 네이버 STATS API가 구매완료 전환을 별도 필드로 제공합니다.
+  // ccnt는 구매/가입/장바구니/신청·예약/기타를 모두 합친 '전체 전환수'라서
+  // ccnt 자체를 DB 전환으로 저장하면 구매완료도 DB 전환에 섞이는 문제가 생깁니다.
+  const PURCHASE_SPLIT_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
+  const LEGACY_CONVERSION_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt'];
   const BASIC_FIELDS = ['impCnt', 'clkCnt', 'salesAmt'];
   // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
   // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
   const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
   const fetchRange = async (rangeSince, rangeUntil) => {
-    let data = await naverApiRequest('GET', '/stats', {
+    const fetchWithFields = (fields) => naverApiRequest('GET', '/stats', {
       ...idParams,
-      fields: JSON.stringify(FULL_FIELDS),
+      fields: JSON.stringify(fields),
       timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
       timeIncrement: '1',
     }, credentials).catch(() => null);
-    if (!data) {
-      data = await naverApiRequest('GET', '/stats', {
-        ...idParams,
-        fields: JSON.stringify(BASIC_FIELDS),
-        timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
-        timeIncrement: '1',
-      }, credentials).catch(() => null);
-    }
+
+    // 최신 계정에서는 구매완료 전환 필드를 우선 요청합니다.
+    // 혹시 특정 계정/과거 구간에서 신규 필드 요청이 거절되더라도 전체 전환 자체가
+    // 사라지지 않도록 기존 ccnt/convAmt → 기본 지표 순서로 단계적으로 fallback 합니다.
+    let data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
+    if (!data) data = await fetchWithFields(LEGACY_CONVERSION_FIELDS);
+    if (!data) data = await fetchWithFields(BASIC_FIELDS);
     return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
   };
 
@@ -744,6 +747,36 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   return output;
 }
 
+/**
+ * 네이버 STATS 전환을 HOWTOM의 DB 전환/구매 전환으로 분리합니다.
+ *
+ * - ccnt: 전체 전환수(구매 포함)
+ * - purchaseCcnt: 구매완료 전환수(2026-03 신규)
+ * - purchaseConvAmt: 구매완료 전환매출액(2026-03 신규)
+ *
+ * 신규 구매 필드가 내려오는 경우 구매를 ccnt에서 빼서 DB 전환에 중복 집계되지 않게 합니다.
+ * 신규 필드가 없는 레거시 응답은 기존 동작을 유지하되 구매를 추측하지 않습니다.
+ */
+function splitNaverConversions(row) {
+  const totalConversions = Math.max(0, Number(row?.ccnt || 0) || 0);
+  const hasPurchaseCount = row != null
+    && Object.prototype.hasOwnProperty.call(row, 'purchaseCcnt')
+    && row.purchaseCcnt !== null
+    && row.purchaseCcnt !== '';
+  const hasPurchaseRevenue = row != null
+    && Object.prototype.hasOwnProperty.call(row, 'purchaseConvAmt')
+    && row.purchaseConvAmt !== null
+    && row.purchaseConvAmt !== '';
+
+  const purchases = hasPurchaseCount ? Math.max(0, Number(row.purchaseCcnt || 0) || 0) : 0;
+  const dbCount = hasPurchaseCount ? Math.max(0, totalConversions - purchases) : totalConversions;
+  const revenue = hasPurchaseRevenue
+    ? Math.max(0, Number(row.purchaseConvAmt || 0) || 0)
+    : Math.max(0, Number(row?.convAmt || 0) || 0);
+
+  return { dbCount, purchases, revenue };
+}
+
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   const { ads: adsAll } = await naverFetchAdMasters(credentials);
   const ads = adsAll.slice(0, 300); // 너무 많으면 동기화가 오래 걸려 상위 300개로 제한합니다.
@@ -754,6 +787,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
     for (const row of stats) {
       const adId = row.id || row.nccAdId || ad.nccAdId;
       if (!master.has(adId)) continue;
+      const conversions = splitNaverConversions(row);
       rows.push({
         date: row.date,
         campaignId: ad.campaignId || '',
@@ -766,10 +800,9 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
-        dbCount: Number(row.ccnt || 0),
-        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
-        purchases: 0,
-        revenue: Number(row.convAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
         thumbnailUrl: null,
         mediaType: 'text', // 네이버 파워링크는 이미지/영상 없이 제목+설명 텍스트로만 구성된 키워드 기반 소재입니다.
         title: ad.ad?.headline || '',
@@ -825,6 +858,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
     const stats = await naverStatsForIdsDaily(credentials, [kw.nccKeywordId], since, until);
     for (const row of stats) {
       const keywordId = row.id || row.nccKeywordId || kw.nccKeywordId;
+      const conversions = splitNaverConversions(row);
       result.push({
         date: row.date,
         campaignId,
@@ -837,10 +871,9 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
-        dbCount: Number(row.ccnt || 0),
-        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
-        purchases: 0,
-        revenue: Number(row.convAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
       });
     }
   });
@@ -853,6 +886,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
     const campaignId = ag.nccCampaignId || '';
     const stats = await naverStatsForIdsDaily(credentials, [ag.nccAdgroupId], since, until);
     for (const row of stats) {
+      const conversions = splitNaverConversions(row);
       result.push({
         date: row.date,
         campaignId,
@@ -865,10 +899,9 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
-        dbCount: Number(row.ccnt || 0),
-        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
-        purchases: 0,
-        revenue: Number(row.convAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
       });
     }
   });
@@ -1078,6 +1111,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
     if (rows.some(r => Number(r.salesAmt || 0) > 0 || Number(r.impCnt || 0) > 0)) cur.rowsWithData++;
     typeDiag.set(tp, cur);
     for (const row of rows) {
+      const conversions = splitNaverConversions(row);
       rowsOut.push({
         date: row.date,
         campaignId,
@@ -1086,10 +1120,9 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
-        dbCount: Number(row.ccnt || 0),
-        // 네이버 API는 전환을 리드/구매로 구분하지 않습니다. dbCount와 같은 값을 구매전환에도 그대로 불여넣으면(이전 코드), 상담업종 광고주도 '구매 전환'이 있는 ꬰ처롬 나와 오해를 줍니다. 실제 구매 건수를 알 수 없어 0으로 둡니다(매출은 convAmt로 여전히 별도 집계됩니다).
-        purchases: 0,
-        revenue: Number(row.convAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
       });
     }
   });
