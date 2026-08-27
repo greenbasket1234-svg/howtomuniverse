@@ -678,13 +678,13 @@ async function naverFetchAdMasters(credentials) {
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const adgroups = [];
-  await mapWithConcurrency(campaigns, 4, async c => {
+  await mapWithConcurrency(campaigns, 6, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error(`[naver-adgroups 실패] 캠페인="${c.name}"(${naverCampaignTypeKo(c.campaignTp)}):`, err?.message || err); return []; });
     if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '', campaignType: campaignTypeMap.get(c.nccCampaignId) || '' })));
   });
   const adgroupNameMap = new Map(adgroups.map(ag => [ag.nccAdgroupId, ag.name || '']));
   const ads = [];
-  await mapWithConcurrency(adgroups, 4, async ag => {
+  await mapWithConcurrency(adgroups, 6, async ag => {
     const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(err => { console.error(`[naver-ads 실패] 캠페인="${ag.campaignName}"(${ag.campaignType}) 광고그룹="${ag.name}":`, err?.message || err); return []; });
     if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' })));
   });
@@ -853,7 +853,7 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   if (adsAll.length > 2000) console.log(`[naver-ad-masters 경고] 소재가 ${adsAll.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
-  await mapWithConcurrency(ads, 4, async ad => {
+  await mapWithConcurrency(ads, 6, async ad => {
     const stats = await naverStatsForIdsDaily(credentials, [ad.nccAdId], since, until);
     for (const row of stats) {
       const adId = row.id || row.nccAdId || ad.nccAdId;
@@ -900,14 +900,14 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const adgroups = [];
-  await mapWithConcurrency(campaigns, 4, async c => {
+  await mapWithConcurrency(campaigns, 6, async c => {
     const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error('[naver-adgroups 실패]', c.nccCampaignId, err?.message || err); return []; });
     if (Array.isArray(rows)) adgroups.push(...rows);
   });
   const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
   const adgroupNameMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.name || '']));
   const keywords = [];
-  await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 4, async agid => {
+  await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 6, async agid => {
     const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(err => { console.error('[naver-keywords 목록 실패]', agid, err?.message || err); return []; });
     if (Array.isArray(rows)) keywords.push(...rows);
   });
@@ -929,7 +929,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   const selected = keywords.slice(0, 2000);
   if (keywords.length > 2000) console.log(`[naver-keywords 경고] 키워드가 ${keywords.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
   const result = [];
-  await mapWithConcurrency(selected, 4, async kw => {
+  await mapWithConcurrency(selected, 6, async kw => {
     const adgroupId = kw.nccAdgroupId || '';
     const campaignId = adgroupCampaignMap.get(adgroupId) || '';
     const stats = await naverStatsForIdsDaily(credentials, [kw.nccKeywordId], since, until);
@@ -962,7 +962,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   // 키워드가 하나도 없는 광고그룹은 그 광고그룹 자체를 하나의 항목으로 대체해서 보여줍니다.
   const adgroupsWithKeyword = new Set(keywords.map(k => k.nccAdgroupId).filter(Boolean));
   const adgroupsWithoutKeyword = adgroups.filter(a => a.nccAdgroupId && !adgroupsWithKeyword.has(a.nccAdgroupId)).slice(0, 150);
-  await mapWithConcurrency(adgroupsWithoutKeyword, 4, async ag => {
+  await mapWithConcurrency(adgroupsWithoutKeyword, 6, async ag => {
     const campaignId = ag.nccCampaignId || '';
     const stats = await naverStatsForIdsDaily(credentials, [ag.nccAdgroupId], since, until);
     for (const row of stats) {
@@ -1186,7 +1186,7 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const rowsOut = [];
   const typeDiag = new Map(); // 유형별로 /stats가 실제로 데이터를 돌려주는지 진단합니다.
-  await mapWithConcurrency(campaignIds, 4, async campaignId => {
+  await mapWithConcurrency(campaignIds, 6, async campaignId => {
     const tp = campaignTypeMap.get(campaignId) || '(알수없음)';
     const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
     const cur = typeDiag.get(tp) || { campaigns: 0, rowsWithData: 0, totalRows: 0 };
