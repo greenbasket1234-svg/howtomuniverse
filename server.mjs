@@ -2085,7 +2085,9 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       // Meta는 최대 37개월(공식 한도)까지, 네이버는 실제 데이터 보존 한계인 최대 24개월(730일)까지만 지원됩니다.
       // (네이버는 저희 쪽 제한이 아니라 네이버 서버 자체가 그 이상 데이터를 보관하지 않습니다.)
       const maxDays = channel === 'naver' ? 730 : 1110;
-      const days = Math.min(Math.max(Number(body.days || 90), 1), maxDays);
+      // days=0은 '어제' 전용 특수값입니다(오늘 포함 최근 N일로는 "어제 하루만"을 표현할 수 없어서 별도 처리).
+      const isYesterdayOnly = Number(body.days) === 0;
+      const days = isYesterdayOnly ? 1 : Math.min(Math.max(Number(body.days || 90), 1), maxDays);
       if (!advertiserId || !channel) return sendJson(res, 400, { error: 'advertiserId, channel이 필요합니다.' });
 
       const tenantId = await getCurrentTenantId();
@@ -2097,12 +2099,12 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       if (channel === 'meta') {
         if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
         try {
-          const until = new Date().toISOString().slice(0, 10);
-          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
+          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
+          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
           const since = sinceDate.toISOString().slice(0, 10);
           // 소재별(ad) 일별 데이터는 광고 개수가 많으면 데이터량이 매우 커지므로, 아주 긴 기간을 요청해도
           // 최근 90일까지만 세부 수집합니다. 계정/캠페인 단위 추이는 요청한 전체 기간(최대 37개월) 그대로 수집됩니다.
-          const adSinceDate = new Date(); adSinceDate.setDate(adSinceDate.getDate() - Math.min(89, days - 1));
+          const adSinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.min(89, days - 1)); return d; })();
           const adSince = adSinceDate.toISOString().slice(0, 10);
           const [accountRows, campaignRows, adRows] = await Promise.all([
             metaFetchInsights(account.account_id, since, until),
@@ -2135,14 +2137,14 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       if (channel === 'naver') {
         if (!account.api_key || !account.secret_key) return sendJson(res, 400, { error: '네이버 API Key/Secret Key가 저장되어 있지 않습니다.' });
         try {
-          const until = new Date().toISOString().slice(0, 10);
-          const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - Math.max(0, days - 1));
+          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
+          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
           const since = sinceDate.toISOString().slice(0, 10);
           // 소재별/키워드별 데이터는 항목 하나하나를 순회하며 조회하기 때문에(캠페인/계정 전체보다 훨씬 비쌈)
           // 예전엔 시간 초과를 피하려 최근 90일로 강제 제한했었습니다. 그 원인이었던
           // naverStatsForIdsDaily의 빈 응답 재조회 낭비 버그를 고쳤으므로, 이제 캠페인/계정
           // 단위와 동일하게 요청하신 전체 기간(최대 24개월)을 그대로 수집합니다.
-          const detailSinceDate = new Date(); detailSinceDate.setDate(detailSinceDate.getDate() - Math.max(0, days - 1));
+          const detailSinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
           const detailSince = detailSinceDate.toISOString().slice(0, 10);
           const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
           // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
