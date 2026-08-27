@@ -2104,11 +2104,25 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
 
     if (req.method === 'GET' && pathname === '/api/integrations/auto-sync-status') {
+      // 서버 메모리(autoSyncStatus)는 배포 등으로 서버가 재시작되면 사라지므로, DB에 저장된
+      // 이력을 우선 사용합니다. DB 조회가 안 되는 경우에만 메모리 값을 fallback으로 씁니다.
+      let lastRunAt = autoSyncStatus.lastRunAt;
+      let lastResult = autoSyncStatus.lastResult;
+      if (pgPool) {
+        try {
+          const tenantId = await getCurrentTenantId();
+          const r = await pgPool.query(`SELECT auto_sync_last_run_at, auto_sync_last_result FROM tenants WHERE id=$1`, [tenantId]);
+          if (r.rows[0]?.auto_sync_last_run_at) {
+            lastRunAt = r.rows[0].auto_sync_last_run_at;
+            lastResult = r.rows[0].auto_sync_last_result;
+          }
+        } catch { /* DB 조회 실패 시 메모리 값을 그대로 사용합니다. */ }
+      }
       return sendJson(res, 200, {
         enabled: Boolean(pgPool),
         hoursKst: AUTO_SYNC_HOURS_KST,
-        lastRunAt: autoSyncStatus.lastRunAt,
-        lastResult: autoSyncStatus.lastResult,
+        lastRunAt,
+        lastResult,
       });
     }
 
@@ -3072,7 +3086,18 @@ async function runScheduledSyncForAllAccounts(days = 3) {
     await new Promise(r => setTimeout(r, 800));
   }
   console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개 (총 ${accounts.rows.length}개 중)`);
-  autoSyncStatus = { lastRunAt: new Date().toISOString(), lastResult: { total: accounts.rows.length, success, failed } };
+  const result = { total: accounts.rows.length, success, failed };
+  const runAt = new Date().toISOString();
+  autoSyncStatus = { lastRunAt: runAt, lastResult: result };
+  // 서버 재시작(배포 등)에도 이력이 남도록 DB에도 저장합니다. tenant가 여러 개일 수 있으니
+  // 이번에 실제로 계정을 동기화한 tenant들에 대해서만 기록합니다.
+  const tenantIds = [...new Set(accounts.rows.map(r => r.tenant_id))];
+  if (tenantIds.length) {
+    await pgPool.query(
+      `UPDATE tenants SET auto_sync_last_run_at = $2, auto_sync_last_result = $3::jsonb WHERE id = ANY($1::uuid[])`,
+      [tenantIds, runAt, JSON.stringify(result)]
+    ).catch(err => console.error('[자동 동기화] 이력 DB 저장 실패:', err?.message || err));
+  }
 }
 
 /** 매일 07:00, 09:00, 14:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */

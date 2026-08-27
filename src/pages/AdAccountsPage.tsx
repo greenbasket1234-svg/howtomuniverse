@@ -177,7 +177,7 @@ export function AdAccountsPage() {
                   <> · 마지막 실행: {new Date(autoSyncStatus.lastRunAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     {autoSyncStatus.lastResult && ` (성공 ${autoSyncStatus.lastResult.success}개 / 실패 ${autoSyncStatus.lastResult.failed}개)`}
                   </>
-                ) : ' · 아직 실행 이력이 없습니다(다음 예약 시각에 처음 실행됩니다).'}
+                ) : ' · 아직 실행 이력이 없습니다(다음 예약 시각에 실행됩니다).'}
               </>
             ) : <><b>자동 동기화 꺼짐</b> · DATABASE_URL이 설정되지 않아 자동 동기화를 사용할 수 없습니다.</>}
           </div>

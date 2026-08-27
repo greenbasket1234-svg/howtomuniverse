@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS tenants (
   -- 이 값이 채워지면 '마이그레이션 실행'이 광고주 목록을 다시 만들지 않습니다(광고주는 Postgres가
   -- 진짜 데이터이고, 원본 JSON 파일은 그대로 남아있어서 삭제한 광고주가 되살아나는 걸 막기 위함).
   advertisers_migrated_at TIMESTAMPTZ,
+  -- 자동 동기화 실행 이력. 서버 메모리에만 두면 배포(재시작)할 때마다 초기화되어
+  -- "이력 없음"으로 잘못 표시되는 문제가 있어, 여기 DB에 영구 저장합니다.
+  auto_sync_last_run_at TIMESTAMPTZ,
+  auto_sync_last_result JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -129,6 +133,8 @@ CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(t
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant_date ON campaign_daily_metrics(tenant_id, date);
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS advertisers_migrated_at TIMESTAMPTZ;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_sync_last_run_at TIMESTAMPTZ;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_sync_last_result JSONB;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
