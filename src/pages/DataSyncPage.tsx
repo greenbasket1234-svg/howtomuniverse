@@ -16,8 +16,9 @@ export function DataSyncPage() {
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const [validationLogs,setValidationLogs]=useState<ValidationLog[]>([]);
-  const loadValidation=()=>apiFetch<{rows:ValidationLog[]}>('/integrations/sync-validation?limit=50').then(r=>setValidationLogs(r.rows||[])).catch(()=>setValidationLogs([]));
-  const load = () => Promise.all([apiFetch<{ rows: StatusRow[] }>('/integrations/status').then(r => setRows(r.rows || [])).catch(() => setRows([])),loadValidation()]).finally(() => setLoading(false));
+  const [loadError,setLoadError]=useState('');
+  const loadValidation=()=>apiFetch<{rows:ValidationLog[]}>('/integrations/sync-validation?limit=50').then(r=>{setValidationLogs(r.rows||[]);setLoadError('');}).catch(e=>{setValidationLogs([]);setLoadError(e instanceof Error?e.message:'Sync 검증 로그를 불러오지 못했습니다.');});
+  const load = () => Promise.all([apiFetch<{ rows: StatusRow[] }>('/integrations/status').then(r => setRows(r.rows || [])).catch(e => {setRows([]);setLoadError(e instanceof Error?e.message:'수집 현황을 불러오지 못했습니다.');}),loadValidation()]).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
   const visibleRows = rows.filter(r => matchesAdvertiserFilter(r.advertiserName, filterValue));
   const timeAgo = (iso: string | null) => {
@@ -42,6 +43,7 @@ export function DataSyncPage() {
   };
   return <div>
     <PageHeader title="데이터 수집 현황" description="연결된 광고 매체의 전일 데이터 수집·누락·재수집 상태를 확인합니다." />
+    {loadError&&<div className="card" style={{color:'#b91c1c',background:'#fef2f2',borderColor:'#fecaca',marginBottom:12,padding:'10px 14px',fontSize:13}}>불러오기 오류: {loadError}</div>}
     {toast && <div className="save-toast"><CheckCircle2 size={16} />{toast}</div>}
     {filterValue && <div className="footnote" style={{ marginBottom: 8 }}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}
     <div className="card" style={{ padding: 0 }}><div className="table-scroll"><table className="data-table">

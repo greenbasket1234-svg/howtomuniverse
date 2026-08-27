@@ -238,7 +238,7 @@ async function pgReadDb(tenantId, filters = {}) {
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
-    pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
+    pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, account_id as "accountId", to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
   ]);
   return {
@@ -2108,11 +2108,17 @@ async function handleApi(req, res, pathname) {
       const delta = Object.fromEntries(Object.keys(source).map(k => [k, metricNumber(stored[k]) - metricNumber(source[k])]));
       const tolerance = (key) => key === 'spend' || key === 'revenue' ? 1 : 0;
       const ok = Object.keys(delta).every(k => Math.abs(delta[k]) <= tolerance(k));
-      await pgPool.query(
-        `INSERT INTO sync_validation_logs (tenant_id, advertiser_id, channel, date_from, date_to, source_label, source_totals, stored_totals, delta, ok)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [tenantId, advertiserId, channel, since || null, until || null, sourceLabel, JSON.stringify(source), JSON.stringify(stored), JSON.stringify(delta), ok]
-      );
+      try {
+        await pgPool.query(
+          `INSERT INTO sync_validation_logs (tenant_id, advertiser_id, channel, date_from, date_to, source_label, source_totals, stored_totals, delta, ok, account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [tenantId, advertiserId, channel, since || null, until || null, sourceLabel, JSON.stringify(source), JSON.stringify(stored), JSON.stringify(delta), ok, accountId || null]
+        );
+        console.log(`[Sync 검증 로그 저장] ${channel} advertiser=${advertiserId} ${since}~${until} ok=${ok}`);
+      } catch (error) {
+        // 검증 로그 저장이 실패해도 동기화 자체는 계속되도록 하되, 원인이 보이도록 반드시 남깁니다.
+        console.error(`[Sync 검증 로그 저장 실패] ${channel} advertiser=${advertiserId}:`, error?.message || error);
+      }
       return { ok, source, stored, delta };
     }
 
@@ -2814,8 +2820,10 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
     if (req.method === 'GET' && pathname === '/api/integrations/sync-validation') {
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); let rows=db.syncValidationLogs||[];
+      const totalBeforeFilter = rows.length;
       if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
       const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
+      console.log(`[Sync 검증 로그 조회] tenantId=${tenantId}, DB에 ${totalBeforeFilter}건 → 필터 후 ${rows.length}건 (advertiserId=${filters.advertiserId||'전체'}, channels=${filters.channels.join(',')||'전체'})`);
       const names=advertiserNameMap(db);return sendJson(res,200,{rows:rows.slice(0,limit).map(r=>({...r,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId)}))});
     }
     // 진단 전용: 네이버 '전환 유형별 상세' 리포트(AD_CONVERSION_DETAIL)를 실제로 한 번 요청해서

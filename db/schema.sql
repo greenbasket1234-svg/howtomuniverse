@@ -227,9 +227,11 @@ CREATE TABLE IF NOT EXISTS sync_validation_logs (
   stored_totals JSONB NOT NULL DEFAULT '{}'::jsonb,
   delta JSONB NOT NULL DEFAULT '{}'::jsonb,
   ok BOOLEAN NOT NULL DEFAULT false,
+  account_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sync_validation_tenant ON sync_validation_logs(tenant_id, created_at DESC);
+ALTER TABLE sync_validation_logs ADD COLUMN IF NOT EXISTS account_id TEXT;
 
 CREATE TABLE IF NOT EXISTS creative_metrics (
   id BIGSERIAL PRIMARY KEY,
