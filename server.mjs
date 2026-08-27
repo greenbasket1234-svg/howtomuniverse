@@ -766,7 +766,17 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
     if (!data) {
       throw new Error('네이버 구매완료 전환 필드(purchaseCcnt/purchaseConvAmt)를 조회하지 못해 정확한 전환 분류를 보장할 수 없습니다. ccnt 전체 전환값으로 대체하지 않고 동기화를 중단합니다.');
     }
-    return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    const resultRows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    // 진단용: ccnt(전체 전환)와 purchaseCcnt(구매 전용이라고 알려진 필드)가 항상 같은 값이면,
+    // purchaseCcnt가 실제로는 '구매 전용'이 아니라 그냥 ccnt를 그대로 복사한 필드일 가능성이 있습니다.
+    // (예: 브랜드검색처럼 conversionType 구분이 없는 캠페인 유형에서 이런 현상이 있을 수 있습니다)
+    for (const r of resultRows) {
+      if (r.ccnt !== undefined && r.purchaseCcnt !== undefined && Number(r.ccnt) > 0) {
+        const same = Number(r.ccnt) === Number(r.purchaseCcnt);
+        console.log(`[네이버 전환필드 대조] id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} convAmt=${r.convAmt} purchaseConvAmt=${r.purchaseConvAmt} ${same ? '⚠️ 두 값이 동일함(구매 전용 필드가 아닐 수 있음)' : '✅ 서로 다름(정상적으로 구분되는 것으로 보임)'}`);
+      }
+    }
+    return resultRows;
   };
 
   const output = [];
@@ -813,15 +823,23 @@ function splitNaverConversions(row) {
   const hasField = (name) => row != null && Object.prototype.hasOwnProperty.call(row, name) && row[name] !== null && row[name] !== undefined && row[name] !== '';
   const numOrZero = (name) => hasField(name) ? Math.max(0, Number(row[name] || 0) || 0) : 0;
 
+  const totalConversions = numOrZero('ccnt');
   const purchases = numOrZero('purchaseCcnt');
   const revenue = numOrZero('purchaseConvAmt');
+  // DB(리드) 전환 = 전체 전환(ccnt) - 구매(purchaseCcnt). 네이버 /stats API는 '리드 전용' 필드를
+  // 따로 제공하지 않아 완벽하진 않지만, 이렇게 계산하지 않으면 DB 전환이 항상 0으로 표시되어
+  // 오히려 더 부정확합니다(실제 전환이 있는데도 없는 것처럼 보임). purchaseCcnt가 이 계정/캠페인
+  // 유형에서 실제로 '구매 전용'이 맞는지는 [네이버 전환필드 대조] 로그로 별도 확인 중입니다.
+  // purchaseCcnt가 신뢰할 수 없는 것으로 확인되면(=ccnt와 항상 같음), 그때는 이 값을 0으로 보지 않고
+  // 전체 전환(ccnt)을 그대로 DB 전환으로 처리하도록 다시 조정할 수 있습니다.
+  const dbCount = Math.max(0, totalConversions - purchases);
   // 장바구니 담기/회원가입/결제시작은 계정마다 지원 여부가 달라, 필드가 실제로 응답에
   // 있을 때만 값을 채웁니다(naverProbeFunnelFieldSupport에서 미지원으로 확인되면
   // 애초에 요청 필드에 안 들어가 있어서 항상 0으로 정직하게 남습니다).
   const addToCart = numOrZero('cartCcnt');
   const completeRegistration = numOrZero('signUpCcnt');
   const initiateCheckout = numOrZero('paymentCcnt');
-  return { dbCount: 0, purchases, revenue, addToCart, completeRegistration, initiateCheckout };
+  return { dbCount, purchases, revenue, addToCart, completeRegistration, initiateCheckout };
 }
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
