@@ -126,8 +126,8 @@ export function CampaignManagementPage() {
     </div><div className="footnote">Instagram은 Meta, YouTube는 Google Ads 계정 체계를 공유합니다. Karrot은 공식 권한 확보 전까지 보고서·수동 상태 관리 GATE로 동작합니다. 네이버 캠페인은 "네이버 검색광고 관리" 메뉴에서도 같은 ON/OFF·예산 데이터를 확인·수정할 수 있습니다(행의 바로가기 버튼).</div></div>
 
     <div className="keyword-analysis-cards">
-      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.advertiserName} {r.name}</Badge> ROAS {r.roas.toFixed(0)}% · CVR {r.cvr.toFixed(1)}% · 전환 {r.dbCount}건 · 클릭 {r.clicks.toLocaleString()}</p>):<p className="muted-text">선택 기간에 확실한 고성과 캠페인이 없습니다.</p>}</div>
-      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.advertiserName} {r.name}</Badge> 광고비 ₩{Math.round(r.spend).toLocaleString()} · 전환 {r.dbCount}건 · CVR {r.cvr.toFixed(1)}% · ROAS {r.roas.toFixed(0)}%</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.advertiserName} {r.name}</Badge> ROAS {r.roas.toFixed(0)}% · CVR {r.cvr.toFixed(1)}% · DB전환 {r.dbCount}건 · 구매전환 {r.purchases}건 · 클릭 {r.clicks.toLocaleString()}</p>):<p className="muted-text">선택 기간에 확실한 고성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.advertiserName} {r.name}</Badge> 광고비 ₩{Math.round(r.spend).toLocaleString()} · DB전환 {r.dbCount}건 · 구매전환 {r.purchases}건 · CVR {r.cvr.toFixed(1)}% · ROAS {r.roas.toFixed(0)}%</p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
     </div>
     <div className="footnote">고성과·저성과는 선택하신 기간의 실제 매체 성과(캠페인명 기준 매칭)를 ROAS·전환수·CVR·클릭수 종합 기준으로 판단합니다. 성과 데이터가 없는 캠페인(연동 전·집행 전)은 집계에서 제외됩니다.</div>
 

@@ -235,9 +235,9 @@ async function pgReadDb(tenantId, filters = {}) {
        FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM daily_metrics WHERE ${dm.where}`, dm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout" FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
     pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
     pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
   ]);
@@ -691,6 +691,45 @@ async function naverFetchAdMasters(credentials) {
   return { ads, adgroupNameMap };
 }
 
+/**
+ * 네이버 '장바구니 담기'/'회원가입'/'신청·예약' 등 세부 전환 유형 시도
+ * ------------------------------------------------------------
+ * purchaseCcnt/purchaseConvAmt와 달리, 이 필드들은 네이버 공식 문서에 명시되어 있지
+ * 않아 계정마다 지원 여부가 다를 수 있습니다. 그래서 구매/DB 동기화(위 함수)와는
+ * 완전히 분리된 별도 요청으로 "조용히" 시도하고, 실패하면 그냥 0으로 두며 절대
+ * 기존 구매/DB 동기화를 중단시키지 않습니다. 계정별로 한 번만 확인해서 캐싱합니다.
+ */
+const NAVER_FUNNEL_FIELD_CANDIDATES = {
+  addToCart: ['cartCcnt', 'cartConvAmt'],
+  completeRegistration: ['signUpCcnt', 'signUpConvAmt'],
+  initiateCheckout: ['paymentCcnt', 'paymentConvAmt'],
+};
+const naverFunnelSupportCache = new Map(); // customerId -> {addToCart:bool, completeRegistration:bool, initiateCheckout:bool} | null(확인 전)
+
+async function naverProbeFunnelFieldSupport(credentials, sampleId) {
+  const cacheKey = credentials.customerId;
+  if (naverFunnelSupportCache.has(cacheKey)) return naverFunnelSupportCache.get(cacheKey);
+  const today = new Date().toISOString().slice(0, 10);
+  const allCandidateFields = Object.values(NAVER_FUNNEL_FIELD_CANDIDATES).flat();
+  const result = { addToCart: false, completeRegistration: false, initiateCheckout: false };
+  try {
+    const data = await naverApiRequest('GET', '/stats', {
+      id: sampleId, fields: JSON.stringify(allCandidateFields),
+      timeRange: JSON.stringify({ since: today, until: today }), timeIncrement: '1',
+    }, credentials);
+    const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    const sample = rows[0] || {};
+    for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
+      result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+    }
+    console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
+  } catch (error) {
+    console.log(`[네이버 퍼널 전환 지원 확인 실패] 이 계정은 지원하지 않는 것으로 처리합니다: ${error?.message || error}`);
+  }
+  naverFunnelSupportCache.set(cacheKey, result);
+  return result;
+}
+
 /** 네이버 /stats의 ID 묶음을 일별 행으로 정규화합니다. timeIncrement=1이 무시되는 계정은 일자별 재요청합니다. */
 async function naverStatsForIdsDaily(credentials, ids, since, until) {
   if (!ids.length) return [];
@@ -698,6 +737,12 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   // ccnt는 구매/가입/장바구니/신청·예약/기타를 모두 합친 '전체 전환수'라서
   // ccnt 자체를 DB 전환으로 저장하면 구매완료도 DB 전환에 섞이는 문제가 생깁니다.
   const PURCHASE_SPLIT_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
+  // 장바구니 담기 등은 이 계정이 실제로 지원하는 것으로 확인된 필드만 추가로 요청합니다.
+  // (미지원 필드를 섞어서 보내면 계정에 따라 요청 전체가 거부될 수 있어, 기존 구매/DB 조회와
+  // 분리해 별도로 확인한 뒤에만 추가합니다.)
+  const funnelSupport = await naverProbeFunnelFieldSupport(credentials, ids[0]);
+  const funnelFields = Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES).filter(([key]) => funnelSupport[key]).flatMap(([, fields]) => fields);
+  const requestFields = [...PURCHASE_SPLIT_FIELDS, ...funnelFields];
   // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
   // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
   const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
@@ -713,7 +758,11 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
     // ccnt는 여러 전환유형의 합계라, 신규 구매 필드 요청이 실패했을 때 ccnt를 구매나 DB로
     // fallback하면 다시 같은 오분류가 발생합니다. 따라서 정확성을 우선해 동기화를 실패시키고
     // 기존 DB 값을 보존합니다. naverApiRequest 자체가 11001/5xx는 이미 최대 3회 재시도합니다.
-    const data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
+    let data = await fetchWithFields(requestFields);
+    if (!data && funnelFields.length) {
+      // 혹시 퍼널 필드가 섞여서 요청 전체가 실패했을 가능성에 대비해, 필수 필드만으로 한 번 더 시도합니다.
+      data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
+    }
     if (!data) {
       throw new Error('네이버 구매완료 전환 필드(purchaseCcnt/purchaseConvAmt)를 조회하지 못해 정확한 전환 분류를 보장할 수 없습니다. ccnt 전체 전환값으로 대체하지 않고 동기화를 중단합니다.');
     }
@@ -761,20 +810,18 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
  * Purchase 필드가 없는 구형 응답에서도 ccnt로 구매를 추정하지 않습니다.
  */
 function splitNaverConversions(row) {
-  const hasPurchaseCount = row != null
-    && Object.prototype.hasOwnProperty.call(row, 'purchaseCcnt')
-    && row.purchaseCcnt !== null
-    && row.purchaseCcnt !== undefined
-    && row.purchaseCcnt !== '';
-  const hasPurchaseRevenue = row != null
-    && Object.prototype.hasOwnProperty.call(row, 'purchaseConvAmt')
-    && row.purchaseConvAmt !== null
-    && row.purchaseConvAmt !== undefined
-    && row.purchaseConvAmt !== '';
+  const hasField = (name) => row != null && Object.prototype.hasOwnProperty.call(row, name) && row[name] !== null && row[name] !== undefined && row[name] !== '';
+  const numOrZero = (name) => hasField(name) ? Math.max(0, Number(row[name] || 0) || 0) : 0;
 
-  const purchases = hasPurchaseCount ? Math.max(0, Number(row.purchaseCcnt || 0) || 0) : 0;
-  const revenue = hasPurchaseRevenue ? Math.max(0, Number(row.purchaseConvAmt || 0) || 0) : 0;
-  return { dbCount: 0, purchases, revenue };
+  const purchases = numOrZero('purchaseCcnt');
+  const revenue = numOrZero('purchaseConvAmt');
+  // 장바구니 담기/회원가입/결제시작은 계정마다 지원 여부가 달라, 필드가 실제로 응답에
+  // 있을 때만 값을 채웁니다(naverProbeFunnelFieldSupport에서 미지원으로 확인되면
+  // 애초에 요청 필드에 안 들어가 있어서 항상 0으로 정직하게 남습니다).
+  const addToCart = numOrZero('cartCcnt');
+  const completeRegistration = numOrZero('signUpCcnt');
+  const initiateCheckout = numOrZero('paymentCcnt');
+  return { dbCount: 0, purchases, revenue, addToCart, completeRegistration, initiateCheckout };
 }
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
@@ -803,6 +850,9 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
         dbCount: conversions.dbCount,
         purchases: conversions.purchases,
         revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
         thumbnailUrl: null,
         mediaType: 'text', // 네이버 파워링크는 이미지/영상 없이 제목+설명 텍스트로만 구성된 키워드 기반 소재입니다.
         title: ad.ad?.headline || '',
@@ -874,6 +924,9 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         dbCount: conversions.dbCount,
         purchases: conversions.purchases,
         revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
       });
     }
   });
@@ -902,6 +955,9 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         dbCount: conversions.dbCount,
         purchases: conversions.purchases,
         revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
       });
     }
   });
@@ -1123,6 +1179,9 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
         dbCount: conversions.dbCount,
         purchases: conversions.purchases,
         revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
       });
     }
   });
@@ -1889,32 +1948,35 @@ async function handleApi(req, res, pathname) {
       const valid = (rows || []).filter(r => r.date && r.campaignId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, date, impressions, clicks, spend, db_count, purchases, revenue)
-         SELECT $1, $2, $3, cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::date[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::numeric[]) AS t(cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev)
+        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
+         SELECT $1, $2, $3, cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::date[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::bigint[]) AS t(cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk)
          ON CONFLICT (advertiser_id, channel, campaign_id, date) DO UPDATE SET
            campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
-           spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+           spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => String(r.campaignId)), valid.map(r => r.campaignName || String(r.campaignId)), valid.map(r => r.campaignType || ''), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
-         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout))]
       );
     }
     async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images)
-         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[], $25::text[])
-           AS t(cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg)
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images, add_to_cart, complete_registration, initiate_checkout)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb, atc, creg, ichk
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[], $25::text[], $26::bigint[], $27::bigint[], $28::bigint[])
+           AS t(cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg, atc, creg, ichk)
          ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
            campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
            ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
            db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
            thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, video_url=EXCLUDED.video_url, title=EXCLUDED.title,
-           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, carousel_images=EXCLUDED.carousel_images, updated_at=now()`,
+           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, carousel_images=EXCLUDED.carousel_images,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
          valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
@@ -1922,26 +1984,29 @@ async function handleApi(req, res, pathname) {
          valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
          valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.videoUrl || null), valid.map(r => r.title || ''),
          valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || ''),
-         valid.map(r => JSON.stringify(r.carouselImages || null))]
+         valid.map(r => JSON.stringify(r.carouselImages || null)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout))]
       );
     }
     async function upsertKeywordDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && (r.keywordId || r.keyword));
       if (!valid.length) return;
       await pgPool.query(
-        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue)
-         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev
-         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[])
-           AS t(cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev)
+        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::bigint[], $19::bigint[], $20::bigint[])
+           AS t(cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk)
          ON CONFLICT (advertiser_id, channel, keyword_id, keyword, date) DO UPDATE SET
            campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
            impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
-           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout, updated_at=now()`,
         [tenantId, advertiserId, channel,
          valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
          valid.map(r => r.keywordId || ''), valid.map(r => r.keyword || r.keywordId), valid.map(r => r.date),
          valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
-         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue))]
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout))]
       );
     }
     function aggregateMetricRows(rows) {
@@ -2125,10 +2190,11 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
     function withDerived(row) {
       const impressions = metricNumber(row.impressions), clicks = metricNumber(row.clicks), spend = metricNumber(row.spend), dbCount = metricNumber(row.dbCount), purchases = metricNumber(row.purchases), revenue = metricNumber(row.revenue);
+      const addToCart = metricNumber(row.addToCart), completeRegistration = metricNumber(row.completeRegistration), initiateCheckout = metricNumber(row.initiateCheckout);
       // DB(Lead)와 구매(Purchase)는 서로 다른 전환입니다. 합계는 "총 전환"을 표시하는 화면에서만
       // totalConversions로 사용하고, DB/구매 전용 KPI는 각각의 전용 분모로 계산합니다.
       const totalConversions = dbCount + purchases;
-      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, totalConversions,
+      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, addToCart, completeRegistration, initiateCheckout, totalConversions,
         ctr: impressions ? clicks / impressions * 100 : 0,
         cpc: clicks ? spend / clicks : 0,
         cpm: impressions ? spend / impressions * 1000 : 0,
@@ -2147,6 +2213,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         const key = keyFn(row);
         const cur = map.get(key) || seedFn(row);
         cur.impressions += metricNumber(row.impressions); cur.clicks += metricNumber(row.clicks); cur.spend += metricNumber(row.spend); cur.dbCount += metricNumber(row.dbCount); cur.purchases += metricNumber(row.purchases); cur.revenue += metricNumber(row.revenue);
+        cur.addToCart = (cur.addToCart || 0) + metricNumber(row.addToCart); cur.completeRegistration = (cur.completeRegistration || 0) + metricNumber(row.completeRegistration); cur.initiateCheckout = (cur.initiateCheckout || 0) + metricNumber(row.initiateCheckout);
         if (row.date) { cur.from = !cur.from || row.date < cur.from ? row.date : cur.from; cur.to = !cur.to || row.date > cur.to ? row.date : cur.to; }
         map.set(key, cur);
       }
@@ -2194,8 +2261,8 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const grouped = new Map();
       for (const row of source) {
         const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
-        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};
-        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
+        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};
+        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
       }
       const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
@@ -2582,7 +2649,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
