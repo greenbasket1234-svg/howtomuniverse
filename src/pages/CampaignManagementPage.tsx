@@ -61,19 +61,20 @@ export function CampaignManagementPage() {
 
   // 캠페인명 기준으로 선택한 기간의 실제 성과를 매칭합니다(관리용 캠페인 목록과 성과 API의 ID 체계가 달라 이름으로 연결).
   const perfByName = useMemo(()=>{
-    const m = new Map<string, {spend:number;clicks:number;impressions:number;dbCount:number;revenue:number}>();
+    const m = new Map<string, {spend:number;clicks:number;impressions:number;dbCount:number;purchases:number;revenue:number}>();
     for (const p of perf) {
-      const cur = m.get(p.campaignName) || {spend:0,clicks:0,impressions:0,dbCount:0,revenue:0};
-      cur.spend += p.spend; cur.clicks += p.clicks; cur.impressions += p.impressions; cur.dbCount += p.dbCount; cur.revenue += p.revenue||0;
+      const cur = m.get(p.campaignName) || {spend:0,clicks:0,impressions:0,dbCount:0,purchases:0,revenue:0};
+      cur.spend += p.spend; cur.clicks += p.clicks; cur.impressions += p.impressions; cur.dbCount += p.dbCount; cur.purchases += p.purchases||0; cur.revenue += p.revenue||0;
       m.set(p.campaignName, cur);
     }
     return m;
   },[perf]);
   const withPerf = useMemo(()=>filtered.map(r=>{
     const advertiserName = advertisers.find(a => a.id === r.advertiserId)?.name || '';
-    const p = perfByName.get(r.name) || {spend:0,clicks:0,impressions:0,dbCount:0,revenue:0};
-    return { id:r.id, name:r.name, advertiserName, spend:p.spend, clicks:p.clicks, impressions:p.impressions, dbCount:p.dbCount, revenue:p.revenue,
-      ctr: p.impressions?p.clicks/p.impressions*100:0, roas: p.spend?p.revenue/p.spend*100:0, cvr: p.clicks?p.dbCount/p.clicks*100:0 };
+    const p = perfByName.get(r.name) || {spend:0,clicks:0,impressions:0,dbCount:0,purchases:0,revenue:0};
+    const totalConversions = p.dbCount + p.purchases;
+    return { id:r.id, name:r.name, advertiserName, spend:p.spend, clicks:p.clicks, impressions:p.impressions, dbCount:p.dbCount, purchases:p.purchases, revenue:p.revenue,
+      ctr: p.impressions?p.clicks/p.impressions*100:0, roas: p.spend?p.revenue/p.spend*100:0, cvr: p.clicks?totalConversions/p.clicks*100:0 };
   }),[filtered,perfByName,advertisers]);
   // ROAS·전환수·CVR·클릭수를 종합해서 판단합니다(ROAS 하나만 보지 않습니다).
   const { high: highPerf, low: lowPerf } = useMemo(()=>splitHighLowPerformers(withPerf, 8), [withPerf]);

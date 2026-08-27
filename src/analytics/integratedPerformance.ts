@@ -35,8 +35,10 @@ export function performanceDatasetFromMetricRows(rows:DailyMetricRow[]):Performa
 }
 
 /** @deprecated 실제 성과 화면에서는 useMetricRows + performanceDatasetFromMetricRows를 사용하세요. */
-export function sumRows(rows:PerformancePoint[]){return rows.reduce((a,r)=>({spend:a.spend+r.spend,impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,leads:a.leads+r.leads,revenue:a.revenue+r.revenue,validLeads:a.validLeads+(r.validLeads??0),contracts:a.contracts+(r.contracts??0),platformLeads:a.platformLeads+(r.platformLeads??r.leads)}),{spend:0,impressions:0,clicks:0,leads:0,revenue:0,validLeads:0,contracts:0,platformLeads:0});}
-export function derived(t:ReturnType<typeof sumRows>){return{...t,ctr:t.impressions?t.clicks/t.impressions*100:0,cpa:t.leads?t.spend/t.leads:0,roas:t.spend?t.revenue/t.spend*100:0,cpc:t.clicks?t.spend/t.clicks:0};}
+export function sumRows(rows:PerformancePoint[]){return rows.reduce((a,r)=>({spend:a.spend+r.spend,impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,leads:a.leads+r.leads,purchases:a.purchases+(r.purchases??0),revenue:a.revenue+r.revenue,validLeads:a.validLeads+(r.validLeads??0),contracts:a.contracts+(r.contracts??0),platformLeads:a.platformLeads+(r.platformLeads??r.leads)}),{spend:0,impressions:0,clicks:0,leads:0,purchases:0,revenue:0,validLeads:0,contracts:0,platformLeads:0});}
+// '전환'은 리드(leads)만 세면 안 됩니다 - 판매(구매) 목적 광고주는 리드가 0이어도 구매(purchases)로
+// 실제 전환이 있을 수 있어, CPA는 반드시 리드+구매 합계 기준으로 계산합니다.
+export function derived(t:ReturnType<typeof sumRows>){const totalConversions=t.leads+(t.purchases??0);return{...t,ctr:t.impressions?t.clicks/t.impressions*100:0,cpa:totalConversions?t.spend/totalConversions:0,roas:t.spend?t.revenue/t.spend*100:0,cpc:t.clicks?t.spend/t.clicks:0};}
 export function pctChange(now:number,prev:number){return prev?(now-prev)/Math.abs(prev)*100:now?100:0;}
 export function metricValue(t:ReturnType<typeof derived>,metric:PerformanceMetric){return Number(t[metric]??0);}
 export function formatMetric(metric:PerformanceMetric,value:number){if(metric==='spend'||metric==='revenue'||metric==='cpa'||metric==='cpc')return value?`₩${Math.round(value).toLocaleString()}`:'-';if(metric==='ctr'||metric==='roas')return `${value.toFixed(value>=100?0:2)}%`;return Math.round(value).toLocaleString();}

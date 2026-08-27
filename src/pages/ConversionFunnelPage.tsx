@@ -50,7 +50,7 @@ export function ConversionFunnelPage(){
   }),{impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0}),[visibleRows]);
 
   const connectionByChannel=useMemo(()=>new Map((meta?.connections||[]).map(c=>[c.channel,c])),[meta]);
-  const visibleWithMetrics=useMemo(()=>visibleRows.map(row=>({...row,cpa:row.dbCount?row.spend/row.dbCount:0,roas:row.spend?row.revenue/row.spend*100:0})),[visibleRows]);
+  const visibleWithMetrics=useMemo(()=>visibleRows.map(row=>({...row,cpa:(row.dbCount+row.purchases)?row.spend/(row.dbCount+row.purchases):0,roas:row.spend?row.revenue/row.spend*100:0})),[visibleRows]);
   const {sorted:sortedRows,toggleSort,arrow}=useSortableRows(visibleWithMetrics,'spend',(r,k)=>(r as any)[k]);
   const advertiserGroups=useMemo(()=>{
     const map=new Map<string,{clicks:number;dbCount:number;purchases:number;color:string}>();

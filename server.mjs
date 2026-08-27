@@ -2060,7 +2060,11 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     }
     function withDerived(row) {
       const impressions = metricNumber(row.impressions), clicks = metricNumber(row.clicks), spend = metricNumber(row.spend), dbCount = metricNumber(row.dbCount), purchases = metricNumber(row.purchases), revenue = metricNumber(row.revenue);
-      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, ctr: impressions ? clicks / impressions * 100 : 0, cpc: clicks ? spend / clicks : 0, cpm: impressions ? spend / impressions * 1000 : 0, cvr: clicks ? dbCount / clicks * 100 : 0, cpa: dbCount ? spend / dbCount : 0, roas: spend ? revenue / spend * 100 : 0 };
+      // '전환'은 리드(DB전환)만 세면 안 됩니다. 판매/구매 목적 캠페인은 dbCount가 0이어도
+      // purchases(구매전환)로 실제 전환이 있을 수 있어, 이 경우를 놓치면 "매출은 있는데
+      // 전환은 0"으로 보이는 모순이 생깁니다. CVR·CPA는 리드+구매를 합친 총 전환 기준으로 계산합니다.
+      const totalConversions = dbCount + purchases;
+      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, totalConversions, ctr: impressions ? clicks / impressions * 100 : 0, cpc: clicks ? spend / clicks : 0, cpm: impressions ? spend / impressions * 1000 : 0, cvr: clicks ? totalConversions / clicks * 100 : 0, cpa: totalConversions ? spend / totalConversions : 0, roas: spend ? revenue / spend * 100 : 0 };
     }
     function groupMetrics(rows, keyFn, seedFn) {
       const map = new Map();

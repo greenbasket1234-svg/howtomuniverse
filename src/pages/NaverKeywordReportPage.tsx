@@ -23,7 +23,10 @@ export function NaverKeywordReportPage(){
   const [campaign,setCampaign]=useState('전체');
   const {filterValue}=useAdvertiserFilter();
   const {rows,meta,loading,error}=useMetricRows<KeywordMetricRow>('/metrics/keywords',{channel});
-  const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue)&&(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(campaign==='전체'||r.campaignName===campaign)).map(r=>({...r,cpm:r.impressions?r.spend/r.impressions*1000:0,cpc:r.clicks?r.spend/r.clicks:0,cpa:r.dbCount?r.spend/r.dbCount:0})),[rows,filterValue,query,campaign]);
+  const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue)&&(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(campaign==='전체'||r.campaignName===campaign)).map(r=>{
+    const totalConversions=r.dbCount+(r.purchases||0);
+    return {...r, ctr:r.impressions?r.clicks/r.impressions*100:0, cpm:r.impressions?r.spend/r.impressions*1000:0, cpc:r.clicks?r.spend/r.clicks:0, cvr:r.clicks?totalConversions/r.clicks*100:0, cpa:totalConversions?r.spend/totalConversions:0, roas:r.spend?(r.revenue||0)/r.spend*100:0, totalConversions};
+  }),[rows,filterValue,query,campaign]);
   const campaigns=useMemo(()=>['전체',...new Set(rows.map(r=>r.campaignName).filter((c):c is string=>Boolean(c)))],[rows]);
   const {sorted:sortedVisible,toggleSort,arrow}=useSortableRows(visible,'spend',(r,k)=>(r as any)[k]);
   const totals=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,impressions:a.impressions+r.impressions,clicks:a.clicks+r.clicks,conv:a.conv+r.dbCount,revenue:a.revenue+r.revenue}),{spend:0,impressions:0,clicks:0,conv:0,revenue:0}),[visible]);
@@ -71,7 +74,7 @@ export function NaverKeywordReportPage(){
         <th className="sortable-th" onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.campaignType&&r.campaignType!=='-'?<CampaignTypeTag type={r.campaignType}/>:'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b></td><td>{pct(r.cvr||0)}</td><td>{r.dbCount?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
+        {sortedVisible.map((r,i)=><tr key={`${r.keywordId||r.keyword}-${i}`}><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td>{r.campaignType&&r.campaignType!=='-'?<CampaignTypeTag type={r.campaignType}/>:'-'}</td><td>{r.adgroupName||r.adgroupId||'-'}</td><td><b>{r.keyword}</b></td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.impressions?won(r.cpm):'-'}</td><td>{r.clicks.toLocaleString()}</td><td>{pct(r.ctr||0)}</td><td>{r.clicks?won(r.cpc):'-'}</td><td><b>{r.dbCount.toLocaleString()}</b>{r.purchases>0&&<small style={{display:'block',color:'var(--text-muted)'}}>구매 {r.purchases.toLocaleString()}</small>}</td><td>{pct(r.cvr||0)}</td><td>{r.totalConversions?won(r.cpa):'-'}</td><td>{r.revenue?won(r.revenue):'-'}</td><td className={r.revenue&&(r.roas||0)>=200?'metric-positive':r.revenue&&(r.roas||0)<100?'metric-negative':''}>{r.revenue?pct(r.roas||0):'-'}</td></tr>)}
         {!loading&&sortedVisible.length===0&&<tr><td colSpan={16} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 실제 키워드 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
       <div className="footnote">모든 수치는 같은 from/to 기간으로 서버에서 집계됩니다. 미연동 매체는 빈 데이터와 상태로 구분됩니다.</div>
