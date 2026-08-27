@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   monthly_ai_limit INTEGER NOT NULL DEFAULT 30,
   can_use_automation BOOLEAN NOT NULL DEFAULT false,
   can_use_client_portal BOOLEAN NOT NULL DEFAULT false,
+  -- 이 값이 채워지면 '마이그레이션 실행'이 광고주 목록을 다시 만들지 않습니다(광고주는 Postgres가
+  -- 진짜 데이터이고, 원본 JSON 파일은 그대로 남아있어서 삭제한 광고주가 되살아나는 걸 막기 위함).
+  advertisers_migrated_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -125,6 +128,7 @@ CREATE TABLE IF NOT EXISTS campaign_daily_metrics (
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant ON campaign_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_adv_date ON campaign_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_campaign_daily_tenant_date ON campaign_daily_metrics(tenant_id, date);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS advertisers_migrated_at TIMESTAMPTZ;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;

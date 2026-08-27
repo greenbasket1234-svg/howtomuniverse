@@ -1591,7 +1591,7 @@ async function handleApi(req, res, pathname) {
         const tenantRes = await pgPool.query(
           `INSERT INTO tenants (name, slug, plan, max_advertisers, max_members, max_media_accounts, monthly_ai_limit, can_use_automation, can_use_client_portal)
            VALUES ($1, 'howtom', 'agency', 999, 999, 999, 999999, true, true)
-           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id, advertisers_migrated_at`,
           [tenantName]
         );
         const tenantId = tenantRes.rows[0].id;
@@ -1623,37 +1623,51 @@ async function handleApi(req, res, pathname) {
           log.push(`중복 광고주 ${toDelete.length}개 정리`);
         }
 
-        log.push('광고주 및 매체 연동 정보를 옮깁니다...');
+        const migratedBefore = Boolean(tenantRes.rows[0].advertisers_migrated_at);
         const advertiserIdMap = new Map();
-        for (const adv of json.advertisers || []) {
-          // 같은 이름의 광고주가 이미 있으면 새로 만들지 않고 그 광고주를 그대로 씁니다(중복 생성 방지).
-          const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
-          let newAdvId;
-          if (existing.rows[0]) {
-            newAdvId = existing.rows[0].id;
-            await pgPool.query(
-              `UPDATE advertisers SET monthly_budget=$3, brand_color=$4, industry=$5, website=$6, phone=$7, address=$8, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
-              [newAdvId, tenantId, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
-            );
-          } else {
-            const advRes = await pgPool.query(
-              `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-              [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
-            );
-            newAdvId = advRes.rows[0].id;
+        if (migratedBefore) {
+          // 이미 한 번 이전을 마쳤으면, 광고주를 다시 만들지 않습니다. 원본 JSON 파일은 절대
+          // 건드리지 않기 때문에, 여기서 다시 만들면 사용자가 화면에서 삭제한 광고주가
+          // '마이그레이션 실행'을 누를 때마다 되살아나는 문제가 생깁니다. 대신 이름 기준으로
+          // 지금 Postgres에 실제로 있는 광고주만 찾아 매핑합니다(삭제된 광고주는 자연히 제외됨).
+          log.push('광고주는 이미 이전을 마쳐 다시 만들지 않습니다(삭제한 광고주가 되살아나지 않도록).');
+          for (const adv of json.advertisers || []) {
+            const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
+            if (existing.rows[0]) advertiserIdMap.set(adv.id, existing.rows[0].id);
           }
-          advertiserIdMap.set(adv.id, newAdvId);
-          for (const acc of adv.accounts || []) {
-            await pgPool.query(
-              `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted, last_synced_at, last_row_count, last_sync_error)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-               ON CONFLICT (advertiser_id, channel) DO UPDATE SET status = EXCLUDED.status`,
-              [tenantId, newAdvId, acc.channel, acc.status || 'connected', acc.account_id || null,
-               encryptSecret(acc.api_key), encryptSecret(acc.secret_key),
-               acc.last_synced_at || null, acc.last_row_count || null, acc.last_sync_error || null]
-            );
+        } else {
+          log.push('광고주 및 매체 연동 정보를 옮깁니다...');
+          for (const adv of json.advertisers || []) {
+            // 같은 이름의 광고주가 이미 있으면 새로 만들지 않고 그 광고주를 그대로 씁니다(중복 생성 방지).
+            const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
+            let newAdvId;
+            if (existing.rows[0]) {
+              newAdvId = existing.rows[0].id;
+              await pgPool.query(
+                `UPDATE advertisers SET monthly_budget=$3, brand_color=$4, industry=$5, website=$6, phone=$7, address=$8, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+                [newAdvId, tenantId, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+              );
+            } else {
+              const advRes = await pgPool.query(
+                `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+                [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+              );
+              newAdvId = advRes.rows[0].id;
+            }
+            advertiserIdMap.set(adv.id, newAdvId);
+            for (const acc of adv.accounts || []) {
+              await pgPool.query(
+                `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted, last_synced_at, last_row_count, last_sync_error)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 ON CONFLICT (advertiser_id, channel) DO UPDATE SET status = EXCLUDED.status`,
+                [tenantId, newAdvId, acc.channel, acc.status || 'connected', acc.account_id || null,
+                 encryptSecret(acc.api_key), encryptSecret(acc.secret_key),
+                 acc.last_synced_at || null, acc.last_row_count || null, acc.last_sync_error || null]
+              );
+            }
           }
+          await pgPool.query(`UPDATE tenants SET advertisers_migrated_at = now() WHERE id = $1`, [tenantId]);
         }
         log.push(`광고주 ${advertiserIdMap.size}개 이전 완료`);
 
