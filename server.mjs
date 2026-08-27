@@ -1190,11 +1190,41 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
     return rows;
   }
 
-  // 실제 컬럼 순서를 로그로 확인하기 전까지는, 숫자를 추측해서 잘못된 값을 저장하지 않도록
-  // 안전하게 빈 배열을 반환합니다. Railway 로그의 [naver-report-sample]을 확인한 뒤
-  // 정확한 컬럼 인덱스로 이 부분을 채우면 바로 실제 값이 반영됩니다.
-  void since; void until;
-  return [];
+  // ---- 실제 파싱 (컬럼 구조는 실제 응답 로그로 확정했습니다) ----
+  // [0]날짜(YYYYMMDD) [2]캠페인ID [3]광고그룹ID [4]키워드ID [5]소재ID [12]전환유형 [13]전환수 [14]전환매출
+  const COL = { date: 0, campaignId: 2, adgroupId: 3, keywordId: 4, adId: 5, convType: 12, convCount: 13, convAmount: 14 };
+  // 네이버 전환유형 문자열 → HOWTOM 내부 필드명. 목록에 없는 유형(신청/예약 등)은 전부 DB(리드)로 봅니다.
+  const TYPE_TO_FIELD = { purchase: 'purchases', add_to_cart: 'addToCart', sign_up: 'completeRegistration', payment: 'initiateCheckout' };
+
+  const byKey = new Map();
+  const unknownTypes = new Set();
+  for (const r of rows) {
+    const raw = String(r[COL.date] ?? '');
+    if (raw.length !== 8) continue;
+    const date = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+    if (date < since || date > until) continue;
+    const convType = String(r[COL.convType] ?? '').trim();
+    const count = Number(r[COL.convCount] || 0) || 0;
+    const amount = Number(r[COL.convAmount] || 0) || 0;
+    const field = TYPE_TO_FIELD[convType];
+    if (!field && convType) unknownTypes.add(convType);
+
+    const key = `${date}|${r[COL.campaignId] || ''}|${r[COL.adgroupId] || ''}|${r[COL.keywordId] || ''}|${r[COL.adId] || ''}`;
+    const cur = byKey.get(key) || {
+      date, campaignId: String(r[COL.campaignId] || ''), adgroupId: String(r[COL.adgroupId] || ''),
+      keywordId: String(r[COL.keywordId] || ''), adId: String(r[COL.adId] || ''),
+      dbCount: 0, purchases: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, revenue: 0,
+    };
+    // 알려진 유형이면 해당 필드에, 모르는 유형이면 DB(리드)로 넣습니다.
+    cur[field || 'dbCount'] += count;
+    // 매출은 구매 전환에만 의미가 있습니다.
+    if (field === 'purchases') cur.revenue += amount;
+    byKey.set(key, cur);
+  }
+  if (unknownTypes.size) console.log(`[naver-conversion-detail] 처음 보는 전환유형을 DB(리드)로 분류했습니다: ${JSON.stringify([...unknownTypes])}`);
+  const parsed = [...byKey.values()];
+  console.log(`[naver-conversion-detail] ${since}~${until} 전환 상세 ${rows.length}행 → ${parsed.length}건으로 집계`);
+  return parsed;
 }
 
 async function naverFetchCampaignDailyMetrics(credentials, since, until) {
@@ -2209,6 +2239,46 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
           const creativeRows = await naverFetchCreativeDailyMetrics(credentials, detailSince, until);
           const keywordRows = await naverFetchKeywordDailyMetrics(credentials, detailSince, until);
+
+          // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
+          // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
+          // 이 리포트가 실패해도 동기화 자체는 계속되도록(기존 추정치 유지) 감싸서 처리합니다.
+          try {
+            const convDetail = await naverFetchDailyMetricsViaReport(credentials, detailSince, until);
+            if (convDetail.length) {
+              const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
+              // 같은 단위(소재/키워드/캠페인)끼리 date+ID로 묶어서 정확한 값으로 교체합니다.
+              const applyExact = (targetRows, idField, detailIdField) => {
+                const exact = new Map();
+                for (const d of convDetail) {
+                  const id = d[detailIdField];
+                  if (!id) continue;
+                  const key = `${d.date}|${id}`;
+                  const cur = exact.get(key) || Object.fromEntries(CONV_FIELDS.map(f => [f, 0]));
+                  for (const f of CONV_FIELDS) cur[f] += d[f] || 0;
+                  exact.set(key, cur);
+                }
+                let replaced = 0;
+                for (const row of targetRows) {
+                  // 리포트가 커버하지 않는 기간의 행은 절대 건드리지 않습니다(0으로 덮으면 안 됨).
+                  if (row.date < detailSince || row.date > until) continue;
+                  const hit = exact.get(`${row.date}|${row[idField]}`);
+                  // 리포트 기간 안인데 해당 조합이 없으면 '그 날 전환이 0건'이라는 뜻이므로 0으로 맞춥니다.
+                  // (추정치를 남겨두면 구매가 DB에 섞여 보이는 기존 문제가 그대로 남습니다.)
+                  for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
+                  if (hit) replaced++;
+                }
+                return replaced;
+              };
+              const c1 = applyExact(creativeRows, 'adId', 'adId');
+              const c2 = applyExact(keywordRows, 'keywordId', 'keywordId');
+              const c3 = applyExact(campaignRows, 'campaignId', 'campaignId');
+              console.log(`[naver-conversion-detail] 정확한 전환유형으로 교체 완료 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건`);
+            }
+          } catch (error) {
+            console.error('[naver-conversion-detail] 전환 상세 리포트를 가져오지 못해 기존 추정치를 그대로 사용합니다:', error?.message || error);
+          }
+
           // 네이버는 Meta와 달리 "계정 레벨 전용" API가 따로 없습니다(naverFetchDailyMetrics도
           // 결국 캠페인 데이터를 다시 합산할 뿐이라, 별도로 부르면 네이버 API만 두 번 호출하는
           // 낭비였습니다). 그래서 네이버는 이미 가져온 campaignRows를 합산해 그대로 저장합니다.
