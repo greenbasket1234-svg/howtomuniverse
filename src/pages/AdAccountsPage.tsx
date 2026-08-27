@@ -132,6 +132,21 @@ export function AdAccountsPage() {
     setSyncing('');
   };
 
+  const [probingConversionReport, setProbingConversionReport] = useState(false);
+  const probeNaverConversionReport = async () => {
+    if (!selected) return;
+    setProbingConversionReport(true);
+    try {
+      const result = await apiFetch<{ ok: boolean; message: string; sampleRowCount: number }>('/integrations/naver-conversion-report-probe', {
+        method: 'POST', body: JSON.stringify({ advertiserId: selected.id }),
+      });
+      showToast(`${result.message} (${result.sampleRowCount}행)`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '리포트 확인에 실패했습니다.');
+    }
+    setProbingConversionReport(false);
+  };
+
   const disconnect = async (channel: Channel) => {
     if (!selected) return;
     if (!confirm('연결을 해제할까요?')) return;
@@ -246,6 +261,11 @@ export function AdAccountsPage() {
                         <RefreshCw size={14} className={syncing === channel ? 'is-spinning' : ''} />
                         {syncing === channel ? '동기화 중' : '동기화'}
                       </button>
+                      {CH_KEY_MAP[channel] === 'naver' && (
+                        <button className="btn secondary" onClick={probeNaverConversionReport} disabled={probingConversionReport} title="전환 유형별 상세 리포트가 실제로 어떤 데이터를 주는지 Railway 로그로 확인합니다(저장 안 함, 진단용).">
+                          {probingConversionReport ? '확인 중...' : '전환 유형 리포트 확인'}
+                        </button>
+                      )}
                       <button className="btn danger" onClick={() => disconnect(channel)}>
                         연결 해제
                       </button>

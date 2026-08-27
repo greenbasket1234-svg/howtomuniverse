@@ -1158,7 +1158,7 @@ async function naverDownloadStatReportRows(downloadUrl, credentials) {
  * 형식 오류를 일으키는 문제를 피하기 위한 대안입니다. 정확한 컬럼 순서는 공식 문서에서
  * 확인이 어려워, 처음 몇 줄을 서버 로그에 남겨 실제 값을 보고 빠르게 맞출 수 있게 합니다.
  */
-async function naverFetchDailyMetricsViaReport(credentials, since, until) {
+async function naverFetchDailyMetricsViaReport(credentials, since, until, options = {}) {
   // AD_CONVERSION_DETAIL: 소재(광고) 단위 일별 성과+전환 보고서. statDt는 조회 시작일입니다.
   const statDt = `${since}T00:00:00Z`;
   const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', statDt);
@@ -1169,7 +1169,18 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until) {
   if (!downloadUrl) throw new Error('네이버 보고서가 완료됐지만 다운로드 URL이 없습니다.');
   const rows = await naverDownloadStatReportRows(downloadUrl, credentials);
 
-  console.error('[naver-report-sample]', { totalRows: rows.length, firstRows: rows.slice(0, 5) });
+  if (options.probeOnly) {
+    const columns = rows.length ? Object.keys(rows[0]) : [];
+    console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 리포트 컬럼 목록: ${JSON.stringify(columns)}`);
+    console.log(`[naver-report-sample] 전체 ${rows.length}행, 샘플 5행: ${JSON.stringify(rows.slice(0, 5), null, 2)}`);
+    // conversionType 같은 전환 유형 관련 컬럼이 있으면 실제 값 분포도 함께 보여줍니다.
+    const typeLikeCols = columns.filter(c => /conv|type/i.test(c));
+    for (const col of typeLikeCols) {
+      const uniqueValues = [...new Set(rows.map(r => r[col]))].slice(0, 20);
+      console.log(`[naver-report-sample] 컬럼 "${col}"의 실제 값 예시: ${JSON.stringify(uniqueValues)}`);
+    }
+    return rows;
+  }
 
   // 실제 컬럼 순서를 로그로 확인하기 전까지는, 숫자를 추측해서 잘못된 값을 저장하지 않도록
   // 안전하게 빈 배열을 반환합니다. Railway 로그의 [naver-report-sample]을 확인한 뒤
@@ -2714,6 +2725,26 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
       if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
       const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
       const names=advertiserNameMap(db);return sendJson(res,200,{rows:rows.slice(0,limit).map(r=>({...r,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId)}))});
+    }
+    // 진단 전용: 네이버 '전환 유형별 상세' 리포트(AD_CONVERSION_DETAIL)를 실제로 한 번 요청해서
+    // 실제 응답 컬럼 구조를 로그로 확인합니다. 저장은 전혀 하지 않아 위험이 없고, 매 동기화마다
+    // 자동 실행되지 않고 이 버튼을 눌렀을 때만 실행됩니다(보고서 생성은 시간이 걸릴 수 있음).
+    if (req.method === 'POST' && pathname === '/api/integrations/naver-conversion-report-probe') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const tenantId = await getCurrentTenantId();
+      const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+      if (!account || account.status !== 'connected' || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되어 있지 않습니다.' });
+      const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+      const until = new Date().toISOString().slice(0, 10);
+      const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 6);
+      const since = sinceDate.toISOString().slice(0, 10);
+      try {
+        const rows = await naverFetchDailyMetricsViaReport(credentials, since, until, { probeOnly: true });
+        return sendJson(res, 200, { ok: true, message: '리포트를 요청했습니다. Railway 로그의 [naver-report-sample]을 확인하세요.', sampleRowCount: rows.length });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      }
     }
 
     // 기존 경로 호환: 내부 구현은 중앙 Metrics API와 같은 기간별 저장소를 사용합니다.
