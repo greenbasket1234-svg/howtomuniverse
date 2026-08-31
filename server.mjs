@@ -2473,14 +2473,21 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
 
           // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
           // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
-          // (2026-08-31) 예전엔 리포트가 "최근 7일만" 커버한다고 보고 마지막 구간에서만
-          // 시도했는데, 일부 계정은 /stats 세부 필드 조회가 항상 실패해서 그보다 오래된
-          // 기간은 영원히 부정확하게 남는 문제가 있었습니다. 리포트는 사실 원하는 과거
-          // 날짜 어디든 요청할 수 있으므로, 이제 구간마다(과거 구간 포함) 그 구간 전체에
-          // 대해 시도합니다 - 시간은 더 걸리지만 전체 기간이 정확해집니다.
-          // 이 리포트가 실패해도 동기화 자체는 계속되도록(기존 추정치 유지) 감싸서 처리합니다.
-          try {
-            const convDetail = await naverFetchDailyMetricsViaReport(credentials, detailSince, until);
+          // (2026-08-31) 이 리포트는 하루당 1건씩 API를 호출해야 해서 비용이 큽니다. 그래서
+          // "/stats 세부 필드(장바구니 등) 조회가 이미 정상 작동하는 계정"은 실시간 분리가
+          // 이미 정확하므로 예전처럼 최근 구간에서만 가볍게 보정하고, "/stats 세부 필드
+          // 조회가 안 되는 것으로 확인된 계정"만 전체 기간에 이 무거운 리포트 방식을
+          // 적용합니다. 처음엔 모든 계정에 전체 기간 적용을 시도했는데, 원래도 소재/키워드가
+          // 많아 무거운 계정에 이중으로 부담이 겹쳐 메모리 안전장치가 더 자주 발동하는
+          // 부작용이 있었습니다 - 필요한 계정에만 비용을 쓰도록 좁힙니다.
+          const funnelCacheEntry = naverFunnelSupportCache.get(credentials.customerId);
+          const funnelSplitWorks = Boolean(funnelCacheEntry?.result?.definitive &&
+            (funnelCacheEntry.result.addToCart || funnelCacheEntry.result.completeRegistration || funnelCacheEntry.result.initiateCheckout));
+          const needsFullRangeReport = !funnelSplitWorks; // 확인이 안 됐거나(아직 모름) 미지원으로 확인된 경우 모두 안전하게 리포트로 보정
+          if (needsFullRangeReport || isLastSegment) try {
+            const reportSince = needsFullRangeReport ? detailSince : undefined; // undefined면 naverFetchDailyMetricsViaReport가 최근 최대 7일만 봄
+            const effectiveReportSince = reportSince || (() => { const d = new Date(`${until}T00:00:00`); d.setDate(d.getDate() - 6); const bounded = d.toISOString().slice(0, 10); return bounded < detailSince ? detailSince : bounded; })();
+            const convDetail = await naverFetchDailyMetricsViaReport(credentials, effectiveReportSince, until);
             if (convDetail.length) {
               const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
 
