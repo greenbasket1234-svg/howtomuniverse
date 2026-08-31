@@ -786,7 +786,16 @@ async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   if (naverFunnelSupportCache.has(cacheKey)) return naverFunnelSupportCache.get(cacheKey);
   const probePromise = naverProbeFunnelFieldSupportUncached(credentials, sampleId);
   naverFunnelSupportCache.set(cacheKey, probePromise);
-  return probePromise;
+  const outcome = await probePromise;
+  // (중요) 11001("잘못된 파라미터 형식")은 네이버가 파라미터가 정확해도 간헐적으로 무작위로
+  // 뱉는 일시적 오류입니다. 그런데 예전 코드는 확인 시도가 이 오류에 걸리기만 하면 "이 계정은
+  // 영구 미지원"으로 판정해서 서버가 재시작되기 전까지 캐시해버렸습니다 - 실제로 특정 광고주
+  // 하나가 이 무작위 오류에 '운 나쁘게' 걸려서 계속 DB 전환에 장바구니·결제시작이 섞이는
+  // 사고가 있었습니다. 그래서 "확인 자체가 실패한 경우"(definitive=false)는 캐시에서 지워
+  // 다음 호출(같은 동기화의 다음 캠페인/키워드, 또는 다음 재동기화) 때 다시 시도하게 하고,
+  // "실제로 데이터를 받아 필드 유무를 확인한 경우"만 계속 캐시해 불필요한 재확인을 줄입니다.
+  if (!outcome.definitive) naverFunnelSupportCache.delete(cacheKey);
+  return outcome;
 }
 
 async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
@@ -799,26 +808,38 @@ async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
   const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 29);
   const since = sinceDate.toISOString().slice(0, 10);
   const allCandidateFields = Object.values(NAVER_FUNNEL_FIELD_CANDIDATES).flat();
-  let result = { addToCart: false, completeRegistration: false, initiateCheckout: false };
-  try {
-    const data = await naverApiRequest('GET', '/stats', {
-      id: sampleId, fields: JSON.stringify(allCandidateFields),
-      timeRange: JSON.stringify({ since, until }),
-    }, credentials);
-    const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-    const sample = rows[0];
-    if (sample) {
-      for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
-        result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+  let result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: false };
+  // 11001은 무작위성이 있어 즉시 포기하지 않고, 확인 시도 자체를 최대 3번까지 반복합니다
+  // (naverApiRequest 내부의 11001 재시도와는 별개로, 이 확인 절차 전체를 다시 시도합니다).
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const data = await naverApiRequest('GET', '/stats', {
+        id: sampleId, fields: JSON.stringify(allCandidateFields),
+        timeRange: JSON.stringify({ since, until }),
+      }, credentials);
+      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      const sample = rows[0];
+      if (sample) {
+        for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
+          result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+        }
+        result.definitive = true;
+        console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
+      } else {
+        // 최근 30일에도 데이터가 없어 판단 불가 → 낙관적으로 요청해봅니다(fallback이 안전망).
+        // 데이터가 없다는 것 자체는 확실한 응답이므로 definitive로 캐시해도 됩니다.
+        result = { addToCart: true, completeRegistration: true, initiateCheckout: true, definitive: true };
+        console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 데이터가 없어 판단할 수 없습니다 - 세부 전환 필드를 일단 요청해봅니다.');
       }
-      console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
-    } else {
-      // 최근 30일에도 데이터가 없어 판단 불가 → 낙관적으로 요청해봅니다(fallback이 안전망).
-      result = { addToCart: true, completeRegistration: true, initiateCheckout: true };
-      console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 데이터가 없어 판단할 수 없습니다 - 세부 전환 필드를 일단 요청해봅니다.');
+      break;
+    } catch (error) {
+      if (attempt < 3) {
+        console.log(`[네이버 퍼널 전환 지원 확인 재시도 ${attempt}/3] 일시적 오류로 추정하여 다시 시도합니다: ${error?.message || error}`);
+        await new Promise(r => setTimeout(r, 500 * attempt));
+        continue;
+      }
+      console.log(`[네이버 퍼널 전환 지원 확인 실패] 이번 호출은 미지원으로 처리하되, 다음 호출에서 다시 확인합니다: ${error?.message || error}`);
     }
-  } catch (error) {
-    console.log(`[네이버 퍼널 전환 지원 확인 실패] 이 계정은 지원하지 않는 것으로 처리합니다: ${error?.message || error}`);
   }
   return result;
 }
