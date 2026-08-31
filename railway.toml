@@ -6,7 +6,11 @@ builder = "NIXPACKS"
 # 않고 약 2GB로 잡힙니다. --max-old-space-size로 실제 여유 메모리에 맞게 올려서, 대형
 # 계정(캠페인/키워드를 개별 조회하는 계정) 동기화가 불필요하게 일찍 끊기지 않도록 합니다.
 # 6144MB(6GB)로 설정해 나머지 ~2GB는 OS·네트워크 버퍼·V8 비-힙 메모리(external/buffers)용으로 남겨둡니다.
-startCommand = "node --max-old-space-size=6144 server.mjs"
+# --expose-gc: 여러 구간을 순차 처리하는 긴 동기화(예: 13개월)에서, V8이 자동 GC를 충분히
+# 자주 돌리지 못해 이전 구간의 데이터가 회수되지 않고 다음 구간까지 누적되는 문제가 있었습니다
+# (실제 확인됨 - 새 구간 시작 전인데 이미 힙이 3.6GB). global.gc()로 구간 사이에 강제로
+# 메모리를 정리해서 각 구간이 항상 낮은 기준점에서 시작하도록 합니다.
+startCommand = "node --max-old-space-size=6144 --expose-gc server.mjs"
 healthcheckPath = "/api/health"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

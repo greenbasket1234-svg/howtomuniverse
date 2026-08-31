@@ -2488,6 +2488,11 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         // 다음번에 또 OOM이 나더라도 어느 단계에서 메모리가 늘었는지 바로 보이도록,
         // 무거운 단계마다 힙 사용량을 찍습니다(수십 바이트 수준의 오버헤드라 상시 켜둬도 무방).
         const logHeap = (label) => {
+          // 캠페인/소재/키워드 각 단계가 끝날 때마다 먼저 강제로 정리한 뒤 측정합니다.
+          // 이렇게 안 하면 방금 끝난 단계의 회수 가능한 가비지가 아직 안 치워진 채로
+          // 측정되어, 실제로는 여유가 있는데도 안전장치가 조기에 발동하거나(오탐),
+          // 다음 단계로 넘어가면서 불필요하게 메모리가 계속 누적되어 보입니다.
+          if (global.gc) global.gc();
           const m = process.memoryUsage();
           console.log(`[메모리] ${label} - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
           assertMemorySafe(label);
@@ -2665,6 +2670,16 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             total.count += r.count; total.campaignCount += r.campaignCount; total.creativeCount += r.creativeCount; total.keywordCount += r.keywordCount;
             lastValidation = r.validation;
             console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 완료: 일별 ${r.count}행, 캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행`);
+            // (2026-08-31) 구간이 끝나도 V8이 곧바로 GC를 돌리지 않아 이전 구간의 데이터가
+            // 다음 구간까지 누적되는 사고가 있었습니다(새 구간 시작 전인데 이미 힙 3.6GB+).
+            // railway.toml에서 --expose-gc로 켜둔 global.gc()를 여기서 명시적으로 호출해,
+            // 다음 구간이 항상 낮은 기준점에서 시작하도록 강제로 정리합니다.
+            if (global.gc) {
+              const beforeGc = process.memoryUsage().heapUsed;
+              global.gc();
+              const afterGc = process.memoryUsage().heapUsed;
+              console.log(`[메모리] 구간 ${i + 1}/${segments.length} 완료 후 강제 정리 - ${(beforeGc / 1048576).toFixed(0)}MB → ${(afterGc / 1048576).toFixed(0)}MB`);
+            }
           }
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
           return { ok: true, channel, ...total, since, until, segments: segments.length, validation: lastValidation };
