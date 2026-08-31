@@ -2594,9 +2594,13 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
           const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
           const since = sinceDate.toISOString().slice(0, 10);
-          // 오래된 구간부터 90일씩 순차 처리 - 구간이 끝날 때마다 해당 구간의 행들이 저장되고
-          // 메모리에서 해제되므로, 13개월(5구간)이어도 메모리 사용량은 90일 동기화 수준을 유지합니다.
-          const segments = splitIntoChunks(since, until, 90);
+          // 오래된 구간부터 30일씩 순차 처리 - 구간이 끝날 때마다 해당 구간의 행들이 저장되고
+          // 메모리에서 해제됩니다. (2026-08-31) 원래 90일 단위였는데, 소재/키워드가 매우 많은
+          // 계정(예: 90일 한 구간에 소재만 8,280행)에서는 90일 구간 하나만으로도 힙 한계
+          // (6GB)에 근접해 안전장치가 발동하는 사례가 있었습니다. 30일로 더 잘게 쪼개
+          // 구간당 최대 데이터량을 1/3로 줄여서, 대형 계정도 안전하게 끝까지 완주하도록 합니다.
+          // (구간이 늘어나 전체 소요 시간은 다소 길어지지만, 서버가 죽는 것보다 훨씬 낫습니다.)
+          const segments = splitIntoChunks(since, until, 30);
           const total = { count: 0, campaignCount: 0, creativeCount: 0, keywordCount: 0 };
           let lastValidation = null;
           for (let i = 0; i < segments.length; i++) {
