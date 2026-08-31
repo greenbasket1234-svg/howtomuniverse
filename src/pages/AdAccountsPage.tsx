@@ -37,7 +37,18 @@ export function AdAccountsPage() {
   const [toast,          setToast]          = useState('');
   const [syncing,        setSyncing]        = useState('');
   const [autoSyncStatus, setAutoSyncStatus] = useState<{enabled:boolean;hoursKst:number[];lastRunAt:string|null;lastResult:{total:number;success:number;failed:number}|null}|null>(null);
-  useEffect(() => { apiFetch<typeof autoSyncStatus>('/integrations/auto-sync-status').then(setAutoSyncStatus).catch(() => setAutoSyncStatus(null)); }, []);
+  useEffect(() => {
+    const load = () => apiFetch<typeof autoSyncStatus>('/integrations/auto-sync-status').then(setAutoSyncStatus).catch(() => {});
+    load();
+    // 자동 동기화는 하루에 5번(7,9,14,17,19시) 실행되는데, 예전에는 페이지를 열 때 딱 한 번만
+    // 조회해서 그 뒤로는 뒤에서 실제로 실행되고 갱신돼도 화면에는 절대 반영되지 않는 문제가
+    // 있었습니다("실행은 되는데 기록만 안 남아있어"). 1분마다 다시 불러오고, 다른 탭에 있다가
+    // 이 페이지로 돌아왔을 때도 즉시 최신값을 반영합니다.
+    const interval = setInterval(load, 60_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
 
   const filtered = useMemo(
     () => advertisers.filter(a => a.name.includes(query.trim()) && matchesAdvertiserFilter(a.name, filterValue)),
