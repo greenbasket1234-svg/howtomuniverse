@@ -19,7 +19,15 @@ export function DataSyncPage() {
   const [loadError,setLoadError]=useState('');
   const loadValidation=()=>apiFetch<{rows:ValidationLog[]}>('/integrations/sync-validation?limit=50').then(r=>{setValidationLogs(r.rows||[]);setLoadError('');}).catch(e=>{setValidationLogs([]);setLoadError(e instanceof Error?e.message:'Sync 검증 로그를 불러오지 못했습니다.');});
   const load = () => Promise.all([apiFetch<{ rows: StatusRow[] }>('/integrations/status').then(r => setRows(r.rows || [])).catch(e => {setRows([]);setLoadError(e instanceof Error?e.message:'수집 현황을 불러오지 못했습니다.');}),loadValidation()]).finally(() => setLoading(false));
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // 백그라운드 수집이 '수집 중'일 때는 새로고침 없이도 구간 진행률이 자동 갱신되도록,
+    // 진행 중인 항목이 있으면 5초마다 다시 불러옵니다. 전부 끝나면 폴링을 멈춥니다.
+    const interval = setInterval(() => {
+      setRows(prev => { if (prev.some(r => r.syncing)) load(); return prev; });
+    }, 5_000);
+    return () => clearInterval(interval);
+  }, []);
   const visibleRows = rows.filter(r => matchesAdvertiserFilter(r.advertiserName, filterValue));
   const timeAgo = (iso: string | null) => {
     if (!iso) return '수집 이력 없음';

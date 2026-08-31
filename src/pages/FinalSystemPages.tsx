@@ -290,7 +290,16 @@ export function DataCollectionStatusPage(){
  // 불러오기 실패를 조용히 삼키면 "연결된 매체가 없습니다"로 보여서 원인 파악이 불가능합니다.
  // 서버가 500(예: 스키마 불일치)을 돌려주면 그 메시지를 화면에 그대로 보여줍니다.
  const load=()=>apiFetch<{rows:CollectionStatusRow[]}>('/integrations/status').then(r=>{setRows(r.rows||[]);setLoadError('');}).catch(e=>{setRows([]);setLoadError(e instanceof Error?e.message:'수집 현황을 불러오지 못했습니다.');}).finally(()=>setLoading(false));
- useEffect(()=>{load()},[]);
+ useEffect(()=>{
+   load();
+   // 백그라운드 수집(예: 90일 초과 네이버 동기화)이 '수집 중'일 때는 새로고침 없이도
+   // 구간 진행률(구간 1/5 ...)이 자동으로 갱신되도록, 진행 중인 항목이 있으면 5초마다
+   // 다시 불러옵니다. 전부 완료되면(아무 항목도 syncing이 아니면) 폴링을 멈춥니다.
+   const interval = setInterval(() => {
+     setRows(prev => { if (prev.some(r => r.syncing)) load(); return prev; });
+   }, 5_000);
+   return () => clearInterval(interval);
+ }, []);
  const visibleRows = filterByAdvertiser(rows, filterValue, r=>r.advertiserName);
  const total=visibleRows.length;
  const success=visibleRows.filter(r=>!r.error && r.lastSyncedAt).length;
