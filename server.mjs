@@ -2473,7 +2473,7 @@ async function handleApi(req, res, pathname) {
     }
 
 /** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
-async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, error }) {
+async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, error, note }) {
   // 장기 수집의 마지막 bookkeeping 단계입니다. 여기서 일시적인 DB connection timeout 한 번 때문에
   // 앞에서 정상 저장된 6개월치 전체를 '동기화 실패'로 오판하지 않도록 일반 저장보다 더 넉넉하게 재시도합니다.
   await pgQueryWithRetry(
@@ -2490,7 +2490,9 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     { maxAttempts: 4, label: `sync advertiser lookup ${advertiserId}` }
   );
   const advertiserName = advRes.rows[0]?.name || advertiserId;
-  addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류') });
+  // note: 전체는 성공(ok=true)이지만 일부 구간만 실패한 경우의 상세 내역입니다. 상태 표시(성공/실패)
+  // 자체는 건드리지 않고(대부분 성공한 걸 실패로 잘못 보여주지 않기 위해), 감사 로그에만 남깁니다.
+  addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류'), note: note || null });
 }
 
 function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
@@ -2817,13 +2819,29 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
           console.log(`[naver-sync] 전체 ${since}~${until}, 구간=${segmentSize}일, 소재/키워드 백필=${detailFloor}~${until}${dayByDayFallback ? ' (일자별 fallback 계정)' : ''}`);
           const total = { count: 0, campaignCount: 0, creativeCount: 0, keywordCount: 0 };
           let lastValidation = null;
+          const failedSegments = [];
           for (let i = 0; i < segments.length; i++) {
             const seg = segments[i];
             const isLast = i === segments.length - 1;
             const active = activeBackgroundSyncs.get(syncKey);
             if (active) active.progress = `구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 수집 중`;
             console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 시작: ${seg.since}~${seg.until}`);
-            const r = await syncNaverRange(seg.since, seg.until, isLast, detailFloor);
+            // (2026-08-31) 예전엔 구간 하나가 예외를 던지면(메모리 안전장치, 검증 불일치,
+            // 네이버 일시 오류 등) 그 예외가 이 반복문 전체를 뚫고 나가서, 이미 성공적으로
+            // 저장된 다른 구간들까지 전부 '실패'로 기록되는 버그가 있었습니다. 6개월처럼
+            // 구간이 많아질수록(12~18개) 그중 하나만 걸려도 전체가 실패로 보이는 것이
+            // "6개월 이상만 계속 실패한다"는 증상의 핵심 원인이었습니다. 이제 구간마다
+            // 개별로 실패를 기록하고 다음 구간으로 계속 진행합니다.
+            let r;
+            try {
+              r = await syncNaverRange(seg.since, seg.until, isLast, detailFloor);
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              console.error(`[naver-sync] 구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 실패, 다음 구간으로 계속 진행합니다: ${msg}`);
+              failedSegments.push({ since: seg.since, until: seg.until, error: msg });
+              if (global.gc) global.gc();
+              continue;
+            }
             total.count += r.count; total.campaignCount += r.campaignCount; total.creativeCount += r.creativeCount; total.keywordCount += r.keywordCount;
             lastValidation = r.validation;
             console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 완료: 일별 ${r.count}행, 캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행`);
@@ -2838,9 +2856,20 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
               console.log(`[메모리] 구간 ${i + 1}/${segments.length} 완료 후 강제 정리 - ${(beforeGc / 1048576).toFixed(0)}MB → ${(afterGc / 1048576).toFixed(0)}MB`);
             }
           }
+          const succeededSegments = segments.length - failedSegments.length;
+          if (succeededSegments === 0 && segments.length > 0) {
+            // 전 구간이 다 실패했으면 이건 진짜 실패입니다 - 예전처럼 예외를 던져 실패로 기록합니다.
+            throw new Error(failedSegments[0]?.error || '모든 구간이 실패했습니다.');
+          }
+          if (failedSegments.length) {
+            console.log(`[naver-sync] 전체 ${segments.length}구간 중 ${succeededSegments}개 성공, ${failedSegments.length}개 실패: ${JSON.stringify(failedSegments.map(f => `${f.since}~${f.until}`))}`);
+          }
           let statusRecorded = true;
           try {
-            await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
+            const partialNote = failedSegments.length
+              ? `일부 구간 실패(${succeededSegments}/${segments.length}개 구간 성공) - 실패 구간: ${failedSegments.map(f => `${f.since}~${f.until}`).join(', ')}. 실패한 기간만 다시 좁혀서 재시도하면 채워집니다.`
+              : null;
+            await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count, note: partialNote });
           } catch (error) {
             // 데이터 수집/저장 자체가 끝난 뒤 '마지막 상태 표시 UPDATE'만 일시 실패한 경우입니다.
             // 이 예외를 밖으로 던지면 실제 데이터는 정상인데 UI에 '실패'로 기록되는 잘못된 판정이 생깁니다.
