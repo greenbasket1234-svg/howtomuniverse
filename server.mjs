@@ -925,8 +925,16 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
       // 일부 계정은 timeIncrement를 무시하고 기간 합계를 돌려주므로, 정확한 기간 필터를 위해 일자별로 재조회합니다.
       let d = new Date(`${range.since}T00:00:00`);
       const end = new Date(`${range.until}T00:00:00`);
+      let dayIndex = 0;
       while (d <= end) {
         assertMemorySafe(`일자별 재조회 (id=${ids[0]})`);
+        dayIndex++;
+        // 캠페인 630행 처리만으로 힙이 2.7GB까지 튄 사고의 정확한 지점을 다음번엔 바로
+        // 찾을 수 있도록, 이 하나의 id를 30일 재조회하는 동안에도 10일마다 힙을 찍습니다.
+        if (dayIndex % 10 === 0) {
+          const m = process.memoryUsage();
+          console.log(`[메모리 세부] id=${ids[0]} 일자별 재조회 ${dayIndex}일째 - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB`);
+        }
         const day = d.toISOString().slice(0, 10);
         const dailyRows = await fetchRange(day, day);
         for (const row of dailyRows) output.push({ ...row, date: row.dateStart || row.date || day });
@@ -1425,9 +1433,19 @@ async function naverFetchCampaignDailyMetrics(credentials, since, until) {
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
   const rowsOut = [];
   const typeDiag = new Map(); // 유형별로 /stats가 실제로 데이터를 돌려주는지 진단합니다.
+  let completedCount = 0;
   await mapWithConcurrency(campaignIds, 6, async campaignId => {
-    const tp = campaignTypeMap.get(campaignId) || '(알수없음)';
     const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
+    completedCount++;
+    // (2026-08-31) 캠페인 630행(21개×30일) 처리만으로 힙이 140MB→2,767MB로 치솟는 사고가
+    // 있었는데, 그때 로그엔 "구간 시작"과 "캠페인 수집 후" 딱 두 지점만 있어서 21개 캠페인 중
+    // 정확히 어디서 튀는지 알 수 없었습니다. 이제 캠페인 3개마다 힙을 찍어서, 다음에 또
+    // 발생하면 어느 캠페인(몇 번째 API 호출) 직후에 메모리가 급증하는지 바로 보이게 합니다.
+    if (completedCount % 3 === 0 || completedCount === campaignIds.length) {
+      const m = process.memoryUsage();
+      console.log(`[메모리 세부] 캠페인 ${completedCount}/${campaignIds.length}개 처리 후 (campaignId=${campaignId}) - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
+    }
+    const tp = campaignTypeMap.get(campaignId) || '(알수없음)';
     const cur = typeDiag.get(tp) || { campaigns: 0, rowsWithData: 0, totalRows: 0 };
     cur.campaigns++; cur.totalRows += rows.length;
     if (rows.some(r => Number(r.salesAmt || 0) > 0 || Number(r.impCnt || 0) > 0)) cur.rowsWithData++;
