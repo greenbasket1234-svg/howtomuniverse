@@ -757,9 +757,34 @@ const NAVER_FUNNEL_FIELD_CANDIDATES = {
 };
 const naverFunnelSupportCache = new Map(); // customerId -> {addToCart:bool, completeRegistration:bool, initiateCheckout:bool} | null(확인 전)
 
+/**
+ * 메모리 안전장치 - 대량의 개별 API 호출이 쌓이는 계정(예: 벌크 조회가 날짜별로 안 쪼개져
+ * 캠페인/키워드 하나하나를 하루씩 순차 조회하게 되는 계정)에서 실제로 서버 전체가
+ * OOM으로 죽는 사고가 있었습니다. V8 힙 한계(기본 약 2GB)에 도달하기 전에 미리 감지해서,
+ * "서버 전체가 죽는 것"이 아니라 "이 동기화 하나만 정상적으로 실패하는 것"으로 바꿉니다.
+ * 이러면 다른 광고주/다른 요청은 영향을 받지 않고, 원인도 로그로 명확히 남습니다.
+ */
+const MEMORY_SAFETY_LIMIT_MB = 1400;
+function assertMemorySafe(context) {
+  const heapUsedMb = process.memoryUsage().heapUsed / 1048576;
+  if (heapUsedMb > MEMORY_SAFETY_LIMIT_MB) {
+    throw new Error(`메모리 사용량이 안전 한계(${MEMORY_SAFETY_LIMIT_MB}MB)를 넘어 동기화를 중단합니다(heapUsed=${heapUsedMb.toFixed(0)}MB, 지점: ${context}). 서버 전체 다운을 막기 위한 안전장치입니다 - 기간을 줄여서 다시 시도해 주세요.`);
+  }
+}
+
 async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   const cacheKey = credentials.customerId;
+  // 캐시에 '완료된 값'만 저장하면, 캠페인 6개가 동시에(concurrency=6) 이 함수를 처음 호출할 때
+  // 아무도 아직 캐시를 채우지 못한 상태라 전부 캐시를 놓치고 동시에 같은 요청을 중복 발사합니다
+  // (로그에 같은 실패가 여러 번 찍히던 원인). 그래서 '진행 중인 프로미스' 자체를 캐시해서,
+  // 나중에 온 호출은 새 요청을 만들지 않고 먼저 시작된 요청의 결과를 같이 기다립니다.
   if (naverFunnelSupportCache.has(cacheKey)) return naverFunnelSupportCache.get(cacheKey);
+  const probePromise = naverProbeFunnelFieldSupportUncached(credentials, sampleId);
+  naverFunnelSupportCache.set(cacheKey, probePromise);
+  return probePromise;
+}
+
+async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
   // (버그 수정) 예전엔 '오늘 하루'로만 확인했는데, 오늘 데이터가 아직 없으면 빈 응답이 와서
   // 실제로는 지원되는 계정도 전부 '미지원'으로 오판했습니다(장바구니/회원가입/결제시작이
   // 항상 (미요청)으로 남아 오늘자 전환이 전부 DB로 뭉뚱그려지던 원인 중 하나).
@@ -868,6 +893,7 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
       let d = new Date(`${range.since}T00:00:00`);
       const end = new Date(`${range.until}T00:00:00`);
       while (d <= end) {
+        assertMemorySafe(`일자별 재조회 (id=${ids[0]})`);
         const day = d.toISOString().slice(0, 10);
         const dailyRows = await fetchRange(day, day);
         for (const row of dailyRows) output.push({ ...row, date: row.dateStart || row.date || day });
@@ -2376,6 +2402,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         const logHeap = (label) => {
           const m = process.memoryUsage();
           console.log(`[메모리] ${label} - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
+          assertMemorySafe(label);
         };
         const syncNaverRange = async (since, until, isLastSegment) => {
           const detailSince = since;
