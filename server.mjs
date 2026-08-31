@@ -159,8 +159,14 @@ if (DATABASE_URL) {
     pgPool = new pg.Pool({
       connectionString: DATABASE_URL,
       ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 8_000,
-      idleTimeoutMillis: 30_000,
+      // 장기 네이버 동기화는 매체 API 호출 사이에 DB를 30초 이상 안 쓰는 구간이 자주 생깁니다.
+      // idleTimeout이 너무 짧으면 매 구간 후반마다 기존 연결이 닫혀 새 연결을 다시 맺어야 하고,
+      // Railway Postgres가 순간적으로 느릴 때 `timeout exceeded when trying to connect`가 발생할 수 있습니다.
+      // 연결 대기시간은 20초로 늘리고, 풀 크기는 작게 고정해 DB connection slot을 과점유하지 않으며,
+      // idle 연결은 2분 동안 유지해 장기 작업 도중 불필요한 재연결을 줄입니다.
+      connectionTimeoutMillis: 20_000,
+      idleTimeoutMillis: 120_000,
+      max: 5,
     });
     // 풀에서 커넥션 관련 에러가 나도(예: 유휴 커넥션이 DB 쪽에서 끊김) 서버 전체가 죽지
     // 않도록 처리합니다. 이 이벤트를 안 받으면 Node가 처리되지 않은 예외로 보고 프로세스를
@@ -170,6 +176,48 @@ if (DATABASE_URL) {
     console.error('[오류] DATABASE_URL이 설정됐지만 pg 패키지를 불러오지 못했습니다:', error?.message || error);
     if (isPublicRuntime) process.exit(1);
   }
+}
+
+
+// Railway/Postgres에서 장시간 작업 중 일시적인 connection 획득 실패가 발생해도
+// 이미 수집한 수개월치 데이터를 통째로 `실패`로 돌리지 않도록 DB 쿼리만 짧게 재시도합니다.
+// statement 오류/SQL 오류는 재시도하지 않고 즉시 throw합니다.
+function isTransientPgConnectionError(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || error || '').toLowerCase();
+  return [
+    '08000', '08003', '08006', '08001', // connection exception 계열
+    '57P01', '57P02', '57P03',          // 서버 재시작/연결 불가
+    '53300',                             // too_many_connections
+  ].includes(code)
+    || msg.includes('timeout exceeded when trying to connect')
+    || msg.includes('connection terminated unexpectedly')
+    || msg.includes('connection terminated due to connection timeout')
+    || msg.includes('too many clients')
+    || msg.includes('remaining connection slots are reserved')
+    || msg.includes('econnreset')
+    || msg.includes('etimedout')
+    || msg.includes('econnrefused')
+    || msg.includes('epipe');
+}
+
+async function pgQueryWithRetry(text, params = [], options = {}) {
+  if (!pgPool) throw new Error('DATABASE_URL이 설정되지 않아 PostgreSQL을 사용할 수 없습니다.');
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 4));
+  const label = options.label || 'DB query';
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await pgPool.query(text, params);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientPgConnectionError(error) || attempt >= maxAttempts) throw error;
+      const delayMs = Math.min(8_000, 1_000 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 250);
+      console.warn(`[pg 재시도] ${label} ${attempt}/${maxAttempts} 실패: ${error?.message || error} → ${delayMs}ms 후 재시도`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
 }
 
 // ── 스키마 자동 적용 ─────────────────────────────────────────────────────
@@ -723,7 +771,7 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
 }
 
 /** 네이버 광고그룹/소재 마스터를 수집합니다. */
-async function naverFetchAdMasters(credentials) {
+async function naverFetchAdMasters(credentials, maxAds = Infinity) {
   const campaigns = await naverFetchCampaigns(credentials);
   const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
   const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
@@ -733,13 +781,23 @@ async function naverFetchAdMasters(credentials) {
     if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '', campaignType: campaignTypeMap.get(c.nccCampaignId) || '' })));
   });
   const adgroupNameMap = new Map(adgroups.map(ag => [ag.nccAdgroupId, ag.name || '']));
+  // 대형 커머스 계정은 소재 목록 자체가 수만 건까지 커질 수 있습니다. 예전에는 전부 메모리에
+  // 담은 뒤 naverFetchCreativeDailyMetrics()에서 slice()했기 때문에, 실제 통계 조회를 시작하기도
+  // 전에 불필요한 소재 객체가 힙에 계속 남았습니다. 여기서부터 필요한 개수만 보관합니다.
   const ads = [];
+  let totalAds = 0;
   await mapWithConcurrency(adgroups, 6, async ag => {
     const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(err => { console.error(`[naver-ads 실패] 캠페인="${ag.campaignName}"(${ag.campaignType}) 광고그룹="${ag.name}":`, err?.message || err); return []; });
-    if (Array.isArray(rows)) ads.push(...rows.map(a => ({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' })));
+    if (!Array.isArray(rows)) return;
+    totalAds += rows.length;
+    const remaining = Math.max(0, maxAds - ads.length);
+    if (!remaining) return;
+    for (const a of rows.slice(0, remaining)) {
+      ads.push({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' });
+    }
   });
-  console.log(`[naver-ad-masters] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 소재 ${ads.length}개. 유형별 캠페인 수: ${JSON.stringify(campaigns.reduce((a, c) => { const t = naverCampaignTypeKo(c.campaignTp); a[t] = (a[t] || 0) + 1; return a; }, {}))}`);
-  return { ads, adgroupNameMap };
+  console.log(`[naver-ad-masters] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 소재 전체 ${totalAds}개${Number.isFinite(maxAds) && totalAds > ads.length ? ` / 메모리 보관 ${ads.length}개` : ''}. 유형별 캠페인 수: ${JSON.stringify(campaigns.reduce((a, c) => { const t = naverCampaignTypeKo(c.campaignTp); a[t] = (a[t] || 0) + 1; return a; }, {}))}`);
+  return { ads, totalAds, adgroupNameMap };
 }
 
 /**
@@ -766,10 +824,10 @@ const naverFunnelSupportCache = new Map(); // customerId -> { result: {addToCart
  *
  * (2026-08-31) Railway 컨테이너가 8GB RAM으로 확인되어, railway.toml에서 Node 힙 한계를
  * --max-old-space-size=6144(6GB)로 올렸습니다. 이 안전장치도 그에 맞춰 같이 올립니다.
- * 6GB 힙 한계보다 충분히 낮게 잡아, 실제 V8 OOM(로그도 못 남기고 프로세스가 죽음)에
+ * 6GB 힙 한계보다 충분히 낮은 3.5GB에서 먼저 차단해, 실제 V8 OOM(로그도 못 남기고 프로세스가 죽음)에
  * 부딪히기 전에 우리 코드가 먼저 정상적으로 에러를 던질 여유를 남겨둡니다.
  */
-const MEMORY_SAFETY_LIMIT_MB = 5000;
+const MEMORY_SAFETY_LIMIT_MB = 3500;
 function assertMemorySafe(context) {
   const heapUsedMb = process.memoryUsage().heapUsed / 1048576;
   if (heapUsedMb > MEMORY_SAFETY_LIMIT_MB) {
@@ -866,46 +924,43 @@ async function naverProbeFunnelFieldSupport(credentials, sampleId) {
 }
 
 async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
-  // (버그 수정) 예전엔 '오늘 하루'로만 확인했는데, 오늘 데이터가 아직 없으면 빈 응답이 와서
-  // 실제로는 지원되는 계정도 전부 '미지원'으로 오판했습니다(장바구니/회원가입/결제시작이
-  // 항상 (미요청)으로 남아 오늘자 전환이 전부 DB로 뭉뚱그려지던 원인 중 하나).
-  // 최근 30일 범위로 확인하고, 그래도 데이터가 없어 판단이 불가능하면 일단 요청해봅니다
-  // (naverStatsForIdsDaily에 미지원 필드로 요청 전체가 거부될 때의 fallback이 이미 있습니다).
+  // 최근 30일 범위로 한 번 확인합니다. 이 프로브는 '지원 여부 확인' 용도이므로,
+  // 11001(BAD_REQUEST)은 일시 장애로 계속 재시도할 대상이 아니라 해당 필드 조합을 이 계정에서
+  // 사용할 수 없다는 신호로 처리합니다. 이 프로브만은 naverApiRequestOnce를 사용해 동일한 잘못된
+  // 필드 조합을 여러 번 반복 호출하지 않습니다. 필수 /stats 조회는 기존 재시도 정책을 그대로 씁니다.
   const until = new Date().toISOString().slice(0, 10);
   const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 29);
   const since = sinceDate.toISOString().slice(0, 10);
   const allCandidateFields = Object.values(NAVER_FUNNEL_FIELD_CANDIDATES).flat();
   let result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: false };
-  // 11001은 무작위성이 있어 즉시 포기하지 않고, 확인 시도 자체를 최대 3번까지 반복합니다
-  // (naverApiRequest 내부의 11001 재시도와는 별개로, 이 확인 절차 전체를 다시 시도합니다).
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const data = await naverApiRequest('GET', '/stats', {
-        id: sampleId, fields: JSON.stringify(allCandidateFields),
-        timeRange: JSON.stringify({ since, until }),
-      }, credentials);
-      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-      const sample = rows[0];
-      if (sample) {
-        for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
-          result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
-        }
-        result.definitive = true;
-        console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
-      } else {
-        // 최근 30일에도 데이터가 없어 판단 불가 → 낙관적으로 요청해봅니다(fallback이 안전망).
-        // 데이터가 없다는 것 자체는 확실한 응답이므로 definitive로 캐시해도 됩니다.
-        result = { addToCart: true, completeRegistration: true, initiateCheckout: true, definitive: true };
-        console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 데이터가 없어 판단할 수 없습니다 - 세부 전환 필드를 일단 요청해봅니다.');
+  try {
+    const data = await naverApiRequestOnce('GET', '/stats', {
+      id: sampleId, fields: JSON.stringify(allCandidateFields),
+      timeRange: JSON.stringify({ since, until }),
+    }, credentials);
+    const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    const sample = rows[0];
+    if (sample) {
+      for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
+        result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
       }
-      break;
-    } catch (error) {
-      if (attempt < 3) {
-        console.log(`[네이버 퍼널 전환 지원 확인 재시도 ${attempt}/3] 일시적 오류로 추정하여 다시 시도합니다: ${error?.message || error}`);
-        await new Promise(r => setTimeout(r, 500 * attempt));
-        continue;
-      }
-      console.log(`[네이버 퍼널 전환 지원 확인 실패] 이번 호출은 미지원으로 처리하되, 다음 호출에서 다시 확인합니다: ${error?.message || error}`);
+      result.definitive = true;
+      console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
+    } else {
+      // 데이터가 없어서 필드 존재 여부를 판단할 수 없으므로 세부 필드를 임의로 켜지 않습니다.
+      // '낙관적으로 지원'으로 간주하면 실제 미지원 계정에서 이후 모든 /stats 요청이 11001로
+      // 실패할 수 있습니다. 정확한 전환 분리는 AD_CONVERSION_DETAIL 리포트가 담당합니다.
+      result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: true };
+      console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 표본 데이터 없음 → 세부 /stats 필드는 사용하지 않고 전환 상세 리포트로 보정합니다.');
+    }
+  } catch (error) {
+    if (error?.naverCode === 11001 || error?.httpStatus === 400) {
+      // 이 계정/필드 조합에서는 구조적으로 지원되지 않는 것으로 확정하고 24시간 캐시합니다.
+      // 같은 동기화에서 소재/키워드마다 다시 probe하지 않게 하는 것이 중요합니다.
+      result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: true };
+      console.log(`[네이버 퍼널 전환 지원 확인] 세부 /stats 필드 미지원으로 확정(code=${error?.naverCode || '-'}, status=${error?.httpStatus || '-'}) → 반복 재시도 없이 전환 상세 리포트 사용`);
+    } else {
+      console.log(`[네이버 퍼널 전환 지원 확인 실패] 일시 장애로 판단해 짧게 캐시합니다: ${error?.message || error}`);
     }
   }
   return result;
@@ -1047,13 +1102,13 @@ function splitNaverConversions(row) {
 }
 
 async function naverFetchCreativeDailyMetrics(credentials, since, until) {
-  const { ads: adsAll } = await naverFetchAdMasters(credentials);
   // 예전엔 상위 300개로 제한했지만, 이 캠페인·소재가 많은 계정에서 순서상 300번째 밖으로
   // 밀려난 캠페인의 소재가 통째로 누락되는 문제가 있었습니다. 키워드(수만 개 단위)와 달리
-  // 소재는 보통 수백~수천 개 수준이라 2000개까지는 안전하게 전체 수집합니다.
+  // 소재는 보통 수백~수천 개 수준이라 2000개까지 수집합니다. 다만 목록 전체를 먼저 메모리에
+  // 올리지 않고 naverFetchAdMasters 단계에서부터 이 cap만 보관합니다.
   const creativeCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
-  const ads = adsAll.slice(0, creativeCap);
-  if (adsAll.length > creativeCap) console.log(`[naver-ad-masters 경고] 소재가 ${adsAll.length}개라 ${creativeCap}개까지만 수집합니다${creativeCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
+  const { ads, totalAds } = await naverFetchAdMasters(credentials, creativeCap);
+  if (totalAds > creativeCap) console.log(`[naver-ad-masters 경고] 소재가 ${totalAds}개라 ${creativeCap}개까지만 수집합니다${creativeCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
   await mapWithConcurrency(ads, 6, async ad => {
@@ -1109,34 +1164,42 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   });
   const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
   const adgroupNameMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.name || '']));
-  const keywords = [];
+
+  // 핵심 메모리 수정: 예전 코드는 모든 광고그룹의 모든 키워드 객체를 keywords[]에 먼저 담고
+  // 마지막에 slice(0, 2000)했습니다. 커머스 계정은 키워드 원본 목록만 수만~수십만 건이 될 수
+  // 있어 실제로 쓰지도 않을 객체가 장기 동기화 내내 힙을 점유했습니다. 이제 필요한 cap만 보관하고,
+  // 전체 개수/광고그룹 보유 여부/캠페인별 개수는 숫자와 Set으로만 집계합니다.
+  const keywordCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
+  const selected = [];
+  let totalKeywordCount = 0;
+  const adgroupsWithKeyword = new Set();
+  const keywordCountByCampaign = new Map();
   await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 6, async agid => {
     const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(err => { console.error('[naver-keywords 목록 실패]', agid, err?.message || err); return []; });
-    if (Array.isArray(rows)) keywords.push(...rows);
+    if (!Array.isArray(rows)) return;
+    if (rows.length) adgroupsWithKeyword.add(agid);
+    totalKeywordCount += rows.length;
+    const campaignId = adgroupCampaignMap.get(agid) || '';
+    keywordCountByCampaign.set(campaignId, (keywordCountByCampaign.get(campaignId) || 0) + rows.length);
+    const remaining = Math.max(0, keywordCap - selected.length);
+    if (remaining) selected.push(...rows.slice(0, remaining));
   });
-  console.log(`[naver-keywords] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 키워드 ${keywords.length}개 수집`);
-  // 캠페인 유형별로 몇 개씩 모였는지 나눠서 보여줍니다 - 특정 유형(쇼핑검색/브랜드검색 등)만
-  // 키워드가 0개로 나오면, 그 매체 유형은 애초에 "키워드" 단위 타겟팅을 쓰지 않는 구조라는 뜻입니다.
+  console.log(`[naver-keywords] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 키워드 전체 ${totalKeywordCount}개 / 통계 수집 ${selected.length}개`);
+
   const byType = new Map();
+  const adgroupCountByCampaign = new Map();
+  for (const a of adgroups) adgroupCountByCampaign.set(a.nccCampaignId, (adgroupCountByCampaign.get(a.nccCampaignId) || 0) + 1);
   for (const c of campaigns) {
     const tp = naverCampaignTypeKo(c.campaignTp) || c.campaignTp || '(알수없음)';
-    const agCount = adgroups.filter(a => a.nccCampaignId === c.nccCampaignId).length;
-    const kwCount = keywords.filter(k => adgroupCampaignMap.get(k.nccAdgroupId) === c.nccCampaignId).length;
     const cur = byType.get(tp) || { campaigns: 0, adgroups: 0, keywords: 0 };
-    cur.campaigns++; cur.adgroups += agCount; cur.keywords += kwCount;
+    cur.campaigns++;
+    cur.adgroups += adgroupCountByCampaign.get(c.nccCampaignId) || 0;
+    cur.keywords += keywordCountByCampaign.get(c.nccCampaignId) || 0;
     byType.set(tp, cur);
   }
   for (const [tp, v] of byType) console.log(`[naver-keywords] 유형=${tp} 캠페인${v.campaigns}개 광고그룹${v.adgroups}개 키워드${v.keywords}개`);
-  // 예전엔 상위 300개로 제한했지만, 순서상 300번째 밖으로 밀려난 캠페인의 키워드가 통째로
-  // 누락되는 문제가 있었습니다(소재와 동일한 문제). 2000개까지는 안전하게 전체 수집합니다.
-  // 다만 이 계정이 캠페인 단계에서 이미 '일자별 재조회'가 필요한 것으로 확인됐다면(벌크 조회가
-  // 날짜별로 안 쪼개지는 계정), 키워드 2,000개 × 최대 30일 = 최대 6만 번의 개별 API 호출이
-  // 발생해 메모리·시간이 감당 안 되는 사고가 실제로 있었습니다. 이런 계정만 훨씬 적은 개수로
-  // 줄여서, 키워드별 세부 성과는 일부 누락되더라도 서버가 죽지 않고 계정/캠페인 단위 합계는
-  // 항상 정확하게 유지되도록 합니다.
-  const keywordCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
-  const selected = keywords.slice(0, keywordCap);
-  if (keywords.length > keywordCap) console.log(`[naver-keywords 경고] 키워드가 ${keywords.length}개라 ${keywordCap}개까지만 수집합니다${keywordCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
+  if (totalKeywordCount > keywordCap) console.log(`[naver-keywords 경고] 키워드가 ${totalKeywordCount}개라 ${keywordCap}개까지만 통계를 수집합니다${keywordCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
+
   const result = [];
   await mapWithConcurrency(selected, 6, async kw => {
     const adgroupId = kw.nccAdgroupId || '';
@@ -1166,10 +1229,8 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
       });
     }
   });
-  // 쇼핑검색·브랜드검색 등은 네이버 API 구조상 "키워드" 단위로 등록되지 않는 경우가 많아,
-  // /ncc/keywords로 아무것도 안 잡힙니다(0개). 이런 광고그룹까지 화면에서 안 보이면 안 되니,
-  // 키워드가 하나도 없는 광고그룹은 그 광고그룹 자체를 하나의 항목으로 대체해서 보여줍니다.
-  const adgroupsWithKeyword = new Set(keywords.map(k => k.nccAdgroupId).filter(Boolean));
+
+  // 쇼핑검색·브랜드검색 등 키워드 자체가 없는 광고그룹은 광고그룹 전체를 대체 항목으로 표시합니다.
   const adgroupsWithoutKeyword = adgroups.filter(a => a.nccAdgroupId && !adgroupsWithKeyword.has(a.nccAdgroupId)).slice(0, 150);
   await mapWithConcurrency(adgroupsWithoutKeyword, 6, async ag => {
     const campaignId = ag.nccCampaignId || '';
@@ -1184,7 +1245,7 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
         adgroupId: ag.nccAdgroupId,
         adgroupName: ag.name || '',
         keywordId: ag.nccAdgroupId,
-        keyword: `${ag.name || '광고그룹'} (광고그룹 전체)`, // 이 유형은 키워드 단위가 아니라 광고그룹 단위로 집계됨을 표시
+        keyword: `${ag.name || '광고그룹'} (광고그룹 전체)`,
         impressions: Number(row.impCnt || 0),
         clicks: Number(row.clkCnt || 0),
         spend: Number(row.salesAmt || 0),
@@ -1390,14 +1451,7 @@ function naverProbePrintReportSample(rows) {
 }
 
 async function naverFetchDailyMetricsViaReport(credentials, since, until, options = {}) {
-  // (중요) AD_CONVERSION_DETAIL 리포트는 statDt "하루치" 데이터만 담습니다(진단 로그로 확인:
-  // statDt=8/22 리포트의 모든 행이 20260822). 예전 코드는 기간 전체를 리포트 한 장으로
-  // 대체하려 해서 (1) 오래된 statDt는 전환이 없으면 10004로 실패하고, (2) 성공해도 첫날
-  // 하루만 커버해 나머지 기간의 전환이 전부 0으로 지워지는 사고(1~4월 구매·DB 소실)의
-  // 원인이었습니다. 그래서 이제는 하루에 리포트 하나씩, 최대 7일치만 만들어 합칩니다.
-  // 리포트가 커버하지 않는 날짜는 호출부(applyExact)에서 절대 건드리지 않습니다.
   if (options.probeOnly) {
-    // 진단 모드는 예전처럼 since 하루짜리 리포트 하나만 요청해 원본 구조를 로그로 보여줍니다.
     const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${since}T00:00:00Z`);
     const reportJobId = created?.reportJobId || created?.id;
     if (!reportJobId) throw new Error(`네이버 보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
@@ -1407,13 +1461,10 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
     return naverProbePrintReportSample(rows);
   }
 
-  // (2026-08-31) 예전엔 최근 7일로 제한했었는데, 일부 계정(예: 다시마전복수산)은 /stats의
-  // 세부 전환 필드(cartCcnt 등) 조회 자체가 구조적으로 항상 실패해서, 최근 7일을 벗어난
-  // 기간은 영원히 '구매 외 전부 DB'로 뭉뚱그려지는 문제가 있었습니다. 이 리포트 방식은
-  // '문자열 전환유형(purchase/add_to_cart/...)'을 직접 알려주기 때문에 그런 계정에서도
-  // 항상 정확하게 분리됩니다. 배경 동기화가 이미 구간을 30일 단위로 쪼개고 있으므로,
-  // 여기서도 하루짜리 리포트를 구간 전체(최대 30일)만큼 반복 요청해 전체 기간을 정확하게
-  // 분류합니다(하루당 리포트 1건 - 하루에 지표가 없으면 10004로 정상 스킵됩니다).
+  // AD_CONVERSION_DETAIL은 하루짜리 보고서입니다. 예전 구현은 최대 31일 원본 TSV를 모두 rows[]에
+  // 누적하고, 광고/키워드 전체 ID 조합까지 Map으로 만든 뒤에야 필요한 캠페인/소재/키워드 값만
+  // 뽑았습니다. 커머스 대형 계정에서는 이 불필요한 원본+세부 Map이 수 GB로 커져 V8 OOM이
+  // 발생했습니다. 이제 하루씩 즉시 읽고, 현재 동기화가 실제로 필요로 하는 ID만 레벨별로 집계합니다.
   const REPORT_MAX_DAYS = 31;
   const endDate = new Date(`${until}T00:00:00`);
   const startDate = new Date(`${since}T00:00:00`);
@@ -1423,18 +1474,75 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
   }
   dayList.reverse();
 
-  const rows = [];
-  for (const day of dayList) {
+  const campaignIds = options.campaignIds instanceof Set ? options.campaignIds : new Set(options.campaignIds || []);
+  const adIds = options.adIds instanceof Set ? options.adIds : new Set(options.adIds || []);
+  const keywordIds = options.keywordIds instanceof Set ? options.keywordIds : new Set(options.keywordIds || []);
+  const COL = { date: 0, campaignId: 2, adgroupId: 3, keywordId: 4, adId: 5, convType: 12, convCount: 13, convAmount: 14 };
+  const campaignMap = new Map();
+  const creativeMap = new Map();
+  const keywordMap = new Map();
+  const unknownTypes = new Set();
+  const engagementTypes = new Set();
+  const typeDistribution = {};
+  let rawRowCount = 0;
+
+  const addToMap = (map, key, base, field, count, amount) => {
+    const cur = map.get(key) || { ...base, dbCount: 0, purchases: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, revenue: 0 };
+    cur[field] += count;
+    if (field === 'purchases') cur.revenue += amount;
+    map.set(key, cur);
+  };
+
+  const absorbRows = (dayRows) => {
+    rawRowCount += dayRows.length;
+    for (const r of dayRows) {
+      const raw = String(r[COL.date] ?? '');
+      if (raw.length !== 8) continue;
+      const date = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+      if (date < since || date > until) continue;
+      const campaignId = String(r[COL.campaignId] || '');
+      const adgroupId = String(r[COL.adgroupId] || '');
+      const keywordId = String(r[COL.keywordId] || '');
+      const adId = String(r[COL.adId] || '');
+      const convType = String(r[COL.convType] ?? '').trim();
+      const count = Number(r[COL.convCount] || 0) || 0;
+      const amount = Number(r[COL.convAmount] || 0) || 0;
+      if (convType) typeDistribution[convType] = (typeDistribution[convType] || 0) + count;
+      const { field, known, engagement } = classifyNaverConversionType(convType);
+      if (!known && convType) unknownTypes.add(convType);
+      if (engagement) { engagementTypes.add(convType); continue; }
+
+      // 캠페인은 모든 기간의 정확한 합계를 보존해야 하므로 항상 집계하되, 현재 /stats에서
+      // 실제로 존재하는 캠페인 ID만 남깁니다. 소재/키워드는 장기 백필 정책상 최근 일부만 수집하므로
+      // 현재 target rows에 있는 ID만 집계해 리포트 전체 계정의 불필요한 세부 전환을 메모리에 두지 않습니다.
+      if (!campaignIds.size || campaignIds.has(campaignId)) {
+        addToMap(campaignMap, `${date}|${campaignId}`, { date, campaignId }, field, count, amount);
+      }
+      if (adId && adIds.has(adId)) {
+        addToMap(creativeMap, `${date}|${adId}`, { date, campaignId, adgroupId, adId }, field, count, amount);
+      }
+      if (keywordId && keywordIds.has(keywordId)) {
+        addToMap(keywordMap, `${date}|${keywordId}`, { date, campaignId, adgroupId, keywordId }, field, count, amount);
+      }
+    }
+  };
+
+  for (let i = 0; i < dayList.length; i++) {
+    const day = dayList[i];
+    assertMemorySafe(`전환 상세 리포트 ${day} 다운로드 전`);
     try {
       const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${day}T00:00:00Z`);
       const reportJobId = created?.reportJobId || created?.id;
       if (!reportJobId) throw new Error(`보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
       const finished = await naverWaitForStatReport(credentials, reportJobId);
       if (!finished?.downloadUrl) throw new Error('보고서가 완료됐지만 다운로드 URL이 없습니다.');
-      rows.push(...await naverDownloadStatReportRows(finished.downloadUrl, credentials));
+      const dayRows = await naverDownloadStatReportRows(finished.downloadUrl, credentials);
+      absorbRows(dayRows);
+      const heapMb = process.memoryUsage().heapUsed / 1048576;
+      console.log(`[naver-conversion-detail] ${day} 원본 ${dayRows.length}행 즉시 집계 · 캠페인 ${campaignMap.size} / 소재 ${creativeMap.size} / 키워드 ${keywordMap.size}건 · heapUsed=${heapMb.toFixed(0)}MB`);
+      if (global.gc && (i % 3 === 2 || heapMb > 2000)) global.gc();
     } catch (error) {
       if (error?.naverCode === 10004) {
-        // "선택하신 조건에 지표가 확인되지 않습니다" = 그날 전환이 0건이라는 정상 응답입니다.
         console.log(`[naver-conversion-detail] ${day} 리포트에 지표 없음(그날 전환 0건, 정상)`);
       } else {
         console.error(`[naver-conversion-detail] ${day} 리포트 실패 - 이 날짜는 /stats 값을 유지합니다:`, error?.message || error);
@@ -1442,54 +1550,17 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
     }
   }
 
-  if (options.probeOnly) {
-    // (도달하지 않음 - probeOnly는 위에서 이미 처리됩니다)
-    return naverProbePrintReportSample(rows);
-  }
-
-  // ---- 실제 파싱 (컬럼 구조는 실제 응답 로그로 확정했습니다) ----
-  // [0]날짜(YYYYMMDD) [2]캠페인ID [3]광고그룹ID [4]키워드ID [5]소재ID [12]전환유형 [13]전환수 [14]전환매출
-  const COL = { date: 0, campaignId: 2, adgroupId: 3, keywordId: 4, adId: 5, convType: 12, convCount: 13, convAmount: 14 };
-  // 전환유형 분류는 lib/naverConversionTypes.mjs의 classifyNaverConversionType을 사용합니다.
-  // (중요) 보고서의 전환유형 컬럼은 숫자 코드(1=구매완료, 2=회원가입, 3=장바구니, 4=신청·예약, 5=기타)
-  // 또는 문자열(purchase/add_to_cart/...)로 내려오는데, 예전 코드는 문자열만 매핑해서
-  // 숫자 코드 계정에서는 구매·장바구니까지 전부 "모르는 유형 → DB"로 잘못 합산됐습니다.
-
-  const byKey = new Map();
-  const unknownTypes = new Set();
-  const engagementTypes = new Set();
-  const typeDistribution = {}; // 전환유형 원본값 → 전환수 합계 (진단용: 실제로 어떤 값이 내려오는지 확인)
-  for (const r of rows) {
-    const raw = String(r[COL.date] ?? '');
-    if (raw.length !== 8) continue;
-    const date = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
-    if (date < since || date > until) continue;
-    const convType = String(r[COL.convType] ?? '').trim();
-    const count = Number(r[COL.convCount] || 0) || 0;
-    const amount = Number(r[COL.convAmount] || 0) || 0;
-    if (convType) typeDistribution[convType] = (typeDistribution[convType] || 0) + count;
-    const { field, known, engagement } = classifyNaverConversionType(convType);
-    if (!known && convType) unknownTypes.add(convType);
-    // 상품상세보기·상품찜·소식받기 같은 참여성 이벤트는 DB 전환에 섞지 않고 집계에서 제외합니다.
-    if (engagement) { engagementTypes.add(convType); continue; }
-
-    const key = `${date}|${r[COL.campaignId] || ''}|${r[COL.adgroupId] || ''}|${r[COL.keywordId] || ''}|${r[COL.adId] || ''}`;
-    const cur = byKey.get(key) || {
-      date, campaignId: String(r[COL.campaignId] || ''), adgroupId: String(r[COL.adgroupId] || ''),
-      keywordId: String(r[COL.keywordId] || ''), adId: String(r[COL.adId] || ''),
-      dbCount: 0, purchases: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, revenue: 0,
-    };
-    cur[field] += count;
-    // 매출은 구매 전환에만 의미가 있습니다.
-    if (field === 'purchases') cur.revenue += amount;
-    byKey.set(key, cur);
-  }
   if (unknownTypes.size) console.log(`[naver-conversion-detail] ⚠️ 처음 보는 전환유형을 DB(리드)로 분류했습니다(확인 필요): ${JSON.stringify([...unknownTypes])}`);
   if (engagementTypes.size) console.log(`[naver-conversion-detail] 참여성 전환유형은 집계에서 제외했습니다: ${JSON.stringify([...engagementTypes])}`);
   console.log(`[naver-conversion-detail] 전환유형 값 분포(원본값→전환수): ${JSON.stringify(typeDistribution)}`);
-  const parsed = [...byKey.values()];
-  console.log(`[naver-conversion-detail] ${since}~${until} 전환 상세 ${rows.length}행 → ${parsed.length}건으로 집계`);
-  return parsed;
+  const result = {
+    campaignRows: [...campaignMap.values()],
+    creativeRows: [...creativeMap.values()],
+    keywordRows: [...keywordMap.values()],
+    rawRowCount,
+  };
+  console.log(`[naver-conversion-detail] ${since}~${until} 원본 ${rawRowCount}행 → 캠페인 ${result.campaignRows.length}, 소재 ${result.creativeRows.length}, 키워드 ${result.keywordRows.length}건으로 필요한 레벨만 집계`);
+  return result;
 }
 
 async function naverFetchCampaignDailyMetrics(credentials, since, until) {
@@ -2280,7 +2351,7 @@ async function handleApi(req, res, pathname) {
     async function upsertDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date);
       if (!valid.length) return;
-      await pgPool.query(
+      await pgQueryWithRetry(
         `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
          SELECT $1, $2, $3, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
          FROM UNNEST($4::date[], $5::bigint[], $6::bigint[], $7::numeric[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::bigint[]) AS t(d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk)
@@ -2295,7 +2366,7 @@ async function handleApi(req, res, pathname) {
       );
     }
     async function readStoredDailyMetrics(tenantId, advertiserId, channel, since, until) {
-      const result = await pgPool.query(
+      const result = await pgQueryWithRetry(
         `SELECT to_char(date, 'YYYY-MM-DD') AS date, impressions, clicks, spend, db_count, purchases, revenue
            FROM daily_metrics
           WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3 AND date BETWEEN $4::date AND $5::date
@@ -2316,7 +2387,7 @@ async function handleApi(req, res, pathname) {
     async function upsertCampaignDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && r.campaignId);
       if (!valid.length) return;
-      await pgPool.query(
+      await pgQueryWithRetry(
         `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
          SELECT $1, $2, $3, cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
          FROM UNNEST($4::text[], $5::text[], $6::text[], $7::date[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::bigint[]) AS t(cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk)
@@ -2334,7 +2405,7 @@ async function handleApi(req, res, pathname) {
     async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
-      await pgPool.query(
+      await pgQueryWithRetry(
         `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images, add_to_cart, complete_registration, initiate_checkout)
          SELECT $1, $2, $3, cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb, atc, creg, ichk
          FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[], $25::text[], $26::bigint[], $27::bigint[], $28::bigint[])
@@ -2360,7 +2431,7 @@ async function handleApi(req, res, pathname) {
     async function upsertKeywordDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && (r.keywordId || r.keyword));
       if (!valid.length) return;
-      await pgPool.query(
+      await pgQueryWithRetry(
         `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout)
          SELECT $1, $2, $3, cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk
          FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::bigint[], $19::bigint[], $20::bigint[])
@@ -2388,7 +2459,7 @@ async function handleApi(req, res, pathname) {
       const tolerance = (key) => key === 'spend' || key === 'revenue' ? 1 : 0;
       const ok = Object.keys(delta).every(k => Math.abs(delta[k]) <= tolerance(k));
       try {
-        await pgPool.query(
+        await pgQueryWithRetry(
           `INSERT INTO sync_validation_logs (tenant_id, advertiser_id, channel, date_from, date_to, source_label, source_totals, stored_totals, delta, ok, account_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [tenantId, advertiserId, channel, since || null, until || null, sourceLabel, JSON.stringify(source), JSON.stringify(stored), JSON.stringify(delta), ok, accountId || null]
@@ -2403,23 +2474,40 @@ async function handleApi(req, res, pathname) {
 
 /** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
 async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, error }) {
-  await pgPool.query(
+  // 장기 수집의 마지막 bookkeeping 단계입니다. 여기서 일시적인 DB connection timeout 한 번 때문에
+  // 앞에서 정상 저장된 6개월치 전체를 '동기화 실패'로 오판하지 않도록 일반 저장보다 더 넉넉하게 재시도합니다.
+  await pgQueryWithRetry(
     `UPDATE media_accounts SET last_synced_at = now(),
        last_row_count = CASE WHEN $4 THEN $5 ELSE last_row_count END,
        last_sync_error = CASE WHEN $4 THEN NULL ELSE $6 END
      WHERE advertiser_id = $1 AND channel = $2 AND tenant_id = $3`,
-    [advertiserId, channel, tenantId, ok, count ?? 0, error || '알 수 없는 오류']
+    [advertiserId, channel, tenantId, ok, count ?? 0, error || '알 수 없는 오류'],
+    { maxAttempts: 6, label: `sync result ${channel}/${advertiserId}` }
   );
-  const advRes = await pgPool.query(`SELECT name FROM advertisers WHERE id = $1`, [advertiserId]);
+  const advRes = await pgQueryWithRetry(
+    `SELECT name FROM advertisers WHERE id = $1`,
+    [advertiserId],
+    { maxAttempts: 4, label: `sync advertiser lookup ${advertiserId}` }
+  );
   const advertiserName = advRes.rows[0]?.name || advertiserId;
   addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류') });
 }
 
+function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
+  const timer = setTimeout(() => {
+    recordSyncResult(tenantId, advertiserId, channel, result)
+      .then(() => console.log(`[동기화 상태 후속 기록 성공] ${channel} advertiser=${advertiserId}`))
+      .catch(error => console.error(`[동기화 상태 후속 기록 실패] ${channel} advertiser=${advertiserId}:`, error?.message || error));
+  }, 15_000);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
     /** 동기화(백엔드 내부용)에서만 사용합니다 - 실제 API 호출을 위해 복호화된 값을 반환합니다. 프론트로는 절대 내려보내지 않습니다. */
     async function pgGetMediaAccountForSync(tenantId, advertiserId, channel) {
-      const r = await pgPool.query(
+      const r = await pgQueryWithRetry(
         `SELECT account_id, api_key_encrypted, secret_key_encrypted, status FROM media_accounts WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3`,
-        [tenantId, advertiserId, channel]
+        [tenantId, advertiserId, channel],
+        { maxAttempts: 4, label: `media account lookup ${channel}/${advertiserId}` }
       );
       const row = r.rows[0];
       if (!row) return null;
@@ -2587,67 +2675,62 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           if (needsFullRangeReport || isLastSegment) try {
             const reportSince = needsFullRangeReport ? since : undefined; // 분류 보정은 캠페인 전체 구간 기준; 세부 수집 생략 여부와 분리합니다.
             const effectiveReportSince = reportSince || (() => { const d = new Date(`${until}T00:00:00`); d.setDate(d.getDate() - 6); const bounded = d.toISOString().slice(0, 10); return bounded < since ? since : bounded; })();
-            const convDetail = await naverFetchDailyMetricsViaReport(credentials, effectiveReportSince, until);
-            if (convDetail.length) {
+            const reportResult = await naverFetchDailyMetricsViaReport(credentials, effectiveReportSince, until, {
+              campaignIds: new Set(campaignRows.map(r => r.campaignId).filter(Boolean)),
+              adIds: new Set(creativeRows.map(r => r.adId).filter(Boolean)),
+              keywordIds: new Set(keywordRows.map(r => r.keywordId).filter(Boolean)),
+            });
+            const campaignDetail = reportResult.campaignRows || [];
+            const creativeDetail = reportResult.creativeRows || [];
+            const keywordDetail = reportResult.keywordRows || [];
+            if (campaignDetail.length || creativeDetail.length || keywordDetail.length) {
               const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
 
-              // ── 안전장치 ──────────────────────────────────────────────
-              // 리포트는 "하루치"만 담으므로(최근 최대 7일치만 수집), 덮어쓰기는 리포트가
-              // 실제로 데이터를 돌려준 날짜에만 적용합니다. 그 외 날짜를 건드리면
-              // /stats에서 올바르게 가져온 구매·DB 전환까지 0으로 지워지는 사고가 재발합니다.
+              // 캠페인 레벨 리포트 집계만으로 날짜 안전성을 검증합니다. 소재/키워드 레벨까지 섞어
+              // 합산하면 같은 전환이 레벨별로 중복 집계되어 검증값이 부풀 수 있습니다.
               const sumByDate = (rows2, f) => {
                 const m = new Map();
                 for (const r2 of rows2) m.set(r2.date, (m.get(r2.date) || 0) + (Number(r2[f]) || 0));
                 return m;
               };
               const statsPurchByDate = sumByDate(campaignRows, 'purchases');
-              const reportPurchByDate = sumByDate(convDetail, 'purchases');
+              const reportPurchByDate = sumByDate(campaignDetail, 'purchases');
               const coveredDates = new Set();
               const skippedDates = [];
-              for (const d of new Set(convDetail.map(x => x.date))) {
-                // 날짜별 검증: /stats에는 그날 구매가 있는데 리포트 분류 결과 구매가 0이면
-                // 그 날짜는 매핑/데이터 불일치로 보고 덮어쓰지 않습니다.
+              for (const d of new Set(campaignDetail.map(x => x.date))) {
                 if ((statsPurchByDate.get(d) || 0) > 0 && (reportPurchByDate.get(d) || 0) === 0) skippedDates.push(d);
                 else coveredDates.add(d);
               }
               if (skippedDates.length) console.error(`[naver-conversion-detail] ⚠️ 다음 날짜는 /stats 구매가 리포트 분류에서 사라져 덮어쓰지 않습니다: ${JSON.stringify(skippedDates)}`);
 
-              // 검사: ID 체계가 서로 맞는지(캠페인 ID 기준). 형식이 다르면 매칭이 전부 빗나가
-              // "매칭 없음 → 0" 규칙이 커버 날짜의 전환을 지워버리므로 전체를 건너뜁니다.
-              const detailCampaignIds = new Set(convDetail.map(d => d.campaignId).filter(Boolean));
+              const detailCampaignIds = new Set(campaignDetail.map(d => d.campaignId).filter(Boolean));
               const statsCampaignIds = new Set(campaignRows.map(r2 => r2.campaignId).filter(Boolean));
               const idOverlap = [...detailCampaignIds].some(id => statsCampaignIds.has(id));
 
               if (detailCampaignIds.size && statsCampaignIds.size && !idOverlap) {
                 console.error(`[naver-conversion-detail] ⚠️ 덮어쓰기 건너뜀 - 리포트와 /stats의 캠페인 ID 형식이 일치하지 않습니다. 리포트 ID 예시=${JSON.stringify([...detailCampaignIds].slice(0, 3))} / stats ID 예시=${JSON.stringify([...statsCampaignIds].slice(0, 3))}. /stats 기반 값(purchaseCcnt 등)을 그대로 유지합니다.`);
               } else if (coveredDates.size) {
-              // 같은 단위(소재/키워드/캠페인)끼리 date+ID로 묶어서, "리포트가 커버한 날짜만" 정확한 값으로 교체합니다.
-              const applyExact = (targetRows, idField, detailIdField) => {
-                const exact = new Map();
-                for (const d of convDetail) {
-                  if (!coveredDates.has(d.date)) continue;
-                  const id = d[detailIdField];
-                  if (!id) continue;
-                  const key = `${d.date}|${id}`;
-                  const cur = exact.get(key) || Object.fromEntries(CONV_FIELDS.map(f => [f, 0]));
-                  for (const f of CONV_FIELDS) cur[f] += d[f] || 0;
-                  exact.set(key, cur);
-                }
-                let replaced = 0;
-                for (const row of targetRows) {
-                  // 리포트가 실제로 커버한 날짜의 행만 건드립니다. 그 외 날짜는 /stats 값 유지.
-                  if (!coveredDates.has(row.date)) continue;
-                  const hit = exact.get(`${row.date}|${row[idField]}`);
-                  // 커버된 날짜인데 해당 조합이 없으면 '그 날 그 항목의 전환이 0건'이라는 뜻이므로 0으로 맞춥니다.
-                  for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
-                  if (hit) replaced++;
-                }
-                return replaced;
-              };
-              const c1 = applyExact(creativeRows, 'adId', 'adId');
-              const c2 = applyExact(keywordRows, 'keywordId', 'keywordId');
-              const c3 = applyExact(campaignRows, 'campaignId', 'campaignId');
-              console.log(`[naver-conversion-detail] 리포트 커버 날짜 ${[...coveredDates].sort().join(', ')}만 정확한 전환유형으로 교체 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건. 나머지 기간은 /stats 값 유지.`);
+                const applyExact = (targetRows, idField, detailRows, detailIdField) => {
+                  const exact = new Map();
+                  for (const d of detailRows) {
+                    if (!coveredDates.has(d.date)) continue;
+                    const id = d[detailIdField];
+                    if (!id) continue;
+                    exact.set(`${d.date}|${id}`, d); // 리포트 함수에서 이미 date+id로 합산되어 있습니다.
+                  }
+                  let replaced = 0;
+                  for (const row of targetRows) {
+                    if (!coveredDates.has(row.date)) continue;
+                    const hit = exact.get(`${row.date}|${row[idField]}`);
+                    for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
+                    if (hit) replaced++;
+                  }
+                  return replaced;
+                };
+                const c1 = applyExact(creativeRows, 'adId', creativeDetail, 'adId');
+                const c2 = applyExact(keywordRows, 'keywordId', keywordDetail, 'keywordId');
+                const c3 = applyExact(campaignRows, 'campaignId', campaignDetail, 'campaignId');
+                console.log(`[naver-conversion-detail] 리포트 커버 날짜 ${[...coveredDates].sort().join(', ')}만 정확한 전환유형으로 교체 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건. 나머지 기간은 /stats 값 유지.`);
               }
             }
           } catch (error) {
@@ -2755,8 +2838,17 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
               console.log(`[메모리] 구간 ${i + 1}/${segments.length} 완료 후 강제 정리 - ${(beforeGc / 1048576).toFixed(0)}MB → ${(afterGc / 1048576).toFixed(0)}MB`);
             }
           }
-          await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
-          return { ok: true, channel, ...total, since, until, segments: segments.length, detailSince: detailFloor, validation: lastValidation };
+          let statusRecorded = true;
+          try {
+            await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
+          } catch (error) {
+            // 데이터 수집/저장 자체가 끝난 뒤 '마지막 상태 표시 UPDATE'만 일시 실패한 경우입니다.
+            // 이 예외를 밖으로 던지면 실제 데이터는 정상인데 UI에 '실패'로 기록되는 잘못된 판정이 생깁니다.
+            statusRecorded = false;
+            console.error(`[네이버 동기화] 데이터 저장은 완료됐지만 최종 상태 기록이 지연됩니다: ${error?.message || error}`);
+            scheduleSyncResultRetry(tenantId, advertiserId, channel, { ok: true, count: total.count });
+          }
+          return { ok: true, channel, ...total, since, until, segments: segments.length, detailSince: detailFloor, validation: lastValidation, statusRecorded };
         };
         const onNaverFail = async (error) => {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';

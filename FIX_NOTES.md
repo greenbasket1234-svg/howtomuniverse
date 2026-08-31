@@ -40,3 +40,38 @@
 - 수정: 장기 동기화 시작 전 7일 preflight로 일별 fallback 여부를 선판정하고, fallback 계정은 10일 세그먼트를 사용.
 - 수정: 계정/캠페인은 요청 기간 전체를 유지하되 소재·키워드 장기 백필은 일반 계정 최근 90일, fallback 대형 계정 최근 30일로 제한. 기존 DB의 과거 세부 행은 삭제하지 않음.
 - 수정: fallback 계정의 소재 처리 상한도 키워드와 동일하게 150개로 낮춰 일자별 개별 호출 폭증을 차단.
+
+## 2026-08-31 추가 수정 — 장기 네이버 동기화 종료부 PostgreSQL connection timeout
+
+증상: 6개월 동기화가 거의 끝까지 진행된 뒤 `timeout exceeded when trying to connect`로 실패 기록됨.
+
+원인:
+- 이 문구는 네이버 API 오류가 아니라 `node-postgres(pg)`가 PostgreSQL connection을 정해진 시간 안에 확보하지 못했을 때 발생하는 오류입니다.
+- 기존 Pool은 `connectionTimeoutMillis=8초`, `idleTimeoutMillis=30초`라 장기 네이버 API 호출 중 DB를 잠시 사용하지 않는 동안 유휴 연결이 닫히고, 다음 저장/검증/최종 상태 기록 시 새 연결을 다시 맺어야 했습니다.
+- 특히 모든 구간 저장이 끝난 뒤 `recordSyncResult(ok=true)`가 이 오류로 실패하면, 데이터 자체는 저장됐어도 상위 catch가 이를 전체 동기화 실패로 오판해 `실패`로 기록할 수 있었습니다.
+
+수정:
+- PostgreSQL Pool: 연결 대기 20초, idle 120초, max 5로 조정.
+- 일시적 PostgreSQL 연결 오류에만 지수 backoff 재시도하는 `pgQueryWithRetry()` 추가.
+- 네이버 동기화의 핵심 저장/검증/계정 조회/최종 상태 기록에 재시도 적용.
+- 최종 성공 상태 기록만 끝까지 실패한 경우 실제 데이터 동기화를 실패로 뒤집지 않고, 15초 뒤 상태 기록을 한 번 더 시도하도록 분리.
+
+검증:
+- `node --check server.mjs` 통과.
+- 실제 Railway PostgreSQL 및 네이버 계정 Credential이 없는 환경이므로 Production 180일 완주 검증은 배포 후 로그 확인 필요.
+
+## 2026-08-31 추가 수정 — 네이버 6개월 장기 동기화 OOM
+
+실제 Railway 로그에서 `FATAL ERROR: Ineffective mark-compacts near heap limit / JavaScript heap out of memory`가 확인되어,
+이전의 DB timeout과 별개로 Node/V8 힙이 약 6GB까지 증가해 프로세스가 종료되는 문제를 수정했습니다.
+
+- `AD_CONVERSION_DETAIL` 30~31일 원본을 한 배열에 누적하지 않고 **하루 다운로드 → 즉시 집계 → 원본 폐기** 방식으로 변경
+- 전환 상세 리포트에서 계정 전체 소재/키워드 조합을 보관하지 않고, 현재 동기화에서 실제 수집한 `campaignId/adId/keywordId`만 레벨별 집계
+- 과거 장기 구간(소재/키워드 백필 제외 구간)은 리포트도 캠페인 레벨만 메모리에 유지
+- 네이버 선택적 퍼널 필드(`cartCcnt/signUpCcnt/paymentCcnt`) 프로브가 `11001 BAD_REQUEST`이면 해당 계정에서 미지원으로 24시간 캐시하고 반복 프로브 중단
+- 프로브는 `naverApiRequestOnce`를 사용해 동일한 잘못된 필드 조합을 3~9회 반복 호출하지 않음
+- 키워드 목록은 전체 객체를 메모리에 쌓은 뒤 자르지 않고, 전체 개수만 집계하면서 실제 통계 대상 cap(일반 2000 / day-by-day 150)만 보관
+- 소재 목록도 동일하게 실제 cap까지만 메모리에 보관
+- 메모리 안전 한계를 5GB → 3.5GB로 낮춰, 예상치 못한 추가 누수가 있더라도 V8 자체 Fatal OOM 전에 해당 동기화만 중단
+
+검증: `node --check server.mjs` 통과. 프론트엔드 변경 없음.
