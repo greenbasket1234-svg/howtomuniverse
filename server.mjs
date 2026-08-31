@@ -1332,7 +1332,14 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
     return naverProbePrintReportSample(rows);
   }
 
-  const REPORT_MAX_DAYS = 7;
+  // (2026-08-31) 예전엔 최근 7일로 제한했었는데, 일부 계정(예: 다시마전복수산)은 /stats의
+  // 세부 전환 필드(cartCcnt 등) 조회 자체가 구조적으로 항상 실패해서, 최근 7일을 벗어난
+  // 기간은 영원히 '구매 외 전부 DB'로 뭉뚱그려지는 문제가 있었습니다. 이 리포트 방식은
+  // '문자열 전환유형(purchase/add_to_cart/...)'을 직접 알려주기 때문에 그런 계정에서도
+  // 항상 정확하게 분리됩니다. 배경 동기화가 이미 구간을 30일 단위로 쪼개고 있으므로,
+  // 여기서도 하루짜리 리포트를 구간 전체(최대 30일)만큼 반복 요청해 전체 기간을 정확하게
+  // 분류합니다(하루당 리포트 1건 - 하루에 지표가 없으면 10004로 정상 스킵됩니다).
+  const REPORT_MAX_DAYS = 31;
   const endDate = new Date(`${until}T00:00:00`);
   const startDate = new Date(`${since}T00:00:00`);
   const dayList = [];
@@ -2466,9 +2473,13 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
 
           // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
           // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
-          // 리포트는 최근 최대 7일만 커버하므로 최신 구간(마지막 세그먼트)에서만 시도합니다.
+          // (2026-08-31) 예전엔 리포트가 "최근 7일만" 커버한다고 보고 마지막 구간에서만
+          // 시도했는데, 일부 계정은 /stats 세부 필드 조회가 항상 실패해서 그보다 오래된
+          // 기간은 영원히 부정확하게 남는 문제가 있었습니다. 리포트는 사실 원하는 과거
+          // 날짜 어디든 요청할 수 있으므로, 이제 구간마다(과거 구간 포함) 그 구간 전체에
+          // 대해 시도합니다 - 시간은 더 걸리지만 전체 기간이 정확해집니다.
           // 이 리포트가 실패해도 동기화 자체는 계속되도록(기존 추정치 유지) 감싸서 처리합니다.
-          if (isLastSegment) try {
+          try {
             const convDetail = await naverFetchDailyMetricsViaReport(credentials, detailSince, until);
             if (convDetail.length) {
               const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
