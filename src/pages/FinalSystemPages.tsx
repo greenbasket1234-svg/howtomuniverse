@@ -278,7 +278,7 @@ export function KpiConversionSettingsPage(){
  return <><PageHeader title="KPI 및 전환 설정" description="광고주별 핵심 KPI와 표준 전환 이벤트를 설정합니다."/><div className="ops-two-col"><section className="card ops-card"><h3>기본 KPI</h3><label className="field-label">광고주<select>{ADVERTISERS.map(a=><option key={a}>{a}</option>)}</select></label><label className="field-label">퍼널 유형<select value={funnel} onChange={e=>setFunnel(e.target.value)}><option>상담형</option><option>커머스형</option><option>예약형</option><option>혼합형</option></select></label><div className="form-grid"><label className="field-label">월 목표 전환<input type="number" defaultValue=""/></label><label className="field-label">목표 CPA<input type="number" defaultValue=""/></label><label className="field-label">목표 ROAS<input type="number" defaultValue=""/></label><label className="field-label">유효 DB 기준<input defaultValue=""/></label></div></section><section className="card ops-card"><h3>전환 이벤트 매핑</h3>{(funnel==='예약형'?['페이지 조회','날짜 선택','예약 완료','방문','재예약']:funnel==='커머스형'?['상품 조회','장바구니','결제 시작','구매','재구매']:['DB','유효 DB','상담','예약','계약']).map((x,i)=><div className="mapping-row" key={x}><b>{x}</b><select defaultValue={['page_view','select_date','reservation','visit','repeat'][i]||'lead'}><option>page_view</option><option>lead</option><option>reservation</option><option>purchase</option><option>contract</option><option>custom_event</option></select></div>)}<Btn onClick={()=>setSaved(true)}><Save size={15}/> 저장</Btn>{saved&&<div className="save-toast"><CheckCircle2 size={16}/> KPI 및 전환 설정을 저장했습니다.</div>}</section></div></>
 }
 
-type CollectionStatusRow = { advertiserId: string; advertiserName: string; channel: string; lastSyncedAt: string | null; rowCount: number; error: string | null };
+type CollectionStatusRow = { advertiserId: string; advertiserName: string; channel: string; lastSyncedAt: string | null; rowCount: number; error: string | null; syncing?: boolean; syncProgress?: string | null };
 const CH_LABEL_MAP:Record<string,string> = { meta:'Meta', naver:'네이버', google:'구글', daangn:'당근', tiktok:'틱톡', kakao:'카카오' };
 export function DataCollectionStatusPage(){
  const [toast,setToast]=useState('');
@@ -286,7 +286,10 @@ export function DataCollectionStatusPage(){
  const [rows,setRows]=useState<CollectionStatusRow[]>([]);
  const [loading,setLoading]=useState(true);
  const [refreshing,setRefreshing]=useState<string|null>(null); // `${advertiserId}-${channel}` 또는 'all'
- const load=()=>apiFetch<{rows:CollectionStatusRow[]}>('/integrations/status').then(r=>setRows(r.rows||[])).catch(()=>setRows([])).finally(()=>setLoading(false));
+ const [loadError,setLoadError]=useState('');
+ // 불러오기 실패를 조용히 삼키면 "연결된 매체가 없습니다"로 보여서 원인 파악이 불가능합니다.
+ // 서버가 500(예: 스키마 불일치)을 돌려주면 그 메시지를 화면에 그대로 보여줍니다.
+ const load=()=>apiFetch<{rows:CollectionStatusRow[]}>('/integrations/status').then(r=>{setRows(r.rows||[]);setLoadError('');}).catch(e=>{setRows([]);setLoadError(e instanceof Error?e.message:'수집 현황을 불러오지 못했습니다.');}).finally(()=>setLoading(false));
  useEffect(()=>{load()},[]);
  const visibleRows = filterByAdvertiser(rows, filterValue, r=>r.advertiserName);
  const total=visibleRows.length;
@@ -296,9 +299,9 @@ export function DataCollectionStatusPage(){
  const resync=async(advertiserId:string,channel:string,label:string)=>{
    setRefreshing(`${advertiserId}-${channel}`);
    try{
-     await apiFetch('/integrations/sync',{method:'POST',body:JSON.stringify({advertiserId,channel})});
+     const result=await apiFetch<{background?:boolean;message?:string}>('/integrations/sync',{method:'POST',body:JSON.stringify({advertiserId,channel})});
      await load();
-     setToast(`${label} 재수집이 완료됐습니다.`);
+     setToast(result.background?(result.message??'수집을 백그라운드에서 시작했습니다.'):`${label} 재수집이 완료됐습니다.`);
    }catch(error){setToast(error instanceof Error?error.message:'재수집에 실패했습니다.');}
    setRefreshing(null);setTimeout(()=>setToast(''),2500);
  };
@@ -320,10 +323,11 @@ export function DataCollectionStatusPage(){
  };
  return <>
   <PageHeader title="데이터 수집 현황" description="연결된 광고 매체의 전일 데이터 수집·누락·재수집 상태를 확인합니다." action={<button className="btn primary" onClick={resyncAll} disabled={refreshing==='all'}><RotateCcw size={15}/> {refreshing==='all'?'재수집 중...':'전체 재수집'}</button>}/>
+  {loadError&&<div className="card" style={{color:'#b91c1c',background:'#fef2f2',borderColor:'#fecaca',marginBottom:12,padding:'10px 14px',fontSize:13}}>불러오기 오류: {loadError}</div>}
   {toast&&<div className="save-toast"><CheckCircle2 size={16}/>{toast}</div>}
   {filterValue&&<div className="footnote" style={{marginBottom:8}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경)</div>}
   <div className="ops-stat-grid"><Metric label="연동 매체" value={`${total}개`}/><Metric label="수집 성공" value={`${success}개`}/><Metric label="수집 실패" value={`${failed}개`}/><Metric label="누적 수집 행" value={`${totalCollectedRows.toLocaleString()}행`}/></div>
-  <section className="card ops-card"><div className="ops-card-head"><div><h3>광고주별 데이터 수집 상태</h3><p>설정 &gt; 매체 계정 연동으로 연결된 실제 매체의 수집 상태입니다.</p></div></div><div className="table-scroll"><table className="ops-table"><thead><tr><th>광고주</th><th>매체</th><th>상태</th><th>마지막 수집</th><th>수집량</th><th>점검 내용</th><th></th></tr></thead><tbody>{visibleRows.map(r=>{const label=`${r.advertiserName} ${CH_LABEL_MAP[r.channel]??r.channel}`;const key=`${r.advertiserId}-${r.channel}`;return <tr key={key}><td><b>{r.advertiserName}</b></td><td>{CH_LABEL_MAP[r.channel]??r.channel}</td><td><span className={`status-pill ${r.error?'danger':r.lastSyncedAt?'success':'warning'}`}>{r.error?'실패':r.lastSyncedAt?'성공':'대기'}</span></td><td>{timeAgo(r.lastSyncedAt)}</td><td>{r.rowCount.toLocaleString()}행</td><td>{r.error||'-'}</td><td><button className="btn secondary mini" disabled={refreshing===key} onClick={()=>resync(r.advertiserId,r.channel,label)}>{refreshing===key?'수집 중...':'재수집'}</button></td></tr>;})}{!loading&&!visibleRows.length&&<tr><td colSpan={7} style={{textAlign:'center',color:'var(--text-muted)',padding:'24px 0'}}>연결된 매체가 없습니다. 설정 &gt; 매체 계정 연동에서 먼저 연결해주세요.</td></tr>}</tbody></table></div></section>
+  <section className="card ops-card"><div className="ops-card-head"><div><h3>광고주별 데이터 수집 상태</h3><p>설정 &gt; 매체 계정 연동으로 연결된 실제 매체의 수집 상태입니다.</p></div></div><div className="table-scroll"><table className="ops-table"><thead><tr><th>광고주</th><th>매체</th><th>상태</th><th>마지막 수집</th><th>수집량</th><th>점검 내용</th><th></th></tr></thead><tbody>{visibleRows.map(r=>{const label=`${r.advertiserName} ${CH_LABEL_MAP[r.channel]??r.channel}`;const key=`${r.advertiserId}-${r.channel}`;return <tr key={key}><td><b>{r.advertiserName}</b></td><td>{CH_LABEL_MAP[r.channel]??r.channel}</td><td><span className={`status-pill ${r.syncing?'warning':r.error?'danger':r.lastSyncedAt?'success':'warning'}`}>{r.syncing?'수집 중':r.error?'실패':r.lastSyncedAt?'성공':'대기'}</span></td><td>{timeAgo(r.lastSyncedAt)}</td><td>{r.rowCount.toLocaleString()}행</td><td>{r.syncing?(r.syncProgress||'수집 진행 중'):(r.error||'-')}</td><td><button className="btn secondary mini" disabled={refreshing===key} onClick={()=>resync(r.advertiserId,r.channel,label)}>{refreshing===key?'수집 중...':'재수집'}</button></td></tr>;})}{!loading&&!visibleRows.length&&<tr><td colSpan={7} style={{textAlign:'center',color:'var(--text-muted)',padding:'24px 0'}}>연결된 매체가 없습니다. 설정 &gt; 매체 계정 연동에서 먼저 연결해주세요.</td></tr>}</tbody></table></div></section>
   <section className="card ops-card"><h3>권장 점검 순서</h3><div className="action-list-row"><span className="status-dot danger"/><div><b>수집 실패 매체 우선 확인</b><small>API 토큰, 권한, 웹훅 URL, 시트 접근 권한을 확인합니다.</small></div></div><div className="action-list-row"><span className="status-dot warning"/><div><b>수집 지연 매체 확인</b><small>전일 데이터가 오늘 보고서에 반영되지 않았는지 확인합니다.</small></div></div><div className="action-list-row"><span className="status-dot success"/><div><b>정상 수집 데이터 검증</b><small>광고비, DB, 매출 합계가 보고서와 일치하는지 확인합니다.</small></div></div></section>
  </>
 }

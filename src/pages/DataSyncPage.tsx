@@ -5,7 +5,7 @@ import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { apiFetch } from '../hooks/useApi';
 
-type StatusRow = { advertiserId: string; advertiserName: string; channel: string; lastSyncedAt: string | null; rowCount: number; error: string | null };
+type StatusRow = { advertiserId: string; advertiserName: string; channel: string; lastSyncedAt: string | null; rowCount: number; error: string | null; syncing?: boolean; syncProgress?: string | null };
 type ValidationLog = { id:string; createdAt:string; advertiserId:string; advertiserName?:string; accountId?:string; channel:string; since:string; until:string; sourceLabel:string; source:{spend:number;impressions:number;clicks:number;dbCount:number;purchases:number;revenue:number}; stored:{spend:number;impressions:number;clicks:number;dbCount:number;purchases:number;revenue:number}; delta:Record<string,number>; ok:boolean };
 const CH_LABEL_MAP: Record<string, string> = { meta: 'Meta', naver: '네이버', google: '구글', daangn: '당근', tiktok: '틱톡', kakao: '카카오' };
 
@@ -33,9 +33,9 @@ export function DataSyncPage() {
     const key = `${advertiserId}-${channel}`;
     setRefreshing(key);
     try {
-      await apiFetch('/integrations/sync', { method: 'POST', body: JSON.stringify({ advertiserId, channel }) });
+      const result = await apiFetch<{background?:boolean;message?:string}>('/integrations/sync', { method: 'POST', body: JSON.stringify({ advertiserId, channel }) });
       await load();
-      setToast('재수집이 완료됐습니다.');
+      setToast(result.background ? (result.message ?? '수집을 백그라운드에서 시작했습니다.') : '재수집이 완료됐습니다.');
     } catch (error) {
       setToast(error instanceof Error ? error.message : '재수집에 실패했습니다.');
     }
@@ -56,7 +56,7 @@ export function DataSyncPage() {
             <td><b>{r.advertiserName}</b></td>
             <td>{timeAgo(r.lastSyncedAt)}</td>
             <td className="num">{r.rowCount.toLocaleString()}행</td>
-            <td><span className={`status-pill ${r.error ? 'danger' : r.lastSyncedAt ? 'success' : 'warning'}`}>{r.error ? '실패' : r.lastSyncedAt ? '성공' : '대기'}</span>{r.error && <div className="footnote">{r.error}</div>}</td>
+            <td><span className={`status-pill ${r.syncing ? 'warning' : r.error ? 'danger' : r.lastSyncedAt ? 'success' : 'warning'}`}>{r.syncing ? '수집 중' : r.error ? '실패' : r.lastSyncedAt ? '성공' : '대기'}</span>{r.syncing&&r.syncProgress&&<div className="footnote">{r.syncProgress}</div>}{!r.syncing&&r.error&&<div className="footnote">{r.error}</div>}</td>
             <td><button className="btn secondary mini" disabled={refreshing === key} onClick={() => resync(r.advertiserId, r.channel)}><RotateCcw size={13} /> {refreshing === key ? '수집 중...' : '재수집'}</button></td>
           </tr>;
         })}

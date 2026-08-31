@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { buildReferenceConnectors } from './lib/referenceConnectors.mjs';
+import { classifyNaverConversionType } from './lib/naverConversionTypes.mjs';
 
 // 요청 처리 중 예상하지 못한 예외가 있어도 서버 프로세스 전체가 죽지 않도록 최상위
 // 안전장치를 둡니다. 개별 요청 핸들러에서 이미 잡히지 않은 예외만 여기서 잡습니다.
@@ -149,10 +150,59 @@ if (DATABASE_URL) {
     // 반드시 실제 숫자(float)로 파싱하도록 설정해야 합니다.
     pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val))); // 1700 = NUMERIC OID
     pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10))); // 20 = BIGINT OID (노출수/클릭수 등)
-    pgPool = new pg.Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    // connectionTimeoutMillis 기본값은 0(무한 대기)입니다. DB 커넥션 슬롯이 부족하거나
+    // 네트워크가 지연되면 pgPool.connect()가 영원히 멈춰서, 그 위에 걸어둔 lock_timeout/
+    // statement_timeout(연결이 맺어진 뒤에만 적용됨)도 무용지물이 되고 서버가 포트를 못 열어
+    // 헬스체크가 5분 내내 실패하는 사고가 있었습니다(실제 발생). 연결 시도 자체에도
+    // 반드시 시간 제한을 둡니다. idleTimeoutMillis는 반복 재시작으로 남을 수 있는 유휴
+    // 커넥션을 빨리 정리해 DB 쪽 커넥션 슬롯 고갈을 줄여줍니다.
+    pgPool = new pg.Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 8_000,
+      idleTimeoutMillis: 30_000,
+    });
+    // 풀에서 커넥션 관련 에러가 나도(예: 유휴 커넥션이 DB 쪽에서 끊김) 서버 전체가 죽지
+    // 않도록 처리합니다. 이 이벤트를 안 받으면 Node가 처리되지 않은 예외로 보고 프로세스를
+    // 종료시킬 수 있습니다.
+    pgPool.on('error', (err) => console.error('[pg pool 오류] 유휴 커넥션에서 오류가 발생했지만 서버는 계속 실행됩니다:', err?.message || err));
   } catch (error) {
     console.error('[오류] DATABASE_URL이 설정됐지만 pg 패키지를 불러오지 못했습니다:', error?.message || error);
     if (isPublicRuntime) process.exit(1);
+  }
+}
+
+// ── 스키마 자동 적용 ─────────────────────────────────────────────────────
+// 지금까지는 db/schema.sql이 "관리자 > 마이그레이션" 버튼을 누를 때만 실행됐습니다.
+// 그래서 새 컬럼이 추가된 코드를 배포해도 DB에는 그 컬럼이 없어서, 예를 들어
+// sync_validation_logs.account_id가 없으면 '데이터 수집 현황'(/api/integrations/status)이
+// "column does not exist" 500으로 죽고 화면에는 아무 기록도 안 보이는 문제가 있었습니다.
+// schema.sql은 전부 IF NOT EXISTS(테이블/인덱스/컬럼)라 몇 번을 실행해도 안전하므로,
+// 서버가 뜰 때마다 적용해서 코드와 DB 스키마가 항상 같이 움직이게 합니다.
+//
+// (중요) ALTER TABLE은 해당 테이블에 배타적 잠금이 필요합니다. 네이버 동기화처럼
+// 오래 걸리는 백그라운드 작업이 같은 테이블에 계속 쓰기 작업을 하고 있으면, 배포 시
+// 이 잠금 요청이 무한정 대기하면서 서버가 포트를 열지 못해 헬스체크가 타임아웃되고
+// 배포 자체가 실패하는 사고가 있었습니다(실제 발생). 그래서 잠금/전체 대기시간에
+// 짧은 제한을 걸어, 잠금 경합이 있어도 몇 초 안에 포기하고 서버 시작을 계속합니다.
+// (스키마 적용을 못 해도 기존 컬럼이 이미 있다면 서비스에는 지장이 없고, 다음 배포
+// 때 경합이 없으면 정상적으로 적용됩니다.)
+if (pgPool) {
+  try {
+    const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
+    const client = await pgPool.connect();
+    try {
+      // lock_timeout: 잠금을 5초 내 못 얻으면 Postgres가 즉시 에러로 실패시킵니다(무한 대기 방지).
+      // statement_timeout: 잠금을 얻은 뒤에도 실행이 20초를 넘으면 중단시킵니다(대용량 테이블 대비 안전망).
+      await client.query(`SET lock_timeout = '5s'`);
+      await client.query(`SET statement_timeout = '20s'`);
+      await client.query(schemaSql);
+      console.log('[스키마] db/schema.sql 자동 적용 완료 - 새 테이블/컬럼이 반영됐습니다.');
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('[스키마] db/schema.sql 자동 적용 건너뜀(서버 시작은 계속 진행합니다) -', error?.message || error);
   }
 }
 
@@ -710,20 +760,33 @@ const naverFunnelSupportCache = new Map(); // customerId -> {addToCart:bool, com
 async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   const cacheKey = credentials.customerId;
   if (naverFunnelSupportCache.has(cacheKey)) return naverFunnelSupportCache.get(cacheKey);
-  const today = new Date().toISOString().slice(0, 10);
+  // (버그 수정) 예전엔 '오늘 하루'로만 확인했는데, 오늘 데이터가 아직 없으면 빈 응답이 와서
+  // 실제로는 지원되는 계정도 전부 '미지원'으로 오판했습니다(장바구니/회원가입/결제시작이
+  // 항상 (미요청)으로 남아 오늘자 전환이 전부 DB로 뭉뚱그려지던 원인 중 하나).
+  // 최근 30일 범위로 확인하고, 그래도 데이터가 없어 판단이 불가능하면 일단 요청해봅니다
+  // (naverStatsForIdsDaily에 미지원 필드로 요청 전체가 거부될 때의 fallback이 이미 있습니다).
+  const until = new Date().toISOString().slice(0, 10);
+  const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 29);
+  const since = sinceDate.toISOString().slice(0, 10);
   const allCandidateFields = Object.values(NAVER_FUNNEL_FIELD_CANDIDATES).flat();
-  const result = { addToCart: false, completeRegistration: false, initiateCheckout: false };
+  let result = { addToCart: false, completeRegistration: false, initiateCheckout: false };
   try {
     const data = await naverApiRequest('GET', '/stats', {
       id: sampleId, fields: JSON.stringify(allCandidateFields),
-      timeRange: JSON.stringify({ since: today, until: today }), timeIncrement: '1',
+      timeRange: JSON.stringify({ since, until }),
     }, credentials);
     const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-    const sample = rows[0] || {};
-    for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
-      result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+    const sample = rows[0];
+    if (sample) {
+      for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
+        result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+      }
+      console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
+    } else {
+      // 최근 30일에도 데이터가 없어 판단 불가 → 낙관적으로 요청해봅니다(fallback이 안전망).
+      result = { addToCart: true, completeRegistration: true, initiateCheckout: true };
+      console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 데이터가 없어 판단할 수 없습니다 - 세부 전환 필드를 일단 요청해봅니다.');
     }
-    console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
   } catch (error) {
     console.log(`[네이버 퍼널 전환 지원 확인 실패] 이 계정은 지원하지 않는 것으로 처리합니다: ${error?.message || error}`);
   }
@@ -747,6 +810,11 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
   // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
   // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
   const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
+  // 진단용 집계: '전환필드 대조' 로그를 행마다 찍으면(예: 키워드 2,000개 × 최대 90일)
+  // 대형 계정에서 수만 줄이 한 번의 동기화 구간 안에서 쏟아질 수 있습니다. 대량의 동기
+  // console.log는 그 자체로 메모리/IO 압박 요인이 될 수 있어(실제 OOM 사고와 시점이 겹침),
+  // 요약 카운트만 모아뒀다가 함수 끝에서 한 줄로만 출력합니다.
+  const diag = { total: 0, same: 0, diff: 0, samples: [] };
   const fetchRange = async (rangeSince, rangeUntil) => {
     const fetchWithFields = (fields) => naverApiRequest('GET', '/stats', {
       ...idParams,
@@ -774,7 +842,11 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
     for (const r of resultRows) {
       if (r.ccnt !== undefined && r.purchaseCcnt !== undefined && Number(r.ccnt) > 0) {
         const same = Number(r.ccnt) === Number(r.purchaseCcnt);
-        console.log(`[네이버 전환필드 대조] id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} cartCcnt=${r.cartCcnt ?? '(미요청)'} signUpCcnt=${r.signUpCcnt ?? '(미요청)'} paymentCcnt=${r.paymentCcnt ?? '(미요청)'} convAmt=${r.convAmt} purchaseConvAmt=${r.purchaseConvAmt} ${same ? '⚠️ ccnt와 purchaseCcnt가 동일함(구매 전용 필드가 아닐 수 있음)' : '✅ 서로 다름(정상적으로 구분되는 것으로 보임)'}`);
+        diag.total++;
+        if (same) diag.same++; else diag.diff++;
+        if (diag.samples.length < 3) {
+          diag.samples.push(`id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} cartCcnt=${r.cartCcnt ?? '(미요청)'} signUpCcnt=${r.signUpCcnt ?? '(미요청)'} paymentCcnt=${r.paymentCcnt ?? '(미요청)'}`);
+        }
       }
     }
     return resultRows;
@@ -803,6 +875,9 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
         await new Promise(r => setTimeout(r, 120));
       }
     }
+  }
+  if (diag.total > 0) {
+    console.log(`[네이버 전환필드 대조 요약] id=${ids[0]}${ids.length > 1 ? ` 외 ${ids.length - 1}개` : ''} 총 ${diag.total}행 중 ccnt=purchaseCcnt 동일 ${diag.same}건, 다름(정상 분리) ${diag.diff}건. 예시: ${diag.samples.join(' | ') || '없음'}`);
   }
   return output;
 }
@@ -1158,46 +1233,91 @@ async function naverDownloadStatReportRows(downloadUrl, credentials) {
  * 형식 오류를 일으키는 문제를 피하기 위한 대안입니다. 정확한 컬럼 순서는 공식 문서에서
  * 확인이 어려워, 처음 몇 줄을 서버 로그에 남겨 실제 값을 보고 빠르게 맞출 수 있게 합니다.
  */
-async function naverFetchDailyMetricsViaReport(credentials, since, until, options = {}) {
-  // AD_CONVERSION_DETAIL: 소재(광고) 단위 일별 성과+전환 보고서. statDt는 조회 시작일입니다.
-  const statDt = `${since}T00:00:00Z`;
-  const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', statDt);
-  const reportJobId = created?.reportJobId || created?.id;
-  if (!reportJobId) throw new Error(`네이버 보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
-  const finished = await naverWaitForStatReport(credentials, reportJobId);
-  const downloadUrl = finished?.downloadUrl;
-  if (!downloadUrl) throw new Error('네이버 보고서가 완료됐지만 다운로드 URL이 없습니다.');
-  const rows = await naverDownloadStatReportRows(downloadUrl, credentials);
+/** 진단(probe)용: 리포트 원본 행을 컬럼 번호와 함께 로그로 출력합니다. */
+function naverProbePrintReportSample(rows) {
+  const columns = rows.length ? Object.keys(rows[0]) : [];
+  console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 컬럼 개수: ${columns.length}, 전체 ${rows.length}행`);
+  // 행 하나를 한 줄로 출력해야 여러 행이 뒤섞여 보이지 않습니다.
+  rows.slice(0, 8).forEach((r, i) => {
+    const values = columns.map(c => r[c]);
+    console.log(`[naver-report-sample] ROW${i} | ${values.map((v, idx) => `[${idx}]${v}`).join(' | ')}`);
+  });
+  // 'purchase', 'add_to_cart' 같은 전환 유형 문자열이 들어있는 컬럼 번호를 자동으로 찾습니다.
+  const KNOWN_TYPES = ['purchase', 'add_to_cart', 'sign_up', 'lead', 'application', 'reservation', 'schedule', 'other'];
+  for (const c of columns) {
+    const values = rows.map(r => String(r[c] ?? ''));
+    if (values.some(v => KNOWN_TYPES.includes(v))) {
+      const dist = {};
+      for (const v of values) dist[v] = (dist[v] || 0) + 1;
+      console.log(`[naver-report-sample] ★ 전환유형 컬럼 발견: 인덱스 [${c}] · 값 분포 ${JSON.stringify(dist)}`);
+    }
+  }
+  return rows;
+}
 
+async function naverFetchDailyMetricsViaReport(credentials, since, until, options = {}) {
+  // (중요) AD_CONVERSION_DETAIL 리포트는 statDt "하루치" 데이터만 담습니다(진단 로그로 확인:
+  // statDt=8/22 리포트의 모든 행이 20260822). 예전 코드는 기간 전체를 리포트 한 장으로
+  // 대체하려 해서 (1) 오래된 statDt는 전환이 없으면 10004로 실패하고, (2) 성공해도 첫날
+  // 하루만 커버해 나머지 기간의 전환이 전부 0으로 지워지는 사고(1~4월 구매·DB 소실)의
+  // 원인이었습니다. 그래서 이제는 하루에 리포트 하나씩, 최대 7일치만 만들어 합칩니다.
+  // 리포트가 커버하지 않는 날짜는 호출부(applyExact)에서 절대 건드리지 않습니다.
   if (options.probeOnly) {
-    const columns = rows.length ? Object.keys(rows[0]) : [];
-    console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 컬럼 개수: ${columns.length}, 전체 ${rows.length}행`);
-    // 행 하나를 한 줄로 출력해야 여러 행이 뒤섞여 보이지 않습니다.
-    rows.slice(0, 8).forEach((r, i) => {
-      const values = columns.map(c => r[c]);
-      console.log(`[naver-report-sample] ROW${i} | ${values.map((v, idx) => `[${idx}]${v}`).join(' | ')}`);
-    });
-    // 'purchase', 'add_to_cart' 같은 전환 유형 문자열이 들어있는 컬럼 번호를 자동으로 찾습니다.
-    const KNOWN_TYPES = ['purchase', 'add_to_cart', 'sign_up', 'lead', 'application', 'reservation', 'other'];
-    for (const c of columns) {
-      const values = rows.map(r => String(r[c] ?? ''));
-      if (values.some(v => KNOWN_TYPES.includes(v))) {
-        const dist = {};
-        for (const v of values) dist[v] = (dist[v] || 0) + 1;
-        console.log(`[naver-report-sample] ★ 전환유형 컬럼 발견: 인덱스 [${c}] · 값 분포 ${JSON.stringify(dist)}`);
+    // 진단 모드는 예전처럼 since 하루짜리 리포트 하나만 요청해 원본 구조를 로그로 보여줍니다.
+    const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${since}T00:00:00Z`);
+    const reportJobId = created?.reportJobId || created?.id;
+    if (!reportJobId) throw new Error(`네이버 보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
+    const finished = await naverWaitForStatReport(credentials, reportJobId);
+    if (!finished?.downloadUrl) throw new Error('네이버 보고서가 완료됐지만 다운로드 URL이 없습니다.');
+    const rows = await naverDownloadStatReportRows(finished.downloadUrl, credentials);
+    return naverProbePrintReportSample(rows);
+  }
+
+  const REPORT_MAX_DAYS = 7;
+  const endDate = new Date(`${until}T00:00:00`);
+  const startDate = new Date(`${since}T00:00:00`);
+  const dayList = [];
+  for (let d = new Date(endDate); d >= startDate && dayList.length < REPORT_MAX_DAYS; d.setDate(d.getDate() - 1)) {
+    dayList.push(d.toISOString().slice(0, 10));
+  }
+  dayList.reverse();
+
+  const rows = [];
+  for (const day of dayList) {
+    try {
+      const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${day}T00:00:00Z`);
+      const reportJobId = created?.reportJobId || created?.id;
+      if (!reportJobId) throw new Error(`보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
+      const finished = await naverWaitForStatReport(credentials, reportJobId);
+      if (!finished?.downloadUrl) throw new Error('보고서가 완료됐지만 다운로드 URL이 없습니다.');
+      rows.push(...await naverDownloadStatReportRows(finished.downloadUrl, credentials));
+    } catch (error) {
+      if (error?.naverCode === 10004) {
+        // "선택하신 조건에 지표가 확인되지 않습니다" = 그날 전환이 0건이라는 정상 응답입니다.
+        console.log(`[naver-conversion-detail] ${day} 리포트에 지표 없음(그날 전환 0건, 정상)`);
+      } else {
+        console.error(`[naver-conversion-detail] ${day} 리포트 실패 - 이 날짜는 /stats 값을 유지합니다:`, error?.message || error);
       }
     }
-    return rows;
+  }
+
+  if (options.probeOnly) {
+    // (도달하지 않음 - probeOnly는 위에서 이미 처리됩니다)
+    return naverProbePrintReportSample(rows);
   }
 
   // ---- 실제 파싱 (컬럼 구조는 실제 응답 로그로 확정했습니다) ----
   // [0]날짜(YYYYMMDD) [2]캠페인ID [3]광고그룹ID [4]키워드ID [5]소재ID [12]전환유형 [13]전환수 [14]전환매출
   const COL = { date: 0, campaignId: 2, adgroupId: 3, keywordId: 4, adId: 5, convType: 12, convCount: 13, convAmount: 14 };
-  // 네이버 전환유형 문자열 → HOWTOM 내부 필드명. 목록에 없는 유형(신청/예약 등)은 전부 DB(리드)로 봅니다.
-  const TYPE_TO_FIELD = { purchase: 'purchases', add_to_cart: 'addToCart', sign_up: 'completeRegistration', payment: 'initiateCheckout' };
+  // 전환유형 분류는 lib/naverConversionTypes.mjs의 classifyNaverConversionType을 사용합니다.
+  // (중요) 보고서의 전환유형 컬럼은 숫자 코드(1=구매완료, 2=회원가입, 3=장바구니, 4=신청·예약, 5=기타)
+  // 또는 문자열(purchase/add_to_cart/...)로 내려오는데, 예전 코드는 문자열만 매핑해서
+  // 숫자 코드 계정에서는 구매·장바구니까지 전부 "모르는 유형 → DB"로 잘못 합산됐습니다.
 
   const byKey = new Map();
   const unknownTypes = new Set();
+  const engagementTypes = new Set();
+  const typeDistribution = {}; // 전환유형 원본값 → 전환수 합계 (진단용: 실제로 어떤 값이 내려오는지 확인)
   for (const r of rows) {
     const raw = String(r[COL.date] ?? '');
     if (raw.length !== 8) continue;
@@ -1206,8 +1326,11 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
     const convType = String(r[COL.convType] ?? '').trim();
     const count = Number(r[COL.convCount] || 0) || 0;
     const amount = Number(r[COL.convAmount] || 0) || 0;
-    const field = TYPE_TO_FIELD[convType];
-    if (!field && convType) unknownTypes.add(convType);
+    if (convType) typeDistribution[convType] = (typeDistribution[convType] || 0) + count;
+    const { field, known, engagement } = classifyNaverConversionType(convType);
+    if (!known && convType) unknownTypes.add(convType);
+    // 상품상세보기·상품찜·소식받기 같은 참여성 이벤트는 DB 전환에 섞지 않고 집계에서 제외합니다.
+    if (engagement) { engagementTypes.add(convType); continue; }
 
     const key = `${date}|${r[COL.campaignId] || ''}|${r[COL.adgroupId] || ''}|${r[COL.keywordId] || ''}|${r[COL.adId] || ''}`;
     const cur = byKey.get(key) || {
@@ -1215,13 +1338,14 @@ async function naverFetchDailyMetricsViaReport(credentials, since, until, option
       keywordId: String(r[COL.keywordId] || ''), adId: String(r[COL.adId] || ''),
       dbCount: 0, purchases: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, revenue: 0,
     };
-    // 알려진 유형이면 해당 필드에, 모르는 유형이면 DB(리드)로 넣습니다.
-    cur[field || 'dbCount'] += count;
+    cur[field] += count;
     // 매출은 구매 전환에만 의미가 있습니다.
     if (field === 'purchases') cur.revenue += amount;
     byKey.set(key, cur);
   }
-  if (unknownTypes.size) console.log(`[naver-conversion-detail] 처음 보는 전환유형을 DB(리드)로 분류했습니다: ${JSON.stringify([...unknownTypes])}`);
+  if (unknownTypes.size) console.log(`[naver-conversion-detail] ⚠️ 처음 보는 전환유형을 DB(리드)로 분류했습니다(확인 필요): ${JSON.stringify([...unknownTypes])}`);
+  if (engagementTypes.size) console.log(`[naver-conversion-detail] 참여성 전환유형은 집계에서 제외했습니다: ${JSON.stringify([...engagementTypes])}`);
+  console.log(`[naver-conversion-detail] 전환유형 값 분포(원본값→전환수): ${JSON.stringify(typeDistribution)}`);
   const parsed = [...byKey.values()];
   console.log(`[naver-conversion-detail] ${since}~${until} 전환 상세 ${rows.length}행 → ${parsed.length}건으로 집계`);
   return parsed;
@@ -1580,6 +1704,10 @@ async function createNotionPage(payload) {
   if (!response.ok) throw new Error(body.message || `Notion HTTP ${response.status}`);
   return { ok: true, id: body.id, url: body.url };
 }
+
+// 90일 초과 등 오래 걸리는 동기화를 백그라운드에서 실행할 때, 진행 중인 작업을 추적합니다.
+// key = `${advertiserId}|${channel}` → { startedAt, days }
+const activeBackgroundSyncs = new Map();
 
 async function handleApi(req, res, pathname) {
   try {
@@ -2228,35 +2356,84 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
 
       if (channel === 'naver') {
         if (!account.api_key || !account.secret_key) return sendJson(res, 400, { error: '네이버 API Key/Secret Key가 저장되어 있지 않습니다.' });
-        try {
-          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
-          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
-          const since = sinceDate.toISOString().slice(0, 10);
-          // 소재별/키워드별 데이터는 항목 하나하나를 순회하며 조회하기 때문에(캠페인/계정 전체보다 훨씬 비쌈)
-          // 예전엔 시간 초과를 피하려 최근 90일로 강제 제한했었습니다. 그 원인이었던
-          // naverStatsForIdsDaily의 빈 응답 재조회 낭비 버그를 고쳤으므로, 이제 캠페인/계정
-          // 단위와 동일하게 요청하신 전체 기간(최대 24개월)을 그대로 수집합니다.
-          const detailSinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
-          const detailSince = detailSinceDate.toISOString().slice(0, 10);
-          const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        const syncKey = `${advertiserId}|naver`;
+        if (activeBackgroundSyncs.has(syncKey)) {
+          const active = activeBackgroundSyncs.get(syncKey);
+          return sendJson(res, 409, { error: `이미 ${active.days}일치 수집이 백그라운드에서 진행 중입니다. '데이터 수집 현황'에서 완료를 확인한 뒤 다시 시도하세요.` });
+        }
+        // 이 광고주처럼 키워드 2,000개 + 소재 수백 개를 항목별로 조회하는 계정은 90일 초과 시
+        // 네이버 API 호출이 1만 회를 넘어 수십 분이 걸립니다. HTTP 요청은 그 전에 프록시/브라우저가
+        // 끊어버리므로("90일 이상 동기화 실패"의 원인), 긴 수집은 백그라운드로 돌리고 즉시 응답합니다.
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        /**
+         * 한 구간(최대 90일)을 수집해 저장합니다.
+         * (중요) 90일 초과 요청을 통짜로 처리하면 키워드 2,000개 × 396일 같은 계정에서
+         * 수백만 행이 메모리에 쌓여 서버가 OOM(heap out of memory)으로 죽습니다(실제 발생).
+         * 그래서 긴 기간은 구간별로 "수집 → 저장 → 메모리 해제"를 반복합니다.
+         */
+        // 다음번에 또 OOM이 나더라도 어느 단계에서 메모리가 늘었는지 바로 보이도록,
+        // 무거운 단계마다 힙 사용량을 찍습니다(수십 바이트 수준의 오버헤드라 상시 켜둬도 무방).
+        const logHeap = (label) => {
+          const m = process.memoryUsage();
+          console.log(`[메모리] ${label} - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
+        };
+        const syncNaverRange = async (since, until, isLastSegment) => {
+          const detailSince = since;
           // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
           // 키워드처럼 단계가 많은(캠페인→광고그룹→키워드→통계) 항목이 조용히 비어버리는 경우가 있어,
           // 순서대로 하나씩 처리합니다.
+          logHeap(`구간 ${since}~${until} 시작`);
           const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
+          logHeap(`캠페인 ${campaignRows.length}행 수집 후`);
           const creativeRows = await naverFetchCreativeDailyMetrics(credentials, detailSince, until);
+          logHeap(`소재 ${creativeRows.length}행 수집 후`);
           const keywordRows = await naverFetchKeywordDailyMetrics(credentials, detailSince, until);
+          logHeap(`키워드 ${keywordRows.length}행 수집 후`);
 
           // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
           // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
+          // 리포트는 최근 최대 7일만 커버하므로 최신 구간(마지막 세그먼트)에서만 시도합니다.
           // 이 리포트가 실패해도 동기화 자체는 계속되도록(기존 추정치 유지) 감싸서 처리합니다.
-          try {
+          if (isLastSegment) try {
             const convDetail = await naverFetchDailyMetricsViaReport(credentials, detailSince, until);
             if (convDetail.length) {
               const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
-              // 같은 단위(소재/키워드/캠페인)끼리 date+ID로 묶어서 정확한 값으로 교체합니다.
+
+              // ── 안전장치 ──────────────────────────────────────────────
+              // 리포트는 "하루치"만 담으므로(최근 최대 7일치만 수집), 덮어쓰기는 리포트가
+              // 실제로 데이터를 돌려준 날짜에만 적용합니다. 그 외 날짜를 건드리면
+              // /stats에서 올바르게 가져온 구매·DB 전환까지 0으로 지워지는 사고가 재발합니다.
+              const sumByDate = (rows2, f) => {
+                const m = new Map();
+                for (const r2 of rows2) m.set(r2.date, (m.get(r2.date) || 0) + (Number(r2[f]) || 0));
+                return m;
+              };
+              const statsPurchByDate = sumByDate(campaignRows, 'purchases');
+              const reportPurchByDate = sumByDate(convDetail, 'purchases');
+              const coveredDates = new Set();
+              const skippedDates = [];
+              for (const d of new Set(convDetail.map(x => x.date))) {
+                // 날짜별 검증: /stats에는 그날 구매가 있는데 리포트 분류 결과 구매가 0이면
+                // 그 날짜는 매핑/데이터 불일치로 보고 덮어쓰지 않습니다.
+                if ((statsPurchByDate.get(d) || 0) > 0 && (reportPurchByDate.get(d) || 0) === 0) skippedDates.push(d);
+                else coveredDates.add(d);
+              }
+              if (skippedDates.length) console.error(`[naver-conversion-detail] ⚠️ 다음 날짜는 /stats 구매가 리포트 분류에서 사라져 덮어쓰지 않습니다: ${JSON.stringify(skippedDates)}`);
+
+              // 검사: ID 체계가 서로 맞는지(캠페인 ID 기준). 형식이 다르면 매칭이 전부 빗나가
+              // "매칭 없음 → 0" 규칙이 커버 날짜의 전환을 지워버리므로 전체를 건너뜁니다.
+              const detailCampaignIds = new Set(convDetail.map(d => d.campaignId).filter(Boolean));
+              const statsCampaignIds = new Set(campaignRows.map(r2 => r2.campaignId).filter(Boolean));
+              const idOverlap = [...detailCampaignIds].some(id => statsCampaignIds.has(id));
+
+              if (detailCampaignIds.size && statsCampaignIds.size && !idOverlap) {
+                console.error(`[naver-conversion-detail] ⚠️ 덮어쓰기 건너뜀 - 리포트와 /stats의 캠페인 ID 형식이 일치하지 않습니다. 리포트 ID 예시=${JSON.stringify([...detailCampaignIds].slice(0, 3))} / stats ID 예시=${JSON.stringify([...statsCampaignIds].slice(0, 3))}. /stats 기반 값(purchaseCcnt 등)을 그대로 유지합니다.`);
+              } else if (coveredDates.size) {
+              // 같은 단위(소재/키워드/캠페인)끼리 date+ID로 묶어서, "리포트가 커버한 날짜만" 정확한 값으로 교체합니다.
               const applyExact = (targetRows, idField, detailIdField) => {
                 const exact = new Map();
                 for (const d of convDetail) {
+                  if (!coveredDates.has(d.date)) continue;
                   const id = d[detailIdField];
                   if (!id) continue;
                   const key = `${d.date}|${id}`;
@@ -2266,11 +2443,10 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
                 }
                 let replaced = 0;
                 for (const row of targetRows) {
-                  // 리포트가 커버하지 않는 기간의 행은 절대 건드리지 않습니다(0으로 덮으면 안 됨).
-                  if (row.date < detailSince || row.date > until) continue;
+                  // 리포트가 실제로 커버한 날짜의 행만 건드립니다. 그 외 날짜는 /stats 값 유지.
+                  if (!coveredDates.has(row.date)) continue;
                   const hit = exact.get(`${row.date}|${row[idField]}`);
-                  // 리포트 기간 안인데 해당 조합이 없으면 '그 날 전환이 0건'이라는 뜻이므로 0으로 맞춥니다.
-                  // (추정치를 남겨두면 구매가 DB에 섞여 보이는 기존 문제가 그대로 남습니다.)
+                  // 커버된 날짜인데 해당 조합이 없으면 '그 날 그 항목의 전환이 0건'이라는 뜻이므로 0으로 맞춥니다.
                   for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
                   if (hit) replaced++;
                 }
@@ -2279,7 +2455,8 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
               const c1 = applyExact(creativeRows, 'adId', 'adId');
               const c2 = applyExact(keywordRows, 'keywordId', 'keywordId');
               const c3 = applyExact(campaignRows, 'campaignId', 'campaignId');
-              console.log(`[naver-conversion-detail] 정확한 전환유형으로 교체 완료 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건`);
+              console.log(`[naver-conversion-detail] 리포트 커버 날짜 ${[...coveredDates].sort().join(', ')}만 정확한 전환유형으로 교체 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건. 나머지 기간은 /stats 값 유지.`);
+              }
             }
           } catch (error) {
             console.error('[naver-conversion-detail] 전환 상세 리포트를 가져오지 못해 기존 추정치를 그대로 사용합니다:', error?.message || error);
@@ -2335,12 +2512,59 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           );
           if (!validation.ok) throw new Error(`네이버 원천 전환값과 HOWTOM 저장값이 일치하지 않습니다: ${JSON.stringify(validation.delta)}`);
 
-          await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
-          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, since, until, validation });
-        } catch (error) {
+          logHeap(`구간 ${since}~${until} 저장 완료`);
+          return { count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, validation };
+        };
+
+        const doNaverSync = async () => {
+          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
+          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
+          const since = sinceDate.toISOString().slice(0, 10);
+          // 오래된 구간부터 90일씩 순차 처리 - 구간이 끝날 때마다 해당 구간의 행들이 저장되고
+          // 메모리에서 해제되므로, 13개월(5구간)이어도 메모리 사용량은 90일 동기화 수준을 유지합니다.
+          const segments = splitIntoChunks(since, until, 90);
+          const total = { count: 0, campaignCount: 0, creativeCount: 0, keywordCount: 0 };
+          let lastValidation = null;
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const isLast = i === segments.length - 1;
+            const active = activeBackgroundSyncs.get(syncKey);
+            if (active) active.progress = `구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 수집 중`;
+            console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 시작: ${seg.since}~${seg.until}`);
+            const r = await syncNaverRange(seg.since, seg.until, isLast);
+            total.count += r.count; total.campaignCount += r.campaignCount; total.creativeCount += r.creativeCount; total.keywordCount += r.keywordCount;
+            lastValidation = r.validation;
+            console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 완료: 일별 ${r.count}행, 캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행`);
+          }
+          await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
+          return { ok: true, channel, ...total, since, until, segments: segments.length, validation: lastValidation };
+        };
+        const onNaverFail = async (error) => {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
-          await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg });
-          return sendJson(res, 502, { error: msg });
+          await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg }).catch(() => {});
+          return msg;
+        };
+
+        if (days > 90) {
+          activeBackgroundSyncs.set(syncKey, { startedAt: new Date().toISOString(), days });
+          console.log(`[백그라운드 동기화 시작] naver advertiser=${advertiserId} 최근 ${days}일`);
+          doNaverSync()
+            .then(r => console.log(`[백그라운드 동기화 완료] naver advertiser=${advertiserId} ${r.count}일치 (캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행)`))
+            .catch(async (error) => {
+              const msg = await onNaverFail(error);
+              console.error(`[백그라운드 동기화 실패] naver advertiser=${advertiserId}: ${msg}`);
+            })
+            .finally(() => activeBackgroundSyncs.delete(syncKey));
+          return sendJson(res, 202, {
+            ok: true, background: true, channel, days,
+            message: `${days}일치 수집을 백그라운드에서 시작했습니다. 계정 규모에 따라 수십 분 걸릴 수 있으며, '데이터 수집 현황'에서 완료 여부를 확인하세요.`,
+          });
+        }
+
+        try {
+          return sendJson(res, 200, await doNaverSync());
+        } catch (error) {
+          return sendJson(res, 502, { error: await onNaverFail(error) });
         }
       }
 
@@ -2957,24 +3181,31 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
     // ---- 데이터 수집 현황 -----------------------------------------------------------
     if (req.method === 'GET' && pathname === '/api/integrations/status') {
       const tenantId = await getCurrentTenantId();
-      const db = await pgReadDb(tenantId);
-      console.log(`[데이터 수집 현황] tenantId=${tenantId}, 광고주 ${db.advertisers.length}명`);
-      for (const adv of db.advertisers) {
-        console.log(`[데이터 수집 현황]   - ${adv.name}(${adv.id}): 계정 ${(adv.accounts || []).length}개 ${JSON.stringify(adv.accounts)}`);
-      }
-      const rows = [];
-      for (const adv of db.advertisers) {
-        for (const acc of adv.accounts || []) {
-          if (acc.status !== 'connected') continue;
-          rows.push({
-            advertiserId: adv.id, advertiserName: adv.name, channel: acc.channel,
-            lastSyncedAt: acc.last_synced_at || null,
-            rowCount: acc.last_row_count || 0,
-            error: acc.last_sync_error || null,
-          });
-        }
-      }
-      console.log(`[데이터 수집 현황] 최종 결과 ${rows.length}행`);
+      // 예전에는 pgReadDb(성과 4개 테이블 + 검증로그 + 활동로그 전체)를 통째로 읽었는데,
+      // 이 화면에 필요한 건 광고주와 매체 계정뿐입니다. 관련 없는 테이블(예: sync_validation_logs)의
+      // 스키마 문제 때문에 이 API 전체가 500으로 죽어 화면이 텅 비어 보이던 문제도 함께 없앱니다.
+      const r = await pgPool.query(
+        `SELECT a.id AS advertiser_id, a.name AS advertiser_name,
+                m.channel, m.last_synced_at, m.last_row_count, m.last_sync_error
+         FROM advertisers a JOIN media_accounts m ON m.advertiser_id = a.id
+         WHERE a.tenant_id = $1 AND m.status = 'connected'
+         ORDER BY a.name, m.channel`,
+        [tenantId]
+      );
+      const rows = r.rows.map(row => {
+        const active = activeBackgroundSyncs.get(`${row.advertiser_id}|${row.channel}`);
+        return {
+          advertiserId: row.advertiser_id, advertiserName: row.advertiser_name, channel: row.channel,
+          lastSyncedAt: row.last_synced_at || null,
+          rowCount: row.last_row_count || 0,
+          error: row.last_sync_error || null,
+          syncing: Boolean(active),
+          syncStartedAt: active?.startedAt || null,
+          syncDays: active?.days || null,
+          syncProgress: active?.progress || null,
+        };
+      });
+      console.log(`[데이터 수집 현황] tenantId=${tenantId}, 연결된 매체 ${rows.length}행`);
       return sendJson(res, 200, { rows });
     }
 

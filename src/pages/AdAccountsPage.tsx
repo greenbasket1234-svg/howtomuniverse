@@ -121,10 +121,11 @@ export function AdAccountsPage() {
     if (!selected) return;
     setSyncing(channel);
     try {
-      const result = await apiFetch<{ ok: boolean; count: number }>('/integrations/sync', {
+      const result = await apiFetch<{ ok: boolean; count?: number; background?: boolean; message?: string }>('/integrations/sync', {
         method: 'POST', body: JSON.stringify({ advertiserId: selected.id, channel: CH_KEY_MAP[channel], days: syncDaysByChannel[channel] ?? 90 }),
       });
-      showToast(`${channel} 동기화 완료 · ${result.count}일치 데이터`);
+      if (result.background) showToast(result.message ?? '수집을 백그라운드에서 시작했습니다. 데이터 수집 현황에서 확인하세요.');
+      else showToast(`${channel} 동기화 완료 · ${result.count}일치 데이터`);
       await reload();
     } catch (error) {
       showToast(error instanceof Error ? error.message : '동기화에 실패했습니다.');
