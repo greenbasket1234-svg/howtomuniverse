@@ -2467,12 +2467,19 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         // 용량이어도 합쳐지면 메모리 안전 한계를 넘겨 실패하는 사고가 있었습니다(실제 발생 -
         // 완도군수산 진행 중에 다시마전복수산 동기화가 겹쳐 실패). 그래서 90일 초과 백그라운드
         // 동기화는 전체를 통틀어 한 번에 하나만 실행되도록 제한합니다.
-        if (days > 90) {
-          const otherActive = [...activeBackgroundSyncs.entries()].find(([key]) => key !== syncKey);
-          if (otherActive) {
-            const [otherKey, otherInfo] = otherActive;
+        //
+        // (2026-08-31 추가) 이 제한은 90일 초과 요청끼리만 서로 막았는데, 매일 7·9·14·17·19시에
+        // 자동 실행되는 '자동 동기화'(광고주별 최근 3일치, 90일 이하라 이 제한을 안 탐)가
+        // 마침 대형 백그라운드 동기화와 같은 시간에 겹치면, 짧은 동기화 여러 건이 같은 서버
+        // 프로세스 메모리를 추가로 나눠 쓰면서 대형 동기화가 시작하자마자 이미 메모리가 높은
+        // 상태였던 사고가 있었습니다. 그래서 대형(90일 초과) 백그라운드 동기화가 하나라도
+        // 진행 중이면, 자동 동기화를 포함한 다른 모든 네이버 동기화 요청을 일시적으로
+        // 대기시켜(실패 처리) 메모리를 독점적으로 쓸 수 있게 합니다.
+        if (activeBackgroundSyncs.size > 0) {
+          const [[otherKey, otherInfo]] = activeBackgroundSyncs.entries();
+          if (otherKey !== syncKey || days > 90) {
             const otherAdvertiserId = otherKey.split('|')[0];
-            return sendJson(res, 409, { error: `다른 광고주(${otherAdvertiserId})의 대형 수집(${otherInfo.days}일치)이 진행 중입니다. 여러 건을 동시에 돌리면 메모리 부족으로 실패할 수 있어, 하나가 끝난 뒤 순서대로 진행해 주세요.` });
+            return sendJson(res, 409, { error: `다른 광고주(${otherAdvertiserId})의 대형 수집(${otherInfo.days}일치)이 진행 중이라 메모리 확보를 위해 이번 요청은 건너뜁니다. 그 동기화가 끝난 뒤 자동으로 다시 시도됩니다.` });
           }
         }
         // 이 광고주처럼 키워드 2,000개 + 소재 수백 개를 항목별로 조회하는 계정은 90일 초과 시
