@@ -760,11 +760,16 @@ const naverFunnelSupportCache = new Map(); // customerId -> {addToCart:bool, com
 /**
  * 메모리 안전장치 - 대량의 개별 API 호출이 쌓이는 계정(예: 벌크 조회가 날짜별로 안 쪼개져
  * 캠페인/키워드 하나하나를 하루씩 순차 조회하게 되는 계정)에서 실제로 서버 전체가
- * OOM으로 죽는 사고가 있었습니다. V8 힙 한계(기본 약 2GB)에 도달하기 전에 미리 감지해서,
+ * OOM으로 죽는 사고가 있었습니다. V8 힙 한계에 도달하기 전에 미리 감지해서,
  * "서버 전체가 죽는 것"이 아니라 "이 동기화 하나만 정상적으로 실패하는 것"으로 바꿉니다.
  * 이러면 다른 광고주/다른 요청은 영향을 받지 않고, 원인도 로그로 명확히 남습니다.
+ *
+ * (2026-08-31) Railway 컨테이너가 8GB RAM으로 확인되어, railway.toml에서 Node 힙 한계를
+ * --max-old-space-size=6144(6GB)로 올렸습니다. 이 안전장치도 그에 맞춰 같이 올립니다.
+ * 6GB 힙 한계보다 충분히 낮게 잡아, 실제 V8 OOM(로그도 못 남기고 프로세스가 죽음)에
+ * 부딪히기 전에 우리 코드가 먼저 정상적으로 에러를 던질 여유를 남겨둡니다.
  */
-const MEMORY_SAFETY_LIMIT_MB = 1400;
+const MEMORY_SAFETY_LIMIT_MB = 5000;
 function assertMemorySafe(context) {
   const heapUsedMb = process.memoryUsage().heapUsed / 1048576;
   if (heapUsedMb > MEMORY_SAFETY_LIMIT_MB) {
@@ -2386,6 +2391,20 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
         if (activeBackgroundSyncs.has(syncKey)) {
           const active = activeBackgroundSyncs.get(syncKey);
           return sendJson(res, 409, { error: `이미 ${active.days}일치 수집이 백그라운드에서 진행 중입니다. '데이터 수집 현황'에서 완료를 확인한 뒤 다시 시도하세요.` });
+        }
+        // (중요) 90일 초과 백그라운드 동기화는 광고주별로는 중복 방지가 되어 있었지만,
+        // '서로 다른' 광고주끼리는 동시에 여러 건이 겹쳐서 돌 수 있었습니다. 이 경우 여러
+        // 대형 동기화가 같은 서버 프로세스의 메모리(힙)를 나눠 쓰게 되어, 개별로는 안전한
+        // 용량이어도 합쳐지면 메모리 안전 한계를 넘겨 실패하는 사고가 있었습니다(실제 발생 -
+        // 완도군수산 진행 중에 다시마전복수산 동기화가 겹쳐 실패). 그래서 90일 초과 백그라운드
+        // 동기화는 전체를 통틀어 한 번에 하나만 실행되도록 제한합니다.
+        if (days > 90) {
+          const otherActive = [...activeBackgroundSyncs.entries()].find(([key]) => key !== syncKey);
+          if (otherActive) {
+            const [otherKey, otherInfo] = otherActive;
+            const otherAdvertiserId = otherKey.split('|')[0];
+            return sendJson(res, 409, { error: `다른 광고주(${otherAdvertiserId})의 대형 수집(${otherInfo.days}일치)이 진행 중입니다. 여러 건을 동시에 돌리면 메모리 부족으로 실패할 수 있어, 하나가 끝난 뒤 순서대로 진행해 주세요.` });
+          }
         }
         // 이 광고주처럼 키워드 2,000개 + 소재 수백 개를 항목별로 조회하는 계정은 90일 초과 시
         // 네이버 API 호출이 1만 회를 넘어 수십 분이 걸립니다. HTTP 요청은 그 전에 프록시/브라우저가
