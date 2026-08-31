@@ -820,7 +820,6 @@ async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
   } catch (error) {
     console.log(`[네이버 퍼널 전환 지원 확인 실패] 이 계정은 지원하지 않는 것으로 처리합니다: ${error?.message || error}`);
   }
-  naverFunnelSupportCache.set(cacheKey, result);
   return result;
 }
 
