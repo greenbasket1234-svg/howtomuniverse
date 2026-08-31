@@ -755,7 +755,7 @@ const NAVER_FUNNEL_FIELD_CANDIDATES = {
   completeRegistration: ['signUpCcnt', 'signUpConvAmt'],
   initiateCheckout: ['paymentCcnt', 'paymentConvAmt'],
 };
-const naverFunnelSupportCache = new Map(); // customerId -> {addToCart:bool, completeRegistration:bool, initiateCheckout:bool} | null(확인 전)
+const naverFunnelSupportCache = new Map(); // customerId -> { result: {addToCart,completeRegistration,initiateCheckout,definitive}, expiresAt: number(ms) }
 
 /**
  * 메모리 안전장치 - 대량의 개별 API 호출이 쌓이는 계정(예: 벌크 조회가 날짜별로 안 쪼개져
@@ -777,25 +777,33 @@ function assertMemorySafe(context) {
   }
 }
 
+const naverFunnelSupportInFlight = new Map(); // customerId -> Promise (동시 호출 중복 방지용, 응답 오면 바로 제거)
+
 async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   const cacheKey = credentials.customerId;
-  // 캐시에 '완료된 값'만 저장하면, 캠페인 6개가 동시에(concurrency=6) 이 함수를 처음 호출할 때
-  // 아무도 아직 캐시를 채우지 못한 상태라 전부 캐시를 놓치고 동시에 같은 요청을 중복 발사합니다
-  // (로그에 같은 실패가 여러 번 찍히던 원인). 그래서 '진행 중인 프로미스' 자체를 캐시해서,
-  // 나중에 온 호출은 새 요청을 만들지 않고 먼저 시작된 요청의 결과를 같이 기다립니다.
-  if (naverFunnelSupportCache.has(cacheKey)) return naverFunnelSupportCache.get(cacheKey);
-  const probePromise = naverProbeFunnelFieldSupportUncached(credentials, sampleId);
-  naverFunnelSupportCache.set(cacheKey, probePromise);
-  const outcome = await probePromise;
-  // (중요) 11001("잘못된 파라미터 형식")은 네이버가 파라미터가 정확해도 간헐적으로 무작위로
-  // 뱉는 일시적 오류입니다. 그런데 예전 코드는 확인 시도가 이 오류에 걸리기만 하면 "이 계정은
-  // 영구 미지원"으로 판정해서 서버가 재시작되기 전까지 캐시해버렸습니다 - 실제로 특정 광고주
-  // 하나가 이 무작위 오류에 '운 나쁘게' 걸려서 계속 DB 전환에 장바구니·결제시작이 섞이는
-  // 사고가 있었습니다. 그래서 "확인 자체가 실패한 경우"(definitive=false)는 캐시에서 지워
-  // 다음 호출(같은 동기화의 다음 캠페인/키워드, 또는 다음 재동기화) 때 다시 시도하게 하고,
-  // "실제로 데이터를 받아 필드 유무를 확인한 경우"만 계속 캐시해 불필요한 재확인을 줄입니다.
-  if (!outcome.definitive) naverFunnelSupportCache.delete(cacheKey);
-  return outcome;
+  const cached = naverFunnelSupportCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  // 캠페인/소재/키워드 여러 개가 동시에(concurrency=6) 이 함수를 호출할 때, 캐시가 없으면
+  // 전부 캐시를 놓치고 동시에 같은 요청을 중복 발사합니다. '진행 중인 프로미스'를 따로 캐시해서
+  // 나중에 온 호출은 새 요청 없이 먼저 시작된 요청의 결과를 같이 기다리게 합니다.
+  if (naverFunnelSupportInFlight.has(cacheKey)) return naverFunnelSupportInFlight.get(cacheKey);
+
+  const probePromise = naverProbeFunnelFieldSupportUncached(credentials, sampleId).then(outcome => {
+    // (중요) 11001은 보통 일시적 오류지만, 실제로는 특정 계정에서 이 필드 조합에 대해
+    // '항상' 실패하는 경우도 있었습니다(실제 발생 - 재시도해도 매번 실패). 이런 계정에서
+    // 실패를 아예 캐시하지 않으면 캠페인/소재/키워드 하나하나마다 매번 새로 확인을 시도하게 되어
+    // API 호출이 폭증하고 메모리 사용량이 급증하는 사고로 이어졌습니다(heapUsed 급증 확인됨).
+    // 그래서 확정된(definitive) 성공 결과는 길게(24시간), 실패/불확정 결과는 짧게(3분)만
+    // 캐시합니다 - 정말 일시적인 오류는 3분 뒤 자연 회복되고, 계속 실패하는 계정은 3분에 한
+    // 번만 재확인해서 API 호출 폭증을 막습니다.
+    const ttlMs = outcome.definitive ? 24 * 60 * 60 * 1000 : 3 * 60 * 1000;
+    naverFunnelSupportCache.set(cacheKey, { result: outcome, expiresAt: Date.now() + ttlMs });
+    naverFunnelSupportInFlight.delete(cacheKey);
+    return outcome;
+  });
+  naverFunnelSupportInFlight.set(cacheKey, probePromise);
+  return probePromise;
 }
 
 async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
