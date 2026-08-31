@@ -31,6 +31,10 @@ export type BaseMetricRow = {
   addToCart?: number;
   completeRegistration?: number;
   initiateCheckout?: number;
+  // 상세 리포트가 아직 없는 시점(주로 당일)이라 구매/장바구니/DB 등으로 확정 분류하지 못한
+  // 전환입니다. 예전에는 이 몫이 전부 DB(리드)로 잘못 합산됐습니다. 다음날 리포트가
+  // 생성되면 자동으로 정확한 유형으로 재분류됩니다.
+  unconfirmed?: number;
   revenue: number;
   ctr?: number;
   cpc?: number;

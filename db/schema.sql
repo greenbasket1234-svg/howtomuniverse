@@ -139,9 +139,14 @@ ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS initiate_checkout BIGINT NOT NULL DEFAULT 0;
+-- '구매 외 나머지'를 확실치 않은 채로 DB(리드)에 단정해서 섞어 넣던 문제 수정: 실시간 세부
+-- 전환 필드(장바구니 등)를 이 계정/이 시점에 확인할 수 없어 분류가 불확실한 몫을 DB와
+-- 구분되는 '미확인' 전환으로 별도 집계합니다(주로 당일 데이터, 상세 리포트가 아직 없는 경우).
+ALTER TABLE campaign_daily_metrics ADD COLUMN IF NOT EXISTS unconfirmed_count BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS initiate_checkout BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS unconfirmed_count BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS creative_daily_metrics (
   id BIGSERIAL PRIMARY KEY,
@@ -180,6 +185,7 @@ ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS initiate_checkout BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE creative_daily_metrics ADD COLUMN IF NOT EXISTS unconfirmed_count BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant ON creative_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_adv_date ON creative_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_creative_daily_tenant_date ON creative_daily_metrics(tenant_id, date);
@@ -211,6 +217,7 @@ ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS campaign_type TEXT;
 ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS add_to_cart BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS complete_registration BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS initiate_checkout BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE keyword_daily_metrics ADD COLUMN IF NOT EXISTS unconfirmed_count BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant ON keyword_daily_metrics(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_adv_date ON keyword_daily_metrics(advertiser_id, date);
 CREATE INDEX IF NOT EXISTS idx_keyword_daily_tenant_date ON keyword_daily_metrics(tenant_id, date);

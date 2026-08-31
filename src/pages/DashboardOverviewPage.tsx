@@ -339,6 +339,7 @@ export function DashboardOverviewPage(){
       {filterValue&&<div className="footnote" style={{marginBottom:8,width:'100%'}}>광고주 필터: <b>{filterValue}</b> (상단 검색에서 변경) · {selectedReports.length}개 브랜드 표시 중</div>}
       <MetricsDateBar compact/>
       <div className="toolbar-summary"><span>{range.from}</span><b>~</b><span>{range.to}</span></div>
+      {range.to === new Date().toISOString().slice(0,10) && <div className="footnote" style={{width:'100%',marginTop:6}}>ℹ️ 오늘 날짜는 네이버 쪽 전환 유형(구매/장바구니/DB 등) 확정 리포트가 아직 생성되지 않아, 일부 계정은 전환 유형이 잠정치로 표시될 수 있습니다. 익일 자동 동기화 시 정확한 값으로 자동 갱신됩니다.</div>}
     </section>
 
     <section className="metric-grid-v2">

@@ -407,12 +407,12 @@ export function KpiGoalsPage(){
 
  // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
  // 목표값(target)은 계속 사용자가 설정하지만, 실적(현재 값)은 이 실제 데이터로 자동 계산됩니다.
- const [liveRows,setLiveRows]=useState<{advertiserName:string;date:string;spend:number;dbCount:number;purchases?:number;revenue:number;clicks:number}[]>([]);
+ const [liveRows,setLiveRows]=useState<{advertiserName:string;date:string;spend:number;dbCount:number;purchases?:number;unconfirmed?:number;revenue:number;clicks:number}[]>([]);
  useEffect(()=>{
    const until=new Date().toISOString().slice(0,10);
    const sinceDate=new Date(); sinceDate.setDate(sinceDate.getDate()-89);
    const since=sinceDate.toISOString().slice(0,10);
-   apiFetch<{rows:{advertiserName:string;date:string;spend:number;dbCount:number;purchases?:number;revenue:number;clicks:number}[]}>(`/metrics/daily?from=${since}&to=${until}`)
+   apiFetch<{rows:{advertiserName:string;date:string;spend:number;dbCount:number;purchases?:number;unconfirmed?:number;revenue:number;clicks:number}[]}>(`/metrics/daily?from=${since}&to=${until}`)
      .then(r=>setLiveRows(r.rows||[])).catch(()=>setLiveRows([]));
  },[]);
  /** 광고주명이 일치하는 실제 매체 데이터를, 최근 90일치 "일별 행" 배열로 만듭니다 (index 0 = 오늘, getRowsForRange가 이 순서를 전제로 합니다). */
@@ -422,8 +422,9 @@ export function KpiGoalsPage(){
    for(const r of matched){
      const cur=byDate.get(r.date)||{spend:0,conversions:0,sales:0,clicks:0};
      // '전환'은 DB전환(리드)만 세면 안 됩니다 - 구매 목적 광고주는 dbCount가 0이어도 purchases로
-     // 실제 전환이 있을 수 있습니다(장바구니 담기·회원가입은 참고 지표라 제외).
-     cur.spend+=r.spend||0; cur.conversions+=(r.dbCount||0)+(r.purchases||0); cur.sales+=r.revenue||0; cur.clicks+=r.clicks||0;
+     // 실제 전환이 있을 수 있습니다(장바구니 담기·회원가입은 참고 지표라 제외). 미확인(당일 잠정치)도
+     // 실제로 발생한 전환이므로 함께 포함해야 KPI 실적이 실제보다 낮게 보이지 않습니다.
+     cur.spend+=r.spend||0; cur.conversions+=(r.dbCount||0)+(r.purchases||0)+(r.unconfirmed||0); cur.sales+=r.revenue||0; cur.clicks+=r.clicks||0;
      byDate.set(r.date,cur);
    }
    const out:KpiDailyRow[]=[];

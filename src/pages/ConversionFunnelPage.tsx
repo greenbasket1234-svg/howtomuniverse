@@ -46,8 +46,8 @@ export function ConversionFunnelPage(){
   const visibleRows=useMemo(()=>rows.filter(row=>matchesAdvertiserFilter(row.advertiserName||'',filterValue)),[rows,filterValue]);
   const total=useMemo(()=>visibleRows.reduce((a,r)=>({
     impressions:a.impressions+(r.impressions||0),clicks:a.clicks+(r.clicks||0),spend:a.spend+(r.spend||0),
-    dbCount:a.dbCount+(r.dbCount||0),purchases:a.purchases+(r.purchases||0),revenue:a.revenue+(r.revenue||0)
-  }),{impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0}),[visibleRows]);
+    dbCount:a.dbCount+(r.dbCount||0),purchases:a.purchases+(r.purchases||0),revenue:a.revenue+(r.revenue||0),unconfirmed:a.unconfirmed+(r.unconfirmed||0)
+  }),{impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0,unconfirmed:0}),[visibleRows]);
 
   const connectionByChannel=useMemo(()=>new Map((meta?.connections||[]).map(c=>[c.channel,c])),[meta]);
   const visibleWithMetrics=useMemo(()=>visibleRows.map(row=>({...row,cpa:(row.dbCount+row.purchases)?row.spend/(row.dbCount+row.purchases):0,roas:row.spend?row.revenue/row.spend*100:0})),[visibleRows]);
@@ -84,6 +84,7 @@ export function ConversionFunnelPage(){
       <div className="summary-card"><div className="summary-card-label">광고비</div><div className="summary-card-value">{money(total.spend)}</div></div>
       <div className="summary-card"><div className="summary-card-label">클릭</div><div className="summary-card-value">{total.clicks.toLocaleString()}</div></div>
       <div className="summary-card"><div className="summary-card-label">DB/전환</div><div className="summary-card-value">{total.dbCount.toLocaleString()}</div></div>
+      <div className="summary-card" title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환입니다. 다음날 자동 갱신됩니다."><div className="summary-card-label">미확인 전환 ⓘ</div><div className="summary-card-value">{total.unconfirmed.toLocaleString()}</div></div>
       <div className="summary-card"><div className="summary-card-label">구매</div><div className="summary-card-value">{total.purchases.toLocaleString()}</div></div>
       <div className="summary-card"><div className="summary-card-label">매출</div><div className="summary-card-value">{money(total.revenue)}</div></div>
     </div>
@@ -96,6 +97,7 @@ export function ConversionFunnelPage(){
         <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('dbCount')}>DB 전환{arrow('dbCount')}</th>
+        <th className="num sortable-th" onClick={()=>toggleSort('unconfirmed')} title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환">미확인 ⓘ{arrow('unconfirmed')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('purchases')}>구매 전환{arrow('purchases')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('addToCart')}>장바구니 담기{arrow('addToCart')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('completeRegistration')}>회원가입{arrow('completeRegistration')}</th>
@@ -103,7 +105,7 @@ export function ConversionFunnelPage(){
         <th className="num sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
         <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
       </tr></thead><tbody>
-        {sortedRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);return <tr key={`${row.channel}-${i}`}><td><b>{row.channel}</b></td><td>{statusLabel(connection?.status)}</td><td className="num metric-emphasis">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{row.dbCount.toLocaleString()}</td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{(row.addToCart||0)?row.addToCart!.toLocaleString():'-'}</td><td className="num">{(row.completeRegistration||0)?row.completeRegistration!.toLocaleString():'-'}</td><td className="num">{money(row.revenue)}</td><td className="num">{(row.dbCount+row.purchases)?money(row.cpa):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td></tr>})}
+        {sortedRows.map((row,i)=>{const connection=connectionByChannel.get(row.channel);return <tr key={`${row.channel}-${i}`}><td><b>{row.channel}</b></td><td>{statusLabel(connection?.status)}</td><td className="num metric-emphasis">{money(row.spend)}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{row.dbCount.toLocaleString()}</td><td className="num">{(row.unconfirmed||0)?row.unconfirmed!.toLocaleString():'-'}</td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{(row.addToCart||0)?row.addToCart!.toLocaleString():'-'}</td><td className="num">{(row.completeRegistration||0)?row.completeRegistration!.toLocaleString():'-'}</td><td className="num">{money(row.revenue)}</td><td className="num">{(row.dbCount+row.purchases)?money(row.cpa):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td></tr>})}
         {!loading&&visibleRows.length===0&&<tr><td colSpan={10} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 퍼널 데이터가 없습니다.</td></tr>}
       </tbody></table></div>
     </section>

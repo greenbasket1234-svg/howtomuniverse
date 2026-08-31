@@ -96,7 +96,7 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
 type Kind='이미지'|'영상'|'슬라이드'|'키워드';
 type Item = {
   key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string; adId?:string;
-  name:string; campaignName?:string; impressions:number; clicks:number; spend:number; dbCount:number; purchases?:number;
+  name:string; campaignName?:string; impressions:number; clicks:number; spend:number; dbCount:number; purchases?:number; unconfirmed?:number;
   revenue?:number; roas?:number; thumbnailUrl?:string|null; videoUrl?:string|null; carouselImages?:string[]|null;
   title?:string; body?:string; description?:string; cta?:string;
 };
@@ -129,13 +129,13 @@ export function CreativeLibraryPage(){
   const items:Item[]=useMemo(()=>[
     ...creativeRows.map((r):Item=>({
       key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
-      name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases,
+      name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
       revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl, carouselImages:r.carouselImages,
       title:r.title, body:r.body, description:r.description, cta:r.cta,
     })),
     ...keywordRows.map((r):Item=>({
       key:`${r.channel}-kw-${r.keywordId||r.keyword}`, kind:'키워드', advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel,
-      name:r.keyword, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases,
+      name:r.keyword, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
       revenue:r.revenue, roas:Number(r.roas||0),
     })),
   ],[creativeRows,keywordRows]);
@@ -181,14 +181,14 @@ export function CreativeLibraryPage(){
               {r.kind==='키워드'?<span style={{fontSize:20}}>🔑</span>:r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
             </div>}
       {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6,zIndex:2}}>{i+1}</span>}
-      <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {(r.dbCount+(r.purchases||0)).toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
+      <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {(r.dbCount+(r.purchases||0)+(r.unconfirmed||0)).toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll"><table className="data-table"><thead><tr>
       <th>소재</th><th>종류</th><th>매체</th><th>광고주</th><th>캠페인</th>
       <th className="num sortable-th" onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
-      <th className="num sortable-th" onClick={()=>toggleSort('dbCount')}>전환{arrow('dbCount')}</th>
+      <th className="num sortable-th" onClick={()=>toggleSort('dbCount')} title="DB·구매·미확인(당일 잠정치) 전환을 모두 합한 값입니다">전환{arrow('dbCount')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
-    </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{(r.dbCount+(r.purchases||0)).toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
+    </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{(r.dbCount+(r.purchases||0)+(r.unconfirmed||0)).toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
     {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
       <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
       {(selected.kind==='영상'||selected.kind==='슬라이드')&&previewLoading
@@ -213,7 +213,7 @@ export function CreativeLibraryPage(){
           {selected.cta&&<div><small className="muted">CTA 버튼</small> <b>{selected.cta}</b></div>}
         </div>
       )}
-      <div className="detail-kpi-grid"><div><span>광고비</span><b>{won(selected.spend)}</b></div><div><span>노출</span><b>{selected.impressions.toLocaleString()}</b></div><div><span>클릭</span><b>{selected.clicks.toLocaleString()}</b></div><div><span>전환</span><b>{(selected.dbCount+(selected.purchases||0)).toLocaleString()}</b></div><div><span>매출</span><b>{won(selected.revenue||0)}</b></div><div><span>ROAS</span><b className={roasClass(Number(selected.roas||0))}>{selected.spend?`${Number(selected.roas||0).toFixed(0)}%`:'-'}</b></div></div>
+      <div className="detail-kpi-grid"><div><span>광고비</span><b>{won(selected.spend)}</b></div><div><span>노출</span><b>{selected.impressions.toLocaleString()}</b></div><div><span>클릭</span><b>{selected.clicks.toLocaleString()}</b></div><div title="DB·구매·미확인(당일 잠정치) 전환을 모두 합한 값입니다"><span>전환</span><b>{(selected.dbCount+(selected.purchases||0)+(selected.unconfirmed||0)).toLocaleString()}</b></div><div><span>매출</span><b>{won(selected.revenue||0)}</b></div><div><span>ROAS</span><b className={roasClass(Number(selected.roas||0))}>{selected.spend?`${Number(selected.roas||0).toFixed(0)}%`:'-'}</b></div></div>
     </ModalPortal>}
   </div>;
 }

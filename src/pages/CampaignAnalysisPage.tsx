@@ -26,7 +26,7 @@ export function CampaignAnalysisPage(){
   const selectedRow=selected?visible.find(r=>rowKey(r)===selected):undefined;
   // 아무 캠페인도 선택하지 않았을 때는 임의로 첫 번째 캠페인만 보여주지 않고, 지금 필터된
   // 범위(광고주 필터·매체 필터·검색어 적용 후) 전체를 합산해서 보여줍니다.
-  const aggregate=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,purchases:a.purchases+(r.purchases||0),revenue:a.revenue+(r.revenue||0)}),{spend:0,clicks:0,dbCount:0,purchases:0,revenue:0}),[visible]);
+  const aggregate=useMemo(()=>visible.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,purchases:a.purchases+(r.purchases||0),revenue:a.revenue+(r.revenue||0),unconfirmed:a.unconfirmed+(r.unconfirmed||0)}),{spend:0,clicks:0,dbCount:0,purchases:0,revenue:0,unconfirmed:0}),[visible]);
   const aggregateRoas=aggregate.spend?aggregate.revenue/aggregate.spend*100:0;
   const visibleKeySet=useMemo(()=>new Set(visible.map(rowKey)),[visible]);
   const series=useMemo(()=>{
@@ -56,19 +56,21 @@ export function CampaignAnalysisPage(){
       <th className="sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('ctr')}>CTR{arrow('ctr')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('dbCount')}>DB 전환{arrow('dbCount')}</th>
+      <th className="sortable-th" onClick={()=>toggleSort('unconfirmed')} title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환">미확인 ⓘ{arrow('unconfirmed')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('purchases')}>구매 전환{arrow('purchases')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('addToCart')}>장바구니 담기{arrow('addToCart')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('completeRegistration')}>회원가입{arrow('completeRegistration')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('revenue')}>매출{arrow('revenue')}</th>
       <th className="sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
-    </tr></thead><tbody>{loading?<tr><td colSpan={14} className="empty-cell">불러오는 중...</td></tr>:sorted.length===0?<tr><td colSpan={14} className="empty-cell">선택 기간에 실제 캠페인 성과가 없습니다.</td></tr>:sorted.map(r=><tr key={rowKey(r)} className={selected===rowKey(r)?'selected-row':''} onClick={()=>setSelected(selected===rowKey(r)?'':rowKey(r))}><td><b>{r.campaignName}</b><small>{r.campaignId}</small></td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td>{r.dbCount.toLocaleString()}</td><td>{(r.purchases||0).toLocaleString()}</td><td>{(r.addToCart||0)?r.addToCart!.toLocaleString():'-'}</td><td>{(r.completeRegistration||0)?r.completeRegistration!.toLocaleString():'-'}</td><td>{r.totalConversions?won(r.cpa||0):'-'}</td><td>{won(r.revenue)}</td><td className={Number(r.roas||0)>=200?'metric-positive':Number(r.roas||0)>0&&Number(r.roas||0)<100?'metric-negative':''}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></article>
+    </tr></thead><tbody>{loading?<tr><td colSpan={15} className="empty-cell">불러오는 중...</td></tr>:sorted.length===0?<tr><td colSpan={15} className="empty-cell">선택 기간에 실제 캠페인 성과가 없습니다.</td></tr>:sorted.map(r=><tr key={rowKey(r)} className={selected===rowKey(r)?'selected-row':''} onClick={()=>setSelected(selected===rowKey(r)?'':rowKey(r))}><td><b>{r.campaignName}</b><small>{r.campaignId}</small></td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td>{r.dbCount.toLocaleString()}</td><td>{(r.unconfirmed||0)?r.unconfirmed!.toLocaleString():'-'}</td><td>{(r.purchases||0).toLocaleString()}</td><td>{(r.addToCart||0)?r.addToCart!.toLocaleString():'-'}</td><td>{(r.completeRegistration||0)?r.completeRegistration!.toLocaleString():'-'}</td><td>{r.totalConversions?won(r.cpa||0):'-'}</td><td>{won(r.revenue)}</td><td className={Number(r.roas||0)>=200?'metric-positive':Number(r.roas||0)>0&&Number(r.roas||0)<100?'metric-negative':''}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></article>
     <aside className="card campaign-live-detail">
       <div className="panel-title"><BarChart3 size={18}/><div>{selectedRow?<><h3>{selectedRow.advertiserName}</h3><p className="panel-subtitle">{selectedRow.campaignName}</p></>:<><h3>전체 캠페인 합계</h3><p className="panel-subtitle">{visible.length}개 캠페인 · 지금 필터된 범위 기준{selectedRow?'':' (광고주를 선택하면 개별로 볼 수 있습니다)'}</p></>}</div></div>
       <div className="detail-kpi-grid">
         <div><span>광고비</span><b>{won(selectedRow?selectedRow.spend:aggregate.spend)}</b></div>
         <div><span>클릭</span><b>{(selectedRow?selectedRow.clicks:aggregate.clicks).toLocaleString()}</b></div>
         <div><span>DB 전환</span><b>{(selectedRow?selectedRow.dbCount:aggregate.dbCount).toLocaleString()}</b></div>
+        <div title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환"><span>미확인 ⓘ</span><b>{(selectedRow?(selectedRow.unconfirmed||0):aggregate.unconfirmed).toLocaleString()}</b></div>
         <div><span>구매 전환</span><b>{(selectedRow?(selectedRow.purchases||0):(aggregate.purchases||0)).toLocaleString()}</b></div>
         <div><span>ROAS</span><b>{(selectedRow?Number(selectedRow.roas||0):aggregateRoas).toFixed(0)}%</b></div>
       </div>
