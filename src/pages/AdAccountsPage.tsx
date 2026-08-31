@@ -269,7 +269,7 @@ export function AdAccountsPage() {
                         <option value={396}>최근 13개월</option>
                         <option value={730}>최근 24개월</option>
                       </select>
-                      <button className="btn secondary" onClick={() => sync(channel)}>
+                      <button className="btn secondary" onClick={() => sync(channel)} disabled={syncing === channel}>
                         <RefreshCw size={14} className={syncing === channel ? 'is-spinning' : ''} />
                         {syncing === channel ? '동기화 중' : '동기화'}
                       </button>
@@ -282,6 +282,11 @@ export function AdAccountsPage() {
                         연결 해제
                       </button>
                     </div>
+                    {CH_KEY_MAP[channel] === 'naver' && (syncDaysByChannel[channel] ?? 90) > 90 && (
+                      <p style={{margin:'8px 0 0',fontSize:12,color:'#64748b'}}>
+                        장기 수집은 계정·캠페인 성과를 선택 기간 전체로 저장합니다. 소재·키워드는 API 호출 폭증을 막기 위해 최근 90일만 백필하며, 일자별 재조회가 필요한 대형 계정은 최근 30일만 백필합니다. 기존에 저장된 과거 세부 데이터는 삭제하지 않습니다.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div className="account-empty-connect">

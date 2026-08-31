@@ -788,6 +788,56 @@ const naverFunnelSupportInFlight = new Map(); // customerId -> Promise (동시 �
  */
 const naverNeedsDayByDayFallback = new Set(); // customerId 목록
 
+// 긴 기간 백필(backfill)에서 소재/키워드까지 전체 기간을 다시 긁으면 커머스 계정처럼
+// 소재·키워드가 수백~수천 개인 계정은 API 호출 수가 폭증합니다. 계정/캠페인 일별 성과는
+// 요청한 전체 기간을 보존하되, 세부(소재/키워드) 성과는 최근 구간만 백필합니다.
+// 이미 매일 자동 동기화되는 세부 데이터는 DB에 계속 누적되므로 기존 행을 지우지 않습니다.
+const NAVER_DETAIL_HISTORY_DAYS = 90;
+const NAVER_FALLBACK_DETAIL_HISTORY_DAYS = 30;
+
+/**
+ * 긴 동기화를 쪼개기 전에 이 계정이 timeIncrement=1을 실제로 지원하는지 가볍게 확인합니다.
+ * 예전 코드는 segmentSize를 먼저 30일로 확정한 뒤 첫 구간 안에서 fallback 여부를 발견해서,
+ * 막상 문제가 있는 계정도 첫 실행/서버 재시작 직후에는 끝까지 30일 구간으로 처리되는 버그가
+ * 있었습니다. 커머스 대형 계정에서 6개월 이상 백필이 반복 실패하던 핵심 원인 중 하나입니다.
+ */
+async function naverPreflightDailyGranularity(credentials, until) {
+  if (naverNeedsDayByDayFallback.has(credentials.customerId)) return true;
+  const campaigns = await naverFetchCampaigns(credentials);
+  const sampleIds = campaigns.map(c => c.nccCampaignId).filter(Boolean).slice(0, 5);
+  if (!sampleIds.length) return false;
+  const end = new Date(`${until}T00:00:00`);
+  const start = new Date(end); start.setDate(start.getDate() - 6);
+  const since = start.toISOString().slice(0, 10);
+  const basicFields = ['impCnt', 'clkCnt', 'salesAmt'];
+
+  for (const id of sampleIds) {
+    try {
+      const data = await naverApiRequest('GET', '/stats', {
+        id,
+        fields: JSON.stringify(basicFields),
+        timeRange: JSON.stringify({ since, until }),
+        timeIncrement: '1',
+      }, credentials);
+      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      if (!rows.length) continue;
+      const hasDates = rows.some(row => row.dateStart || row.date);
+      if (!hasDates && since !== until) {
+        naverNeedsDayByDayFallback.add(credentials.customerId);
+        console.log(`[naver-preflight] customerId=${credentials.customerId} timeIncrement=1 미지원 확인 → 긴 동기화 10일 구간/세부 30일 모드 사용`);
+        return true;
+      }
+      console.log(`[naver-preflight] customerId=${credentials.customerId} timeIncrement=1 일별 응답 정상`);
+      return false;
+    } catch (error) {
+      // preflight 자체가 실패해도 본 수집을 막지는 않습니다. 본 수집에서 기존 fallback 로직이
+      // 다시 판단합니다. 다만 실패 원인은 로그로 남겨 다음 진단이 가능하게 합니다.
+      console.log(`[naver-preflight] id=${id} 확인 실패, 다음 캠페인으로 진행: ${error?.message || error}`);
+    }
+  }
+  return false;
+}
+
 async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   const cacheKey = credentials.customerId;
   const cached = naverFunnelSupportCache.get(cacheKey);
@@ -1001,8 +1051,9 @@ async function naverFetchCreativeDailyMetrics(credentials, since, until) {
   // 예전엔 상위 300개로 제한했지만, 이 캠페인·소재가 많은 계정에서 순서상 300번째 밖으로
   // 밀려난 캠페인의 소재가 통째로 누락되는 문제가 있었습니다. 키워드(수만 개 단위)와 달리
   // 소재는 보통 수백~수천 개 수준이라 2000개까지는 안전하게 전체 수집합니다.
-  const ads = adsAll.slice(0, 2000);
-  if (adsAll.length > 2000) console.log(`[naver-ad-masters 경고] 소재가 ${adsAll.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
+  const creativeCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
+  const ads = adsAll.slice(0, creativeCap);
+  if (adsAll.length > creativeCap) console.log(`[naver-ad-masters 경고] 소재가 ${adsAll.length}개라 ${creativeCap}개까지만 수집합니다${creativeCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
   const master = new Map(ads.map(a => [a.nccAdId, a]));
   const rows = [];
   await mapWithConcurrency(ads, 6, async ad => {
@@ -2504,18 +2555,21 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           console.log(`[메모리] ${label} - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
           assertMemorySafe(label);
         };
-        const syncNaverRange = async (since, until, isLastSegment) => {
-          const detailSince = since;
+        const syncNaverRange = async (since, until, isLastSegment, detailFloor) => {
+          // 계정/캠페인은 전체 요청 기간을 수집하지만, 긴 백필에서 소재/키워드까지 수백 일을
+          // 반복 조회하면 커머스 대형 계정은 API 호출 수가 폭증해 실패합니다.
+          // detailFloor 이전 구간은 세부 수집을 건너뛰고, 겹치는 구간은 detailFloor부터만 수집합니다.
+          const detailSince = detailFloor && until >= detailFloor ? (since < detailFloor ? detailFloor : since) : null;
           // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
           // 키워드처럼 단계가 많은(캠페인→광고그룹→키워드→통계) 항목이 조용히 비어버리는 경우가 있어,
           // 순서대로 하나씩 처리합니다.
           logHeap(`구간 ${since}~${until} 시작`);
           const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
           logHeap(`캠페인 ${campaignRows.length}행 수집 후`);
-          const creativeRows = await naverFetchCreativeDailyMetrics(credentials, detailSince, until);
-          logHeap(`소재 ${creativeRows.length}행 수집 후`);
-          const keywordRows = await naverFetchKeywordDailyMetrics(credentials, detailSince, until);
-          logHeap(`키워드 ${keywordRows.length}행 수집 후`);
+          const creativeRows = detailSince ? await naverFetchCreativeDailyMetrics(credentials, detailSince, until) : [];
+          logHeap(detailSince ? `소재 ${creativeRows.length}행 수집 후` : `소재 수집 생략(장기 백필 세부 보존구간 이전)`);
+          const keywordRows = detailSince ? await naverFetchKeywordDailyMetrics(credentials, detailSince, until) : [];
+          logHeap(detailSince ? `키워드 ${keywordRows.length}행 수집 후` : `키워드 수집 생략(장기 백필 세부 보존구간 이전)`);
 
           // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
           // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
@@ -2531,8 +2585,8 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             (funnelCacheEntry.result.addToCart || funnelCacheEntry.result.completeRegistration || funnelCacheEntry.result.initiateCheckout));
           const needsFullRangeReport = !funnelSplitWorks; // 확인이 안 됐거나(아직 모름) 미지원으로 확인된 경우 모두 안전하게 리포트로 보정
           if (needsFullRangeReport || isLastSegment) try {
-            const reportSince = needsFullRangeReport ? detailSince : undefined; // undefined면 naverFetchDailyMetricsViaReport가 최근 최대 7일만 봄
-            const effectiveReportSince = reportSince || (() => { const d = new Date(`${until}T00:00:00`); d.setDate(d.getDate() - 6); const bounded = d.toISOString().slice(0, 10); return bounded < detailSince ? detailSince : bounded; })();
+            const reportSince = needsFullRangeReport ? since : undefined; // 분류 보정은 캠페인 전체 구간 기준; 세부 수집 생략 여부와 분리합니다.
+            const effectiveReportSince = reportSince || (() => { const d = new Date(`${until}T00:00:00`); d.setDate(d.getDate() - 6); const bounded = d.toISOString().slice(0, 10); return bounded < since ? since : bounded; })();
             const convDetail = await naverFetchDailyMetricsViaReport(credentials, effectiveReportSince, until);
             if (convDetail.length) {
               const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue'];
@@ -2658,14 +2712,26 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
           const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
           const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
           const since = sinceDate.toISOString().slice(0, 10);
-          // 오래된 구간부터 순차 처리 - 구간이 끝날 때마다 해당 구간의 행들이 저장되고
-          // 메모리에서 해제됩니다. (2026-08-31) 원래 90일 단위였다가 30일로 줄였는데, 그래도
-          // '벌크 조회가 날짜별로 안 쪼개져 하루씩 개별 조회해야 하는' 계정들(다시마전복수산,
-          // 완도군수산, 서울우리아이치과 등 다수)에서는 30일도 부족해 계속 메모리 한계에
-          // 부딪혔습니다. 이런 계정으로 이미 확인된 경우(naverNeedsDayByDayFallback)는
-          // 구간을 10일로 더 잘게 쪼개서 구간당 데이터량을 추가로 1/3로 줄입니다.
-          const segmentSize = naverNeedsDayByDayFallback.has(credentials.customerId) ? 10 : 30;
+          // 먼저 가벼운 preflight로 이 계정이 실제 일별 응답을 지원하는지 확인합니다.
+          // 기존 코드는 이 판단보다 먼저 segments를 만들어서, 첫 실행에서는 fallback 계정도
+          // 30일 구간으로 고정되는 버그가 있었습니다.
+          const dayByDayFallback = await naverPreflightDailyGranularity(credentials, until).catch(error => {
+            console.log(`[naver-preflight] 전체 확인 실패 - 기본 30일 구간으로 진행: ${error?.message || error}`);
+            return naverNeedsDayByDayFallback.has(credentials.customerId);
+          });
+          const segmentSize = dayByDayFallback ? 10 : 30;
           const segments = splitIntoChunks(since, until, segmentSize);
+
+          // 긴 기간 백필은 '계정/캠페인 전체 기간 + 세부 최근 구간'으로 처리합니다.
+          // 일반 계정은 최근 90일, 일자별 재조회가 필요한 대형 계정은 최근 30일만 소재/키워드를
+          // 다시 수집합니다. 기존 DB의 더 오래된 세부 행은 삭제하지 않습니다.
+          const requestedDetailDays = days > 90
+            ? (dayByDayFallback ? NAVER_FALLBACK_DETAIL_HISTORY_DAYS : NAVER_DETAIL_HISTORY_DAYS)
+            : days;
+          const detailFloorDate = new Date(`${until}T00:00:00`);
+          detailFloorDate.setDate(detailFloorDate.getDate() - Math.max(0, requestedDetailDays - 1));
+          const detailFloor = detailFloorDate.toISOString().slice(0, 10);
+          console.log(`[naver-sync] 전체 ${since}~${until}, 구간=${segmentSize}일, 소재/키워드 백필=${detailFloor}~${until}${dayByDayFallback ? ' (일자별 fallback 계정)' : ''}`);
           const total = { count: 0, campaignCount: 0, creativeCount: 0, keywordCount: 0 };
           let lastValidation = null;
           for (let i = 0; i < segments.length; i++) {
@@ -2674,7 +2740,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             const active = activeBackgroundSyncs.get(syncKey);
             if (active) active.progress = `구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 수집 중`;
             console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 시작: ${seg.since}~${seg.until}`);
-            const r = await syncNaverRange(seg.since, seg.until, isLast);
+            const r = await syncNaverRange(seg.since, seg.until, isLast, detailFloor);
             total.count += r.count; total.campaignCount += r.campaignCount; total.creativeCount += r.creativeCount; total.keywordCount += r.keywordCount;
             lastValidation = r.validation;
             console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 완료: 일별 ${r.count}행, 캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행`);
@@ -2690,7 +2756,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             }
           }
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count });
-          return { ok: true, channel, ...total, since, until, segments: segments.length, validation: lastValidation };
+          return { ok: true, channel, ...total, since, until, segments: segments.length, detailSince: detailFloor, validation: lastValidation };
         };
         const onNaverFail = async (error) => {
           const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
@@ -2710,7 +2776,7 @@ async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, er
             .finally(() => activeBackgroundSyncs.delete(syncKey));
           return sendJson(res, 202, {
             ok: true, background: true, channel, days,
-            message: `${days}일치 수집을 백그라운드에서 시작했습니다. 계정 규모에 따라 수십 분 걸릴 수 있으며, '데이터 수집 현황'에서 완료 여부를 확인하세요.`,
+            message: `${days}일치 수집을 백그라운드에서 시작했습니다. 계정·캠페인은 전체 기간을 수집하고, 대형 계정의 안정성을 위해 소재·키워드 장기 백필은 최근 구간만 수집합니다. '데이터 수집 현황'에서 완료 여부를 확인하세요.`,
           });
         }
 
