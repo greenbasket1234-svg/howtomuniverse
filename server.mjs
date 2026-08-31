@@ -779,6 +779,15 @@ function assertMemorySafe(context) {
 
 const naverFunnelSupportInFlight = new Map(); // customerId -> Promise (동시 호출 중복 방지용, 응답 오면 바로 제거)
 
+/**
+ * 어떤 계정은 캠페인/키워드 등을 하루 단위로 나눠서 재조회해야 합니다(벌크 조회가 날짜별로
+ * 안 쪼개져서 응답하는 계정). 이런 계정에서 키워드를 2,000개까지 처리하면 2,000개 × 최대
+ * 30일 = 최대 6만 번의 개별 API 호출이 발생해 메모리·시간이 감당 안 되는 사고가 있었습니다
+ * (실제 발생 - heapUsed 급증). 이 플래그가 켜진 계정만 키워드 처리 개수를 크게 줄이고,
+ * 정상적으로 벌크 조회가 되는 계정은 그대로 2,000개를 유지합니다.
+ */
+const naverNeedsDayByDayFallback = new Set(); // customerId 목록
+
 async function naverProbeFunnelFieldSupport(credentials, sampleId) {
   const cacheKey = credentials.customerId;
   const cached = naverFunnelSupportCache.get(cacheKey);
@@ -923,6 +932,7 @@ async function naverStatsForIdsDaily(credentials, ids, since, until) {
       for (const row of rows) output.push({ ...row, date: row.dateStart || row.date || range.since });
     } else {
       // 일부 계정은 timeIncrement를 무시하고 기간 합계를 돌려주므로, 정확한 기간 필터를 위해 일자별로 재조회합니다.
+      naverNeedsDayByDayFallback.add(credentials.customerId);
       let d = new Date(`${range.since}T00:00:00`);
       const end = new Date(`${range.until}T00:00:00`);
       let dayIndex = 0;
@@ -1068,8 +1078,14 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   for (const [tp, v] of byType) console.log(`[naver-keywords] 유형=${tp} 캠페인${v.campaigns}개 광고그룹${v.adgroups}개 키워드${v.keywords}개`);
   // 예전엔 상위 300개로 제한했지만, 순서상 300번째 밖으로 밀려난 캠페인의 키워드가 통째로
   // 누락되는 문제가 있었습니다(소재와 동일한 문제). 2000개까지는 안전하게 전체 수집합니다.
-  const selected = keywords.slice(0, 2000);
-  if (keywords.length > 2000) console.log(`[naver-keywords 경고] 키워드가 ${keywords.length}개라 2000개까지만 수집합니다. 초과분은 누락될 수 있습니다.`);
+  // 다만 이 계정이 캠페인 단계에서 이미 '일자별 재조회'가 필요한 것으로 확인됐다면(벌크 조회가
+  // 날짜별로 안 쪼개지는 계정), 키워드 2,000개 × 최대 30일 = 최대 6만 번의 개별 API 호출이
+  // 발생해 메모리·시간이 감당 안 되는 사고가 실제로 있었습니다. 이런 계정만 훨씬 적은 개수로
+  // 줄여서, 키워드별 세부 성과는 일부 누락되더라도 서버가 죽지 않고 계정/캠페인 단위 합계는
+  // 항상 정확하게 유지되도록 합니다.
+  const keywordCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
+  const selected = keywords.slice(0, keywordCap);
+  if (keywords.length > keywordCap) console.log(`[naver-keywords 경고] 키워드가 ${keywords.length}개라 ${keywordCap}개까지만 수집합니다${keywordCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
   const result = [];
   await mapWithConcurrency(selected, 6, async kw => {
     const adgroupId = kw.nccAdgroupId || '';
