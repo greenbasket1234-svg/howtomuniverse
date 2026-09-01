@@ -160,6 +160,7 @@ export type ContentProject = {
   status: ContentProjectStatus;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string;
 };
 
 const REF_KEY = 'howtom-content-references-v1';
@@ -234,13 +235,18 @@ export function duplicateTemplate(templateId: string) {
 }
 export function deleteTemplate(templateId: string) { saveTemplates(loadTemplates().filter(x=>x.templateId!==templateId)); }
 
-export function loadProjects() { const rows=parse<ContentProject[]>(PROJECT_KEY,[]); return Array.isArray(rows)?rows:[]; }
+export function loadProjects(includeDeleted = false) { const rows=parse<ContentProject[]>(PROJECT_KEY,[]); const all=Array.isArray(rows)?rows:[]; return includeDeleted?all:all.filter(x=>!x.deletedAt); }
 export function saveProjects(rows: ContentProject[]) { localStorage.setItem(PROJECT_KEY,JSON.stringify(rows)); emit('howtom:content-projects-changed', rows); }
-export function upsertProject(row: ContentProject) { const rows=loadProjects(); saveProjects(rows.some(x=>x.projectId===row.projectId)?rows.map(x=>x.projectId===row.projectId?row:x):[row,...rows]); return row; }
+export function upsertProject(row: ContentProject) { const rows=loadProjects(true); saveProjects(rows.some(x=>x.projectId===row.projectId)?rows.map(x=>x.projectId===row.projectId?row:x):[row,...rows]); return row; }
 export function createProject(input: Omit<ContentProject,'projectId'|'createdAt'|'updatedAt'>) { const stamp=now(); return upsertProject({...input,projectId:id('project'),createdAt:stamp,updatedAt:stamp}); }
-export function patchProject(projectId:string,patch:Partial<ContentProject>){const rows=loadProjects();const current=rows.find(x=>x.projectId===projectId);if(!current)return null;const next={...current,...patch,updatedAt:now()};saveProjects(rows.map(x=>x.projectId===projectId?next:x));return next;}
-export function cloneProject(projectId:string){const current=loadProjects().find(x=>x.projectId===projectId);if(!current)return null;const {projectId:_projectId,createdAt:_createdAt,updatedAt:_updatedAt,...rest}=current;return createProject({...rest,title:`${current.title} 복제`,status:'draft',resultAssetIds:[]});}
-export function deleteProject(projectId:string){saveProjects(loadProjects().filter(x=>x.projectId!==projectId));}
+export function patchProject(projectId:string,patch:Partial<ContentProject>){const rows=loadProjects(true);const current=rows.find(x=>x.projectId===projectId);if(!current)return null;const next={...current,...patch,updatedAt:now()};saveProjects(rows.map(x=>x.projectId===projectId?next:x));return next;}
+export function cloneProject(projectId:string){const current=loadProjects(true).find(x=>x.projectId===projectId);if(!current)return null;const {projectId:_projectId,createdAt:_createdAt,updatedAt:_updatedAt,deletedAt:_deletedAt,...rest}=current;return createProject({...rest,title:`${current.title} 복제`,status:'draft',resultAssetIds:[]});}
+// 예전엔 즉시 영구 삭제였습니다. 실수로 지운 제작물을 되살릴 방법이 없어서, 이제는
+// 휴지통으로 보내고(deletedAt 표시) 복원하거나(restoreProject) 휴지통에서 영구
+// 삭제(permanentlyDeleteProject)할 수 있게 분리했습니다.
+export function deleteProject(projectId:string){const rows=loadProjects(true);saveProjects(rows.map(x=>x.projectId===projectId?{...x,deletedAt:now(),updatedAt:now()}:x));}
+export function restoreProject(projectId:string){const rows=loadProjects(true);saveProjects(rows.map(x=>x.projectId===projectId?{...x,deletedAt:undefined,updatedAt:now()}:x));}
+export function permanentlyDeleteProject(projectId:string){saveProjects(loadProjects(true).filter(x=>x.projectId!==projectId));}
 
 export function projectToTemplate(project: ContentProject) {
   let blocks: TemplateBlock[];

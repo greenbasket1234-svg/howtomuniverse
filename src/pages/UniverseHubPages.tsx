@@ -1,26 +1,11 @@
-import { ArrowUpRight, BarChart3, Bot, Clapperboard, Eye, FileText, FolderOpen, Image as ImageIcon, Lightbulb, PenLine, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { ArrowUpRight, BarChart3, Bot, Clapperboard, Eye, FileText, FolderOpen, Image as ImageIcon, Lightbulb, PenLine, Settings2, ShieldCheck, Sparkles, Trash2, Users } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
-const plannedModules: Record<string, { title: string; description: string; group: string }> = {
-  'competitor-analysis': { title: '경쟁사 분석', description: '경쟁사 광고와 콘텐츠를 수집하고 성과 구조를 비교하는 기능입니다.', group: '인사이트' },
-  'ad-trends': { title: '광고 트렌드', description: '업종별 광고 흐름과 인기 소재 유형을 정리하는 기능입니다.', group: '인사이트' },
-  'hook-cta': { title: '후킹·CTA 분석', description: '광고 문구의 후킹 방식과 행동 유도 문구를 비교 분석하는 기능입니다.', group: '인사이트' },
-  'ai-recommendations': { title: 'AI 추천', description: '성과 데이터와 콘텐츠 데이터를 연결해 실행 가능한 제안을 만드는 기능입니다.', group: '인사이트' },
-  references: { title: '레퍼런스', description: 'SNS와 웹에서 이미지·영상·글 레퍼런스를 수집하고 보관하는 기능입니다.', group: '콘텐츠' },
-  'image-creation': { title: '이미지 제작', description: '광고 기획과 브랜드 정보를 바탕으로 이미지 제작을 지원하는 기능입니다.', group: '콘텐츠' },
-  'content-trash': { title: '콘텐츠 휴지통', description: '삭제한 제작물을 일정 기간 보관하고 복원하는 기능입니다.', group: '콘텐츠' },
-  'reference-automation': { title: '레퍼런스 자동 수집', description: '등록 키워드와 계정을 기준으로 신규 레퍼런스를 주기적으로 수집하는 기능입니다.', group: 'AI 자동화' },
-  'blog-automation': { title: '블로그 자동 생성', description: '예약된 주제와 키워드로 블로그 초안을 자동 생성하는 기능입니다.', group: 'AI 자동화' },
-  'copy-automation': { title: '광고 문구 자동 생성', description: '성과와 시즌 정보를 기준으로 광고 문구를 자동 생성하는 기능입니다.', group: 'AI 자동화' },
-  'brand-assets': { title: '로고·브랜드 자료', description: '광고주별 로고, 브랜드 색상, 문구 규칙을 관리하는 기능입니다.', group: '자산관리' },
-  prompts: { title: '프롬프트', description: '업무별 AI 프롬프트를 저장하고 공유하는 기능입니다.', group: '자산관리' },
-  'advertiser-folders': { title: '광고주별 폴더', description: '광고주 단위로 이미지·영상·문서·보고서를 정리하는 기능입니다.', group: '자산관리' },
-  'asset-trash': { title: '자산 휴지통', description: '삭제한 파일을 일정 기간 보관하고 복원하는 기능입니다.', group: '자산관리' },
-  'advertiser-subscription': { title: '계약·구독', description: '광고주별 계약, 사용 기능, 월 구독료와 사용량을 관리하는 기능입니다.', group: '광고주' },
-  'admin-billing': { title: '구독·결제 관리', description: '상품, 결제 내역, 미납과 갱신 상태를 관리하는 기능입니다.', group: '관리자' },
-  'admin-ai-usage': { title: 'AI 사용량', description: '광고주와 사용자별 토큰·크레딧 사용량과 비용 상한을 관리하는 기능입니다.', group: '관리자' },
-  'admin-storage': { title: '저장 공간', description: '파일 저장량, 보관 기간, 자동 삭제 정책을 관리하는 기능입니다.', group: '관리자' },
-};
+// (2026-09-01) 예전엔 여기에 '아직 준비 중'인 기능 목록을 하나하나 적어뒀는데, 인사이트·
+// 콘텐츠·AI 자동화·자산관리·관리자 카테고리를 전부 점검해서 실제로 구현했더니 목록에
+// 있던 항목 전부가 이제 실제 화면(다른 경로)으로 존재하게 됐습니다. 그래서 이 표 자체가
+// 낡은 데이터가 되어 제거했습니다 - 지금 이 페이지(/planned/:moduleKey)에 남아있는 건
+// "앞으로 새로 기획될 기능"을 위한 범용 안내 화면 하나뿐입니다.
 
 const hubCards = {
   insights: [
@@ -44,12 +29,15 @@ const hubCards = {
     ['제작물 보관함', '제작 프로젝트와 결과 자산을 광고주·캠페인 기준으로 확인합니다.', '/content/productions', FolderOpen],
     ['레퍼런스', '광고 참고 소재를 수집·태그·분류하고 제작에 바로 활용합니다.', '/content/references', Lightbulb],
     ['템플릿', '광고·블로그·보고서·제안서 제작 구조와 규칙을 표준화합니다.', '/content/templates', Settings2],
+    ['콘텐츠 휴지통', '삭제한 제작 프로젝트를 복원하거나 영구 삭제합니다.', '/content/trash', Trash2],
   ],
   assets: [
     ['전체 자산', '이미지·영상·문서·광고 소재를 하나의 Asset 인덱스로 관리합니다.', '/assets', FolderOpen],
     ['광고주별 폴더', '광고주 단위로 제작물·보고서·소재를 자동 분류합니다.', '/assets/advertisers', Users],
     ['광고 소재', '실제 광고 creativeId와 원본 자산·성과를 연결합니다.', '/assets/creatives', BarChart3],
     ['브랜드 자료', '로고와 브랜드 규칙을 광고주별로 관리합니다.', '/assets/brand', Settings2],
+    ['프롬프트', '업무별 AI 프롬프트를 저장하고 팀과 공유합니다.', '/assets/prompts', Bot],
+    ['휴지통', '삭제한 자산을 복원하거나 영구 삭제합니다.', '/assets/trash', Trash2],
   ],
   admin: [
     ['사용자·권한', '역할별 메뉴 접근 권한을 관리합니다.', '/settings/users-permissions', ShieldCheck],
@@ -68,7 +56,6 @@ export function ContentHomePage(){ return <HubPage type="content" title="콘텐�
 export function AdminHomePage(){ return <HubPage type="admin" title="관리자" description="사용자, 권한, 사용량과 시스템 운영 상태를 관리합니다."/>; }
 
 export function UniversePlannedPage(){
-  const { moduleKey = '' } = useParams();
-  const item = plannedModules[moduleKey] ?? { title: '준비 중인 기능', description: '하우투엠 유니버스 확장 계획에 포함된 기능입니다.', group: '유니버스' };
+  const item = { title: '준비 중인 기능', description: '하우투엠 유니버스 확장 계획에 포함된 기능입니다.', group: '유니버스' };
   return <div className="universe-planned-page"><div className="planned-orbit"><span/><i/></div><span className="universe-eyebrow">{item.group}</span><h1>{item.title}</h1><p>{item.description}</p><div className="planned-notice"><strong>기획과 메뉴 배치는 완료되었습니다.</strong><span>현재 단계에서는 기존 기능을 안정적으로 통합한 뒤 순서대로 실제 기능을 구현합니다.</span></div><Link className="btn btn-primary universe-large-button" to="/home">홈으로 돌아가기</Link></div>;
 }
