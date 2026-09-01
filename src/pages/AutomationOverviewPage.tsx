@@ -11,7 +11,7 @@ function dayKey(value: string | Date) {
   const d=value instanceof Date?value:new Date(value); if(Number.isNaN(+d))return '';
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
-const typeLabel:Record<string,string>={campaign_on:'캠페인 ON',campaign_off:'캠페인 OFF',campaign_schedule:'캠페인 예약',data_sync:'데이터 동기화',notification:'알림',report_generation:'보고서 생성',ai_analysis:'AI 분석',content_generation:'콘텐츠 생성'};
+const typeLabel:Record<string,string>={campaign_on:'캠페인 ON',campaign_off:'캠페인 OFF',campaign_schedule:'캠페인 예약',data_sync:'데이터 동기화',notification:'알림',report_generation:'보고서 생성',ai_analysis:'AI 분석',content_generation:'콘텐츠 생성',blog_generation:'블로그 생성'};
 const statusLabel:Record<string,string>={active:'ON',paused:'일시중지',disabled:'OFF',success:'성공',failed:'실패',running:'실행 중',queued:'대기',skipped:'건너뜀'};
 
 export function AutomationOverviewPage(){
@@ -33,11 +33,12 @@ export function AutomationOverviewPage(){
   const notificationJobs=jobs.filter(j=>j.jobType==='notification');
   const reportJobs=jobs.filter(j=>j.jobType==='report_generation');
   const contentJobs=jobs.filter(j=>j.jobType==='content_generation');
+  const blogJobs=jobs.filter(j=>j.jobType==='blog_generation');
   const upcomingToday=active.flatMap(j=>nextOccurrences(j.schedule,8).filter(d=>dayKey(d)===today).map(d=>({kind:'planned' as const,at:d,job:j}))).sort((a,b)=>+a.at-+b.at);
   const runItems=todayRuns.map(r=>({kind:'run' as const,at:new Date(r.startedAt||r.createdAt),run:r}));
   const timeline=[...runItems,...upcomingToday].sort((a,b)=>+a.at-+b.at).slice(0,20);
   const issues=[...failures.map(r=>({title:r.jobName,detail:r.errorMessage||'실행 실패 기록을 확인해 주세요.',link:'/automation/execution-logs'})),...conflicts.map(c=>({title:c.title,detail:c.detail,link:'/automation/scheduled-jobs'}))].slice(0,5);
-  const routeFor=(j:AutomationJob)=>j.jobType==='data_sync'?'/automation/data-collection':['campaign_on','campaign_off','campaign_schedule'].includes(j.jobType)?'/automation/scheduled-jobs':j.jobType==='report_generation'?'/automation/report-generation':j.jobType==='content_generation'?'/automation/ad-copy':j.jobType==='notification'?'/automation/notifications':'/automation/scheduled-jobs';
+  const routeFor=(j:AutomationJob)=>j.jobType==='data_sync'?'/automation/data-collection':['campaign_on','campaign_off','campaign_schedule'].includes(j.jobType)?'/automation/scheduled-jobs':j.jobType==='report_generation'?'/automation/report-generation':j.jobType==='content_generation'?'/automation/ad-copy':j.jobType==='blog_generation'?'/automation/blog':j.jobType==='notification'?'/automation/notifications':'/automation/scheduled-jobs';
   return <div className="automation-engine-page">
     <PageHeader title="자동화 현황" description="HOWTOM 자동화의 활성 상태, 오늘 실행 기록, 다음 실행과 확인 필요 항목을 한 화면에서 봅니다." action={<button className="btn secondary" onClick={()=>setRevision(x=>x+1)}><RefreshCw size={15}/> 새로고침</button>}/>
     <div className="automation-pre-revenue-note"><b>Pre-Revenue 운영 모드</b><span>현재는 브라우저에서 설정·다음 실행 계산·기록 관제를 수행합니다. 실제 24시간 백그라운드 실행은 서버 Executor 연결 후 활성화됩니다.</span></div>
@@ -55,6 +56,7 @@ export function AutomationOverviewPage(){
       <Link to="/automation/scheduled-jobs" className="auto-status-card"><div><CalendarClock size={18}/><b>캠페인 예약</b></div><strong>{campaignJobs.length?`${campaignJobs.length}개 일정`:'예약 없음'}</strong><small>캠페인 관리의 일정도 함께 표시</small></Link>
       <Link to="/automation/report-generation" className="auto-status-card"><div><Activity size={18}/><b>보고서 자동 생성</b></div><strong>{reportJobs.length?`${reportJobs.filter(j=>j.status==='active').length}개 설정`:'설정 없음'}</strong><small>월간 보고서·다음달 제안서 초안 자동화</small></Link>
       <Link to="/automation/ad-copy" className="auto-status-card"><div><Activity size={18}/><b>광고 문구 자동 생성</b></div><strong>{contentJobs.length?`${contentJobs.filter(j=>j.status==='active').length}개 설정`:'설정 없음'}</strong><small>현재 템플릿 기반 · AI API 후순위</small></Link>
+      <Link to="/automation/blog" className="auto-status-card"><div><Activity size={18}/><b>블로그 자동 생성</b></div><strong>{blogJobs.length?`${blogJobs.filter(j=>j.status==='active').length}개 설정`:'설정 없음'}</strong><small>외부 AI 연결 시 자동 생성</small></Link>
       <Link to="/automation/notifications" className="auto-status-card"><div><AlertTriangle size={18}/><b>알림 자동화</b></div><strong>{notificationJobs.length?`${notificationJobs.length}개 규칙`:'설정 없음'}</strong><small>내부 알림 · 외부 채널 후순위</small></Link>
     </section>
 

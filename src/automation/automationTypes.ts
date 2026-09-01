@@ -6,7 +6,8 @@ export type AutomationJobType =
   | 'notification'
   | 'report_generation'
   | 'ai_analysis'
-  | 'content_generation';
+  | 'content_generation'
+  | 'blog_generation';
 
 export type AutomationJobStatus = 'active' | 'paused' | 'disabled';
 export type AutomationImplementationStatus = 'available' | 'mock' | 'not_implemented';
