@@ -1802,6 +1802,180 @@ async function callExternalBlogAi(brief) {
   throw new Error('BLOG_AI_PROVIDER가 설정되지 않았습니다.');
 }
 
+/* ========================================================================
+   이미지 소재 제작 — 외부 AI 이미지 생성 API 연동
+   -----------------------------------------------------------------------
+   - IMAGE_AI_PROVIDER 가 설정되어 있지 않으면(기본값) 미구현 상태로, 화면에는
+     "AI 이미지 생성이 아직 연결되지 않았습니다"가 정직하게 표시됩니다.
+   - 'openai' | 'custom' 중 하나로 설정하면 실제 외부 AI가 이미지를 생성합니다.
+   - custom은 IMAGE_AI_API_URL 로 { prompt, size, plan } 을 POST하고
+     { images: [{ url }] } 형태의 JSON을 그대로 돌려주는 사내/외부 엔드포인트를
+     붙일 때 사용합니다. (블로그 원고 생성과 동일한 설계 패턴입니다.)
+   ======================================================================== */
+const IMAGE_AI_PROVIDER = (process.env.IMAGE_AI_PROVIDER || '').trim().toLowerCase();
+const IMAGE_AI_API_KEY = process.env.IMAGE_AI_API_KEY || '';
+const IMAGE_AI_API_URL = process.env.IMAGE_AI_API_URL || '';
+const IMAGE_AI_MODEL = process.env.IMAGE_AI_MODEL || '';
+
+function imageAiConfigured() {
+  if (IMAGE_AI_PROVIDER === 'openai') return Boolean(IMAGE_AI_API_KEY);
+  if (IMAGE_AI_PROVIDER === 'custom') return Boolean(IMAGE_AI_API_URL);
+  return false;
+}
+
+function imageAiStatus() {
+  return { configured: imageAiConfigured(), provider: IMAGE_AI_PROVIDER || null };
+}
+
+/** 이미지 기획(표현방식·피사체·배경·문구·비율)을 하나의 생성 프롬프트 문장으로 정리합니다. */
+function buildImageAiPrompt(plan) {
+  const parts = [
+    plan.visualType && `${plan.visualType} 스타일`,
+    plan.subject && `메인 피사체: ${plan.subject}`,
+    plan.background && `배경: ${plan.background}`,
+    plan.mainText && `이미지 안에 강조할 메인 문구(참고용, 실제 텍스트 렌더링은 부정확할 수 있음): "${plan.mainText}"`,
+  ].filter(Boolean);
+  const base = parts.join(', ') || '광고용 제품 이미지';
+  return plan.extraPrompt ? `${base}. 추가 요청: ${plan.extraPrompt}` : base;
+}
+
+const IMAGE_SIZE_BY_RATIO = { '1:1': '1024x1024', '9:16': '1024x1792', '16:9': '1792x1024' };
+
+async function callExternalImageAi(plan) {
+  const prompt = buildImageAiPrompt(plan);
+  const size = IMAGE_SIZE_BY_RATIO[plan.ratio] || '1024x1024';
+
+  if (IMAGE_AI_PROVIDER === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${IMAGE_AI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: IMAGE_AI_MODEL || 'dall-e-3', prompt, size, n: 1 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    const images = (data.data || []).map(d => ({ url: d.url || null, base64: d.b64_json || null, revisedPrompt: d.revised_prompt || prompt }));
+    if (!images.length) throw new Error('AI가 이미지를 반환하지 않았습니다.');
+    return { images, prompt };
+  }
+
+  if (IMAGE_AI_PROVIDER === 'custom') {
+    const res = await fetch(IMAGE_AI_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, size, plan }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `외부 이미지 AI API HTTP ${res.status}`);
+    if (!Array.isArray(data.images) || !data.images.length) throw new Error('AI 응답 형식이 올바르지 않습니다. (images 필요)');
+    return { images: data.images.map(img => ({ url: img.url || null, base64: img.base64 || null, revisedPrompt: img.revisedPrompt || prompt })), prompt };
+  }
+
+  throw new Error('IMAGE_AI_PROVIDER가 설정되지 않았습니다.');
+}
+
+/* ========================================================================
+   광고 문구 자동 생성 — 외부 AI 연동
+   -----------------------------------------------------------------------
+   - AD_COPY_AI_PROVIDER 가 설정되어 있지 않으면(기본값) 프론트의 템플릿/규칙
+     기반 생성만 동작합니다(이건 서버 연결 없이도 이미 정상 작동합니다).
+   - 'anthropic' | 'openai' | 'custom' 중 하나로 설정하면 실제 외부 AI가
+     캠페인 정보를 바탕으로 서로 다른 각도의 문구 안을 생성합니다.
+   ======================================================================== */
+const AD_COPY_AI_PROVIDER = (process.env.AD_COPY_AI_PROVIDER || '').trim().toLowerCase();
+const AD_COPY_AI_API_KEY = process.env.AD_COPY_AI_API_KEY || '';
+const AD_COPY_AI_API_URL = process.env.AD_COPY_AI_API_URL || '';
+const AD_COPY_AI_MODEL = process.env.AD_COPY_AI_MODEL || '';
+
+function adCopyAiConfigured() {
+  if (AD_COPY_AI_PROVIDER === 'anthropic' || AD_COPY_AI_PROVIDER === 'openai') return Boolean(AD_COPY_AI_API_KEY);
+  if (AD_COPY_AI_PROVIDER === 'custom') return Boolean(AD_COPY_AI_API_URL);
+  return false;
+}
+function adCopyAiStatus() {
+  return { configured: adCopyAiConfigured(), provider: AD_COPY_AI_PROVIDER || null };
+}
+
+function buildAdCopyAiPrompts(brief) {
+  const system = [
+    '당신은 성과형 디지털 광고 카피라이터입니다. 아래 규칙을 반드시 지키세요.',
+    '1) 사실이 아닌 효능·효과·수치를 지어내지 않는다.',
+    '2) 근거 없는 최상급 표현(업계 1위, 100% 효과 등)을 쓰지 않는다.',
+    '3) 각 안은 서로 다른 설득 각도(angle)를 가져야 한다.',
+    '',
+    '반드시 아래 JSON 형식으로만 응답하세요. 코드블록이나 설명 텍스트 없이 순수 JSON만 출력합니다.',
+    '{"variants":[{"label":"A안","angle":"","headline":"","body":"","description":"","cta":""}]}',
+  ].join('\n');
+  const user = [
+    `광고주: ${brief.advertiserName}`,
+    `매체: ${brief.channel}`,
+    `상품/서비스: ${brief.productName}`,
+    `캠페인 목적: ${brief.objective}`,
+    brief.targetAudience && `타겟: ${brief.targetAudience}`,
+    brief.keyBenefit && `핵심 혜택: ${brief.keyBenefit}`,
+    brief.hookType && `선호 후킹 유형: ${brief.hookType}`,
+    brief.tone && `톤앤매너: ${brief.tone}`,
+    `CTA: ${brief.cta || '더 알아보기'}`,
+    `${Math.max(1, Math.min(5, brief.variantCount || 3))}개의 서로 다른 광고 문구 안을 만들어주세요.`,
+  ].filter(Boolean).join('\n');
+  return { system, user };
+}
+
+function parseAdCopyAiJson(text) {
+  const cleaned = String(text ?? '').replace(/```json/gi, '').replace(/```/g, '').trim();
+  let parsed;
+  try { parsed = JSON.parse(cleaned); } catch { throw new Error('AI 응답을 JSON으로 해석할 수 없습니다.'); }
+  if (!Array.isArray(parsed.variants) || !parsed.variants.length) throw new Error('AI 응답 형식이 올바르지 않습니다. (variants 필요)');
+  return parsed.variants.slice(0, 5).map((v, i) => ({
+    variantId: makeId('copy'),
+    label: cleanText(String(v?.label || `${String.fromCharCode(65 + i)}안`), 20),
+    angle: cleanText(String(v?.angle || ''), 40),
+    headline: cleanText(String(v?.headline || ''), 200),
+    body: cleanText(String(v?.body || ''), 500),
+    description: cleanText(String(v?.description || ''), 200),
+    cta: cleanText(String(v?.cta || ''), 40),
+  }));
+}
+
+async function callExternalAdCopyAi(brief) {
+  const { system, user } = buildAdCopyAiPrompts(brief);
+
+  if (AD_COPY_AI_PROVIDER === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': AD_COPY_AI_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: AD_COPY_AI_MODEL || 'claude-sonnet-4-6', max_tokens: 1500, system, messages: [{ role: 'user', content: user }] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `Anthropic API HTTP ${res.status}`);
+    const text = Array.isArray(data.content) ? data.content.map(b => b.text || '').join('') : '';
+    return parseAdCopyAiJson(text);
+  }
+
+  if (AD_COPY_AI_PROVIDER === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${AD_COPY_AI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: AD_COPY_AI_MODEL || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.8 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    const text = data?.choices?.[0]?.message?.content || '';
+    return parseAdCopyAiJson(text);
+  }
+
+  if (AD_COPY_AI_PROVIDER === 'custom') {
+    const res = await fetch(AD_COPY_AI_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemPrompt: system, userPrompt: user, brief }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `외부 AI API HTTP ${res.status}`);
+    if (Array.isArray(data.variants)) return parseAdCopyAiJson(JSON.stringify(data));
+    throw new Error('AI 응답 형식이 올바르지 않습니다. (variants 필요)');
+  }
+
+  throw new Error('AD_COPY_AI_PROVIDER가 설정되지 않았습니다.');
+}
+
 function base64url(input) {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -3746,6 +3920,43 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     if (req.method === 'GET' && pathname === '/api/blog/ai-status') {
       return sendJson(res, 200, blogAiStatus());
+    }
+
+    if (req.method === 'GET' && pathname === '/api/ad-copy/ai-status') {
+      return sendJson(res, 200, adCopyAiStatus());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/ad-copy/generate') {
+      const body = await readJson(req);
+      if (!body.advertiserName || !body.productName) return sendJson(res, 400, { error: '광고주명과 상품/서비스명이 필요합니다.' });
+      if (!adCopyAiConfigured()) return sendJson(res, 400, { error: 'AI 문구 생성이 아직 연결되지 않았습니다. 관리자가 AD_COPY_AI_PROVIDER를 서버에 연결해주세요. 그 전까지는 템플릿 기반 생성을 이용하세요.' });
+      try {
+        const variants = await callExternalAdCopyAi(body);
+        return sendJson(res, 200, { variants, generator: `external-ai:${AD_COPY_AI_PROVIDER}` });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? `AI 문구 생성에 실패했습니다: ${error.message}` : 'AI 문구 생성에 실패했습니다. 다시 시도해주세요.' });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/images/ai-status') {
+      return sendJson(res, 200, imageAiStatus());
+    }
+
+    if (req.method === 'POST' && pathname === '/api/images/generate') {
+      const body = await readJson(req);
+      const plan = {
+        visualType: cleanText(body.visualType || '', 100), subject: cleanText(body.subject || '', 200),
+        background: cleanText(body.background || '', 200), mainText: cleanText(body.mainText || '', 200),
+        ratio: cleanText(body.ratio || '', 20), extraPrompt: cleanText(body.extraPrompt || '', 500),
+      };
+      if (!plan.subject && !plan.extraPrompt) return sendJson(res, 400, { error: '메인 피사체 또는 추가 요청 중 하나는 입력하세요.' });
+      if (!imageAiConfigured()) return sendJson(res, 400, { error: 'AI 이미지 생성이 아직 연결되지 않았습니다. 관리자가 외부 이미지 AI API를 연결해주세요.' });
+      try {
+        const result = await callExternalImageAi(plan);
+        return sendJson(res, 200, { generator: `external-ai:${IMAGE_AI_PROVIDER}`, ...result });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? `AI 이미지 생성에 실패했습니다: ${error.message}` : 'AI 이미지 생성에 실패했습니다. 다시 시도해주세요.' });
+      }
     }
 
     if (req.method === 'POST' && pathname === '/api/blog/generate') {

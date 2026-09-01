@@ -90,7 +90,29 @@ IMAGE_AI_API_URL=https://내부서버주소/generate
 
 ---
 
-## 5. (참고용 — 이번 세션과 무관하게 이미 코드에 있던 항목)
+## 5. 광고 문구 자동 생성 (AI 자동화 > 광고 문구 자동 생성)
+
+**안 하면**: 템플릿/규칙 기반 생성(서버 연결 없이 항상 정상 작동)만 쓸 수 있고,
+설정에서 OpenAI/Claude를 선택해도 "미연동" 안내가 뜨며 실행이 "보류"로 기록됩니다.
+
+**하려면** (블로그와 동일한 방식):
+```
+AD_COPY_AI_PROVIDER=anthropic
+AD_COPY_AI_API_KEY=발급받은키
+```
+또는
+```
+AD_COPY_AI_PROVIDER=openai
+AD_COPY_AI_API_KEY=발급받은키
+AD_COPY_AI_MODEL=gpt-4o-mini   (생략 가능)
+```
+
+> 2·3번에서 이미 `ANTHROPIC_API_KEY`를 발급받으셨다면, `AD_COPY_AI_PROVIDER=anthropic`에
+> `AD_COPY_AI_API_KEY`로 같은 키를 재사용하시면 됩니다.
+
+---
+
+## 6. (참고용 — 이번 세션과 무관하게 이미 코드에 있던 항목)
 
 아래 둘은 제가 이번에 만든 게 아니라 원래부터 코드에 있던 기능인데, 같이 체크리스트에
 넣어드립니다.
@@ -108,15 +130,6 @@ NOTION_PARENT_PAGE_ID=보고서를저장할상위페이지ID
 GOOGLE_SHEETS_WEBHOOK_URL=Apps Script 웹앱URL
 ```
 Google Sheets에서 Apps Script로 웹앱을 배포한 뒤 그 URL을 넣습니다.
-
----
-
-## 광고 문구 자동 생성은 왜 목록에 없나요?
-
-**AI 자동화 > 광고 문구 자동 생성**은 의도적으로 템플릿/규칙 기반으로만 동작하도록
-설계되어 있고, 화면에도 "OpenAI/Claude (미연동)"이라고 선택은 할 수 있게 해뒀지만
-실제로 연결하는 코드는 아직 안 만들었습니다. 필요하시면 이것도 3·4번과 같은 패턴으로
-추가해드릴 수 있습니다 — 말씀해주세요.
 
 ---
 
