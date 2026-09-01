@@ -51,7 +51,7 @@ const CREATE_TARGETS: { key: string; label: string; path: string }[] = [
   { key: 'ad_copy', label: '광고 문구 만들기', path: '/content/ad-creation' },
   { key: 'blog', label: '블로그 글 만들기', path: '/content/blog' },
   { key: 'video_script', label: '영상 대본 만들기', path: '/content/video-scripts' },
-  { key: 'image_ad', label: '이미지 광고 기획 만들기', path: '/planned/image-creation' },
+  { key: 'image_ad', label: '이미지 광고 기획 만들기', path: '/content/image-creation' },
   { key: 'document', label: '문서에 추가', path: '/content/documents' },
 ];
 

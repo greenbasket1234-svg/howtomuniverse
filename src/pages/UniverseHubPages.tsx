@@ -1,4 +1,4 @@
-import { ArrowUpRight, BarChart3, Bot, Clapperboard, Eye, FileText, FolderOpen, Lightbulb, PenLine, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { ArrowUpRight, BarChart3, Bot, Clapperboard, Eye, FileText, FolderOpen, Image as ImageIcon, Lightbulb, PenLine, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
 const plannedModules: Record<string, { title: string; description: string; group: string }> = {
@@ -37,6 +37,7 @@ const hubCards = {
   ],
   content: [
     ['광고 제작', '브리프·후킹·카피·CTA·소재 기획을 한 화면에서 제작합니다.', '/content/ad-creation', Sparkles],
+    ['이미지 제작', 'AI로 이미지 소재를 생성하고 마음에 드는 결과만 자산으로 저장합니다.', '/content/image-creation', ImageIcon],
     ['블로그 제작', '광고주 문체·자산·SEO·업종별 규정 검수와 의료광고 심의 관리를 한곳에서 진행합니다.', '/content/blog', PenLine],
     ['영상 대본', '릴스·쇼츠·광고 영상 대본과 장면 구성을 작성합니다.', '/content/video-scripts', Clapperboard],
     ['문서 작성', '기획서·제안 초안·전략서 등 업무 문서를 블록 단위로 작성합니다.', '/content/documents', FileText],
@@ -48,7 +49,7 @@ const hubCards = {
     ['전체 자산', '이미지·영상·문서·광고 소재를 하나의 Asset 인덱스로 관리합니다.', '/assets', FolderOpen],
     ['광고주별 폴더', '광고주 단위로 제작물·보고서·소재를 자동 분류합니다.', '/assets/advertisers', Users],
     ['광고 소재', '실제 광고 creativeId와 원본 자산·성과를 연결합니다.', '/assets/creatives', BarChart3],
-    ['브랜드 자료', '로고와 브랜드 규칙을 광고주별로 관리합니다.', '/planned/brand-assets', Settings2],
+    ['브랜드 자료', '로고와 브랜드 규칙을 광고주별로 관리합니다.', '/assets/brand', Settings2],
   ],
   admin: [
     ['사용자·권한', '역할별 메뉴 접근 권한을 관리합니다.', '/settings/users-permissions', ShieldCheck],

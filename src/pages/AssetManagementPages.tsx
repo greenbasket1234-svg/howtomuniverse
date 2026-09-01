@@ -12,6 +12,7 @@ import {
   ensureAdvertiserFolders, formatDuration, humanFileSize, loadAssets, loadFolders, moveAssetsToTrash,
   patchAsset, permanentlyDeleteAssets, restoreAssets, saveFolders, syncExistingAssets
 } from '../utils/assetStore';
+import { BrandProfile, loadBrandProfile, saveBrandProfile } from '../utils/brandProfileStore';
 
 const TYPE_LABELS: Record<AssetType, string> = { image:'이미지', video:'영상', document:'문서', creative:'광고 소재', template:'템플릿', brand:'로고·브랜드', reference:'레퍼런스', other:'기타' };
 const STATUS_LABELS: Record<AssetStatus, string> = { draft:'초안', review:'검토 중', approved:'승인', active:'사용 중', archived:'보관', expired:'만료' };
@@ -114,4 +115,67 @@ export function AdvertiserAssetFoldersPage(){
 export function AssetTrashPage(){
   const [assets,refresh]=useAssets(); const deleted=assets.filter(a=>a.deletedAt).sort((a,b)=>(b.deletedAt||'').localeCompare(a.deletedAt||'')); const [selected,setSelected]=useState<string[]>([]); const toggle=(id:string)=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
   return <><PageHeader title="휴지통" description="삭제한 자산을 복원하거나 영구 삭제합니다. 서버 단계에서는 30일 자동 정리 정책으로 연결할 예정입니다."/>{selected.length>0&&<div className="asset-bulkbar"><b>{selected.length}개 선택</b><button onClick={()=>{restoreAssets(selected);setSelected([]);refresh();}}><RotateCcw size={15}/> 복원</button><button onClick={async()=>{if(confirm('선택한 자산을 영구 삭제할까요?')){await permanentlyDeleteAssets(selected);setSelected([]);refresh();}}}><Trash2 size={15}/> 영구 삭제</button></div>}<section className="card asset-list-wrap">{deleted.length?<table className="ops-table asset-list-table"><thead><tr><th/><th>이름</th><th>광고주</th><th>유형</th><th>삭제일</th><th>관리</th></tr></thead><tbody>{deleted.map(asset=><tr key={asset.assetId}><td><input type="checkbox" checked={selected.includes(asset.assetId)} onChange={()=>toggle(asset.assetId)}/></td><td>{asset.name}</td><td>{asset.advertiserName||'공통 자산'}</td><td>{TYPE_LABELS[asset.assetType]}</td><td>{formatDate(asset.deletedAt)}</td><td><div className="action-row compact"><button className="btn secondary" onClick={()=>{restoreAssets([asset.assetId]);refresh();}}><RotateCcw size={14}/> 복원</button><button className="btn danger" onClick={async()=>{if(confirm('영구 삭제할까요?')){await permanentlyDeleteAssets([asset.assetId]);refresh();}}}><Trash2 size={14}/> 삭제</button></div></td></tr>)}</tbody></table>:<div className="asset-empty"><Trash2 size={38}/><h3>휴지통이 비어 있습니다.</h3></div>}</section></>;
+}
+
+/** 광고주별 로고·브랜드 컬러·톤·문구 규칙을 관리합니다. 파일(로고 등)은 기존 Asset 인덱스를
+ * assetType='brand'로 그대로 재사용하고(AssetBrowser 재사용), 색상·톤·문구 같은 구조화된
+ * 규칙만 별도의 작은 브랜드 프로필 저장소에 둡니다. */
+export function BrandAssetsPage(){
+  const [advertisers]=useAdvertisers();
+  const [params,setParams]=useSearchParams();
+  const advertiserId=params.get('advertiser')||'';
+  const advertiser=advertisers.find(a=>a.id===advertiserId);
+  const [profile,setProfile]=useState<BrandProfile>(()=>advertiserId?loadBrandProfile(advertiserId):{advertiserId:'',keyPhrases:[],prohibitedPhrases:[],updatedAt:''});
+  const [saved,setSaved]=useState(false);
+  useEffect(()=>{ setProfile(advertiserId?loadBrandProfile(advertiserId):{advertiserId:'',keyPhrases:[],prohibitedPhrases:[],updatedAt:''}); setSaved(false); },[advertiserId]);
+
+  if(!advertiserId){
+    return <><PageHeader title="브랜드·로고 자료" description="광고주별 로고, 브랜드 컬러, 톤앤매너, 문구 규칙을 관리합니다."/>
+      <div className="asset-folder-grid">{advertisers.filter(a=>a.id!=='default').map(a=>{const p=loadBrandProfile(a.id);return <button key={a.id} className="advertiser-folder-card" onClick={()=>setParams({advertiser:a.id})}>
+        <div className="advertiser-folder-head"><span style={{background:a.color}}>{a.initial}</span><div><b>{a.name}</b><small>{p.updatedAt?`브랜드 규칙 등록됨 · ${formatDate(p.updatedAt)}`:'브랜드 규칙 미등록'}</small></div><ChevronRight size={18}/></div>
+      </button>;})}</div>
+    </>;
+  }
+
+  function save(){ setProfile(saveBrandProfile(profile)); setSaved(true); setTimeout(()=>setSaved(false),2000); }
+  function patch<K extends keyof BrandProfile>(key:K,value:BrandProfile[K]){ setProfile(prev=>({...prev,[key]:value})); }
+
+  return <><PageHeader title={`${advertiser?.name||''} · 브랜드 자료`} description="로고·브랜드 컬러·톤앤매너·문구 규칙을 등록하면 콘텐츠 제작 시 참고 자료로 활용할 수 있습니다." action={<button className="btn secondary" onClick={()=>setParams({})}>광고주 목록</button>}/>
+    <section className="card content-section">
+      <div className="content-section-head"><div><span>01</span><h3>브랜드 규칙</h3></div><small>광고 문구·블로그 작성 시 참고 기준이 됩니다.</small></div>
+      <div className="content-form-grid">
+        <label>대표 컬러<input type="text" value={profile.primaryColor||''} onChange={e=>patch('primaryColor',e.target.value)} placeholder="#1D4ED8 또는 색상명"/></label>
+        <label>보조 컬러<input type="text" value={profile.secondaryColor||''} onChange={e=>patch('secondaryColor',e.target.value)} placeholder="#F59E0B 또는 색상명"/></label>
+        <label>브랜드 폰트<input value={profile.fontName||''} onChange={e=>patch('fontName',e.target.value)} placeholder="예: Pretendard"/></label>
+        <label>브랜드 태그라인<input value={profile.tagline||''} onChange={e=>patch('tagline',e.target.value)}/></label>
+        <label className="span2">톤앤매너<textarea rows={2} value={profile.toneDescription||''} onChange={e=>patch('toneDescription',e.target.value)} placeholder="예: 신뢰감 있고 담백한 정보 전달형, 과장 표현 지양"/></label>
+        <label className="span2">필수·선호 문구(쉼표로 구분)<input value={profile.keyPhrases.join(', ')} onChange={e=>patch('keyPhrases',e.target.value.split(',').map(x=>x.trim()).filter(Boolean))}/></label>
+        <label className="span2">금지 문구(쉼표로 구분)<input value={profile.prohibitedPhrases.join(', ')} onChange={e=>patch('prohibitedPhrases',e.target.value.split(',').map(x=>x.trim()).filter(Boolean))}/></label>
+      </div>
+      <div className="content-final-actions">{saved&&<span className="content-status good" style={{marginRight:'auto'}}>저장됨</span>}<button className="btn primary" onClick={save}><Check size={15}/> 브랜드 규칙 저장</button></div>
+    </section>
+    <section className="card content-section">
+      <div className="content-section-head"><div><span>02</span><h3>로고·브랜드 파일</h3></div><small>로고, 브랜드 가이드 PDF 등을 업로드하면 이 광고주의 브랜드 자료로 분류됩니다.</small></div>
+      <BrandFileBrowser advertiserId={advertiserId}/>
+    </section>
+  </>;
+}
+
+/** AssetBrowser는 업로드 시 파일 MIME 기준으로 assetType을 자동 분류하므로, 여기서는
+ * 업로드 직후 방금 등록된 파일들을 assetType='brand'로 재지정해 "브랜드 자료" 전용
+ * 목록에 정확히 모이게 합니다(여러 파일을 한 번에 올려도 전부 반영됩니다). */
+function BrandFileBrowser({advertiserId}:{advertiserId:string}){
+  const [,refresh]=useAssets();
+  const [upload,setUpload]=useState(false);
+  function reclassifyRecentUploads(){
+    const cutoff=Date.now()-10_000; // 방금 업로드 흐름에서 막 생성된 것만(10초 이내) 대상으로 합니다.
+    const justUploaded=loadAssets(true).filter(a=>a.advertiserId===advertiserId&&a.assetType!=='brand'&&new Date(a.createdAt).getTime()>=cutoff);
+    justUploaded.forEach(a=>patchAsset(a.assetId,{assetType:'brand'}));
+    refresh();
+  }
+  return <>
+    <div className="content-final-actions" style={{justifyContent:'flex-start',marginTop:0,marginBottom:14}}><button className="btn secondary" onClick={()=>setUpload(true)}><Upload size={15}/> 브랜드 파일 업로드</button></div>
+    <AssetBrowser fixedType="brand" advertiserId={advertiserId} title="" description=""/>
+    {upload&&<UploadModal defaultAdvertiserId={advertiserId} onClose={()=>setUpload(false)} onDone={reclassifyRecentUploads}/>}
+  </>;
 }
