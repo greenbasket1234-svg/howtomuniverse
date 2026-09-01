@@ -370,6 +370,39 @@ function metaConfigured() {
   return Boolean(META_ACCESS_TOKEN);
 }
 
+/* ========================================================================
+   AI 심층 분석 (인사이트 > AI 추천) - Anthropic Claude API 연동
+   -----------------------------------------------------------------------
+   - HOWTOM 추천 엔진이 이미 규칙 기반으로 계산해 둔 추천 목록을 요약·해석하는
+     용도로만 씁니다. 숫자 자체는 절대 AI가 새로 만들지 않고, 서버가 시스템
+     프롬프트로 "제공되지 않은 수치를 만들지 않는다" 등 안전 규칙을 강제합니다.
+   - ANTHROPIC_API_KEY는 반드시 Railway Variables로만 주입하고, 코드/깃
+     저장소에는 절대 직접 적지 않습니다.
+   ======================================================================== */
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+
+function anthropicConfigured() {
+  return Boolean(ANTHROPIC_API_KEY);
+}
+
+/** Claude에게 시스템 규칙 + 사용자 프롬프트를 보내고, 응답 텍스트를 그대로 돌려줍니다. */
+async function callAnthropic(systemPrompt, userPrompt) {
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY가 설정되지 않았습니다.');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL, max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `Anthropic API HTTP ${res.status}`);
+  return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+}
+
 /**
  * Meta 그래프 API 호출. 에러코드 2("Service temporarily unavailable")나 4(rate limit) 같은
  * Meta 쪽의 일시적인 문제는 몇 초 대기 후 최대 3번까지 자동으로 재시도합니다.
@@ -3047,6 +3080,91 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ============================================================
     // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
     // ============================================================
+    // ── 경쟁사 추적 (인사이트 > 경쟁사 분석) ─────────────────────────────────
+    if (pathname.startsWith('/api/competitors')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const tenantId = await getCurrentTenantId();
+      const detailMatch = pathname.match(/^\/api\/competitors\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/competitors') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['c.tenant_id = $1']; const params = [tenantId];
+        if (q.get('advertiserId')) { params.push(q.get('advertiserId')); clauses.push(`c.advertiser_id = $${params.length}`); }
+        const rows = await pgPool.query(
+          `SELECT c.*, a.name as advertiser_name,
+             (SELECT count(*) FROM references_store r WHERE r.competitor_id = c.id) as observation_count
+           FROM competitors c LEFT JOIN advertisers a ON a.id = c.advertiser_id
+           WHERE ${clauses.join(' AND ')} ORDER BY c.created_at DESC`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/competitors') {
+        const body = await readJson(req);
+        if (!body.name || !String(body.name).trim()) return sendJson(res, 400, { error: '경쟁사명이 필요합니다.' });
+        const insert = await pgPool.query(
+          `INSERT INTO competitors (tenant_id, advertiser_id, name, industry, website_url, channels, priority, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [tenantId, body.advertiserId || null, cleanText(body.name, 200), cleanText(body.industry || '', 100) || null,
+           cleanText(body.websiteUrl || '', 500) || null, JSON.stringify(body.channels || []),
+           body.priority || 'normal', body.status || 'active', body.createdBy || 'admin']
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.name !== undefined) set('name', cleanText(body.name, 200));
+        if (body.industry !== undefined) set('industry', cleanText(body.industry || '', 100) || null);
+        if (body.websiteUrl !== undefined) set('website_url', cleanText(body.websiteUrl || '', 500) || null);
+        if (body.channels !== undefined) set('channels', JSON.stringify(body.channels || []));
+        if (body.priority !== undefined) set('priority', body.priority);
+        if (body.status !== undefined) set('status', body.status);
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE competitors SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        if (!upd.rows.length) return sendJson(res, 404, { error: '경쟁사를 찾을 수 없습니다.' });
+        return sendJson(res, 200, upd.rows[0]);
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        // 경쟁사 추적을 중단해도, 이미 수집·태그·다른 곳에 활용됐을 수 있는 관찰 소재 자체는
+        // 지우지 않고 '어느 경쟁사인지'만 연결 해제합니다(SET NULL) - 콘텐츠 유실 방지.
+        await pgPool.query(`UPDATE references_store SET competitor_id = NULL WHERE competitor_id = $1`, [detailMatch[1]]);
+        await pgPool.query(`DELETE FROM competitors WHERE id = $1 AND tenant_id = $2`, [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── AI 심층 분석 (인사이트 > AI 추천) ────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/ai/recommendations') {
+      if (!anthropicConfigured()) return sendJson(res, 400, { error: 'ANTHROPIC_API_KEY가 설정되지 않았습니다.', configured: false });
+      const body = await readJson(req);
+      const userPrompt = cleanText(body.prompt || '', 8000);
+      if (!userPrompt) return sendJson(res, 400, { error: 'prompt가 필요합니다.' });
+      // 안전 규칙은 클라이언트가 조작할 수 없도록 반드시 서버가 시스템 프롬프트로 강제합니다.
+      const systemPrompt = [
+        '당신은 광고 운영 데이터를 해석하는 보조 분석가입니다. 아래 규칙을 반드시 지키세요.',
+        '1) 제공되지 않은 수치를 만들지 않는다.',
+        '2) 근거 없는 원인을 확정하지 않는다 - 가능성으로만 표현한다.',
+        '3) 추정은 반드시 추정이라고 표시한다.',
+        '4) 광고비 조정은 검토안으로만 제시하고, 즉시 실행 가능한 것처럼 말하지 않는다.',
+        '',
+        '반드시 아래 JSON 형식으로만 응답하세요. 코드블록이나 설명 텍스트 없이 순수 JSON만 출력합니다.',
+        '{"executiveSummary":"전체 요약(2~3문장)","findings":[{"title":"","description":"","evidenceIds":[],"confidence":"low|medium|high"}],"actions":[{"priority":1,"action":"","reason":"","targetType":""}],"cautions":["..."]}',
+      ].join('\n');
+      try {
+        const raw = await callAnthropic(systemPrompt, userPrompt);
+        const cleaned = raw.trim().replace(/^```json\s*|```$/g, '');
+        let parsed;
+        try { parsed = JSON.parse(cleaned); } catch { return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' }); }
+        return sendJson(res, 200, parsed);
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 분석 요청에 실패했습니다.' });
+      }
+    }
+
     if (pathname.startsWith('/api/references') || pathname.startsWith('/api/reference-')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const tenantId = await getCurrentTenantId();
@@ -3095,25 +3213,29 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const platform = cleanText(body.platform || item.platform || '', 30);
         if (!platform) return sendJson(res, 400, { error: 'platform이 필요합니다.' });
         const canonicalUrl = item.canonicalUrl ? item.canonicalUrl.split('?')[0] : null;
+        const capturedAt = item.capturedAt || item.publishedAt || new Date().toISOString();
         try {
           const insert = await pgPool.query(
             `INSERT INTO references_store (
-              tenant_id, advertiser_id, reference_type, platform, source_type, external_id, url, canonical_url,
-              title, body, headline, description, cta, author_id, author_name, author_followers,
+              tenant_id, advertiser_id, competitor_id, reference_type, platform, source_type, external_id, url, canonical_url,
+              title, body, headline, description, cta, hook_types, author_id, author_name, author_followers,
               thumbnail_url, media_url, media_type, content_type, ad_status, ad_started_at,
-              published_at, views, likes, comments, shares, saves, available_metrics, raw_text, transcript, raw_metadata, created_by
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+              published_at, views, likes, comments, shares, saves, available_metrics, raw_text, transcript, raw_metadata,
+              first_seen_at, last_seen_at, created_by
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
             RETURNING id`,
             [
-              tenantId, body.advertiserId || null, referenceType, platform, body.sourceType || 'collected',
+              tenantId, body.advertiserId || null, body.competitorId || null, referenceType, platform, body.sourceType || 'collected',
               item.externalId || null, item.url || null, canonicalUrl,
               item.title || null, item.body || null, item.headline || null, item.description || null, item.cta || null,
+              item.hookTypes || [],
               item.authorId || null, item.authorName || null, item.authorFollowers ?? null,
               item.thumbnailUrl || null, item.mediaUrl || null, item.mediaType || null, item.contentType || null,
               item.adStatus || null, item.adStartedAt || null, item.publishedAt || null,
               item.views ?? null, item.likes ?? null, item.comments ?? null, item.shares ?? null, item.saves ?? null,
               item.availableMetrics || [], item.rawText || null, item.transcript || null,
-              item.rawMetadata ? JSON.stringify(item.rawMetadata) : null, body.createdBy || 'admin',
+              item.rawMetadata ? JSON.stringify(item.rawMetadata) : null,
+              capturedAt, capturedAt, body.createdBy || 'admin',
             ]
           );
           await addLog(tenantId, 'reference_saved', { platform, referenceType });
@@ -3174,6 +3296,8 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         if (q.get('minComments')) add('r.comments >= ?', Number(q.get('minComments')));
         if (q.get('minFollowers')) add('r.author_followers >= ?', Number(q.get('minFollowers')));
         if (q.get('collectionId')) { params.push(q.get('collectionId')); clauses.push(`r.id IN (SELECT reference_id FROM reference_collection_items WHERE collection_id = $${params.length})`); }
+        if (q.get('competitorId')) add('r.competitor_id = ?', q.get('competitorId'));
+        if (q.get('hasCompetitor') === 'true') clauses.push('r.competitor_id IS NOT NULL');
         if (q.get('tag')) { params.push(q.get('tag')); clauses.push(`r.id IN (SELECT tl.reference_id FROM reference_tag_links tl JOIN reference_tags t ON t.id=tl.tag_id WHERE t.name = $${params.length})`); }
         const sortMap = { latest: 'r.published_at DESC NULLS LAST', views: 'r.views DESC NULLS LAST', likes: 'r.likes DESC NULLS LAST', comments: 'r.comments DESC NULLS LAST' };
         const sort = sortMap[q.get('sort')] || 'r.collected_at DESC';
@@ -3232,7 +3356,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         if (body.status !== undefined) set('status', body.status);
         if (body.isFavorite !== undefined) set('is_favorite', !!body.isFavorite);
         if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.competitorId !== undefined) set('competitor_id', body.competitorId || null);
         if (body.note !== undefined) set('note', body.note);
+        if (body.hookTypes !== undefined) set('hook_types', body.hookTypes || []);
+        if (body.lastSeenAt !== undefined) set('last_seen_at', body.lastSeenAt);
         if (!sets.length && !body.tags) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
         if (sets.length) await pgPool.query(`UPDATE references_store SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2`, params);
         if (Array.isArray(body.tags)) {
