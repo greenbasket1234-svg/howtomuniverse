@@ -50,11 +50,12 @@ import { AIRecommendationsPage } from './pages/AIRecommendationsPage';
 import { AIRecommendationDetailPage } from './pages/AIRecommendationDetailPage';
 import { CompetitorAnalysisPage, AdTrendsPage, HookCtaAnalysisPage } from './pages/ExternalIntelligencePages';
 import { ContentHomePage, InsightsHomePage, UniversePlannedPage } from './pages/UniverseHubPages';
-import { AssetsHomePage, AssetImagesPage, AssetVideosPage, AssetDocumentsPage, AssetCreativesPage, AdvertiserAssetFoldersPage, AssetTrashPage } from './pages/AssetManagementPages';
-import { AdCreationPage, ProductionLibraryPage, ContentTemplatesPage } from './pages/ContentSystemPages';
+import { AssetsHomePage, AssetImagesPage, AssetVideosPage, AssetDocumentsPage, AssetCreativesPage, AdvertiserAssetFoldersPage, AssetTrashPage, BrandAssetsPage } from './pages/AssetManagementPages';
+import { AdCreationPage, ProductionLibraryPage, ContentTemplatesPage, ContentTrashPage } from './pages/ContentSystemPages';
 import { ContentReferencesPage } from './pages/ContentReferencesPage';
+import { ImageCreationPage } from './pages/ImageCreationPage';
+import { PromptLibraryPage } from './pages/PromptLibraryPage';
 import { VideoScriptsPage, DocumentsWritingPage, AdvertiserSubscriptionsPage } from './pages/ProfessionalContentPages';
-import { BlogProductionPage } from './features/blog/BlogProductionPage';
 import { AdvertiserWorkspaceDashboardPage, AdvertiserContactsPage, AdvertiserPermissionsPage, AdvertiserApprovalsPage, AdvertiserSharedMaterialsPage, AdvertiserActivityPage, AdvertiserPortalPreviewPage } from './pages/AdvertiserControlPages';
 import { PlatformSettingsHubPage, PlatformSettingsSectionPage } from './pages/SettingsControlPages';
 import { AdminControlDashboardPage, AdminControlPage } from './pages/AdminControlPages';
@@ -77,8 +78,8 @@ export default function App(){
   <Route element={<AppLayout/>}>
     <Route path="home" element={<UniverseHomePage/>}/>
     <Route path="insights" element={<InsightsHomePage/>}/><Route path="insights/performance" element={<IntegratedPerformanceAnalysisPage/>}/><Route path="insights/media" element={<MediaPerformancePage/>}/><Route path="insights/advertisers" element={<AdvertiserPerformancePage/>}/><Route path="insights/campaigns" element={<CampaignAnalysisPage/>}/><Route path="insights/creatives" element={<CreativeAnalysisPage/>}/><Route path="insights/competitors" element={<CompetitorAnalysisPage/>}/><Route path="insights/trends" element={<AdTrendsPage/>}/><Route path="insights/hook-cta" element={<HookCtaAnalysisPage/>}/><Route path="insights/ai-recommendations" element={<AIRecommendationsPage/>}/><Route path="insights/ai-recommendations/:recommendationId" element={<AIRecommendationDetailPage/>}/>
-    <Route path="content" element={<ContentHomePage/>}/><Route path="content/references" element={<ContentReferencesPage/>}/><Route path="content/ad-creation" element={<AdCreationPage/>}/><Route path="content/blog" element={<BlogProductionPage/>}/><Route path="content/video-scripts" element={<VideoScriptsPage/>}/><Route path="content/documents" element={<DocumentsWritingPage/>}/><Route path="content/productions" element={<ProductionLibraryPage/>}/><Route path="content/templates" element={<ContentTemplatesPage/>}/>
-    <Route path="assets" element={<AssetsHomePage/>}/><Route path="assets/images" element={<AssetImagesPage/>}/><Route path="assets/videos" element={<AssetVideosPage/>}/><Route path="assets/documents" element={<AssetDocumentsPage/>}/><Route path="assets/creatives" element={<AssetCreativesPage/>}/><Route path="assets/advertisers" element={<AdvertiserAssetFoldersPage/>}/><Route path="assets/trash" element={<AssetTrashPage/>}/>
+    <Route path="content" element={<ContentHomePage/>}/><Route path="content/references" element={<ContentReferencesPage/>}/><Route path="content/ad-creation" element={<AdCreationPage/>}/><Route path="content/image-creation" element={<ImageCreationPage/>}/><Route path="content/video-scripts" element={<VideoScriptsPage/>}/><Route path="content/documents" element={<DocumentsWritingPage/>}/><Route path="content/productions" element={<ProductionLibraryPage/>}/><Route path="content/templates" element={<ContentTemplatesPage/>}/><Route path="content/trash" element={<ContentTrashPage/>}/>
+    <Route path="assets" element={<AssetsHomePage/>}/><Route path="assets/images" element={<AssetImagesPage/>}/><Route path="assets/videos" element={<AssetVideosPage/>}/><Route path="assets/documents" element={<AssetDocumentsPage/>}/><Route path="assets/creatives" element={<AssetCreativesPage/>}/><Route path="assets/advertisers" element={<AdvertiserAssetFoldersPage/>}/><Route path="assets/brand" element={<BrandAssetsPage/>}/><Route path="assets/prompts" element={<PromptLibraryPage/>}/><Route path="assets/trash" element={<AssetTrashPage/>}/>
     <Route path="admin" element={<AdminOnlyGate><AdminControlDashboardPage/></AdminOnlyGate>}/><Route path="admin/:sectionKey" element={<AdminOnlyGate><AdminControlPage/></AdminOnlyGate>}/>
     <Route path="planned/:moduleKey" element={<UniversePlannedPage/>}/>
     <Route path="dashboard" element={<DashboardOverviewPage/>}/><Route path="dashboard/:brandId" element={<DashboardOverviewPage/>}/>
