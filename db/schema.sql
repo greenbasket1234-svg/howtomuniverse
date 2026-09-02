@@ -367,8 +367,12 @@ CREATE INDEX IF NOT EXISTS idx_keyword_metrics_tenant ON keyword_metrics(tenant_
 -- ────────────────────────────────────────────────────────────
 -- 콘텐츠 / 운영 데이터 — 필드가 자주 바뀌는 영역이라 세부 내용은 JSONB로 유연하게 둡니다.
 -- ────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS blog_projects CASCADE;
-CREATE TABLE blog_projects (
+-- 2026-09: 예전엔 이 3개 테이블(blog_projects/blog_assets/schedule_slots)이 서버가
+-- 시작할 때마다 DROP TABLE로 통째로 지워지고 새로 만들어졌습니다. 이 schema.sql은
+-- 서버 부팅마다(=배포마다) 자동 실행되는데, 그때마다 저장된 블로그 프로젝트·자산·
+-- 예약 데이터가 전부 삭제되고 있었습니다 - 다른 모든 테이블처럼 안전한
+-- CREATE TABLE IF NOT EXISTS로 바꿨습니다.
+CREATE TABLE IF NOT EXISTS blog_projects (
   id TEXT PRIMARY KEY, -- 예: makeId('blog')로 만든 projectId를 그대로 씁니다.
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
@@ -386,16 +390,14 @@ CREATE TABLE IF NOT EXISTS blog_styles (
   PRIMARY KEY (tenant_id, advertiser_id)
 );
 
-DROP TABLE IF EXISTS blog_assets CASCADE;
-CREATE TABLE blog_assets (
+CREATE TABLE IF NOT EXISTS blog_assets (
   id TEXT PRIMARY KEY, -- 예: makeId('asset')
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   data JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-DROP TABLE IF EXISTS schedule_slots CASCADE;
-CREATE TABLE schedule_slots (
+CREATE TABLE IF NOT EXISTS schedule_slots (
   id TEXT PRIMARY KEY, -- 프론트에서 만든 슬롯 ID를 그대로 씁니다.
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   data JSONB NOT NULL DEFAULT '{}'::jsonb,
