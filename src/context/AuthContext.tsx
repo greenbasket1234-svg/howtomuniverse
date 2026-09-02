@@ -1,16 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
 import { API_BASE } from '../config/runtime';
 
-export type UserRole = 'admin' | 'advertiser';
+export type UserRole = 'admin' | 'advertiser' | 'member';
 
 export type AuthUser = {
-  id: number;
+  id: number | string;
   email: string;
   name: string;
   nickname?: string;
   role: UserRole;
   advertiser_id: number | null;
   advertiser_name?: string;
+  // 실제 팀원 계정(권한 분리 1단계)에서만 채워집니다. 최초 관리자(owner) 계정은
+  // isOwner=true로 항상 모든 권한을 가진 것으로 취급합니다.
+  isOwner?: boolean;
+  permissionKeys?: string[];
+  advertiserIds?: string[] | null;
 };
 
 type AuthState = {
@@ -23,6 +28,8 @@ type AuthContextValue = AuthState & {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   isAdmin: boolean;
+  /** 세부 기능 단위 권한 확인이 필요할 때 씁니다. owner 계정은 항상 true입니다. */
+  hasPermission: (key: string) => boolean;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -95,8 +102,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ user: null, token: null, loading: false });
   }, []);
 
+  const hasPermission = useCallback((key: string) => Boolean(state.user?.isOwner || state.user?.permissionKeys?.includes(key)), [state.user]);
+
   return (
-    <AuthContext.Provider value={{ ...state, login, logout, isAdmin: state.user?.role === 'admin' }}>
+    <AuthContext.Provider value={{ ...state, login, logout, hasPermission, isAdmin: Boolean(state.user?.isOwner || state.user?.permissionKeys?.includes('admin.system.manage')) }}>
       {children}
     </AuthContext.Provider>
   );
