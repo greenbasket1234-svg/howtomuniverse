@@ -22,6 +22,11 @@ export type Advertiser = {
   website?: string;
   phone?: string;
   address?: string;
+  // 사업자등록번호 - 오토포스트 Pro 등 외부 제휴 API의 좌석 생성 기준입니다.
+  businessRegNo?: string;
+  // 오토포스트 Pro가 요구하는 업종 코드(영문). HOWTOM 자체 업종(위 industry, 한글)에서
+  // 자동 매핑되지만, 제휴사가 새 업종을 추가해주면 여기에 직접 그 코드를 입력해 덮어씁니다.
+  autopostProIndustry?: string;
 };
 
 export const DEFAULT_ADVERTISERS: Advertiser[] = [];

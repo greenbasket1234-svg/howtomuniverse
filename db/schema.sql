@@ -62,10 +62,37 @@ CREATE TABLE IF NOT EXISTS advertisers (
   website TEXT,
   phone TEXT,
   address TEXT,
+  business_reg_no TEXT, -- 사업자등록번호. 오토포스트 Pro 등 외부 제휴 API의 seat(좌석) 생성·중복 판별 기준으로 씁니다.
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_advertisers_tenant ON advertisers(tenant_id);
+ALTER TABLE advertisers ADD COLUMN IF NOT EXISTS business_reg_no TEXT;
+-- HOWTOM 자체 업종(위 industry, 한글 라벨)과 오토포스트 Pro가 요구하는 업종 코드(영문,
+-- medical/tax/academy/vet)는 서로 다른 값입니다. 대부분은 자동 매핑되지만(server.mjs의
+-- mapIndustryToAutopostCode), 제휴사가 새 업종을 추가해주면 그 코드를 여기 직접 입력해
+-- 자동 매핑을 덮어쓸 수 있습니다.
+ALTER TABLE advertisers ADD COLUMN IF NOT EXISTS autopost_pro_industry TEXT;
+
+-- ============================================================
+-- 오토포스트 Pro 연동 (블로그 자동 생성 - ㈜시온랩스 제휴 API)
+-- ------------------------------------------------------------
+-- 이 API는 광고주(사업자등록번호)마다 먼저 "좌석(seat)"을 만들어야 합니다.
+-- 매번 새로 만들면 API 쪽에서는 중복 판별로 기존 seat을 그대로 돌려주긴 하지만,
+-- 우리 쪽에서 seat_id를 캐시해두면 불필요한 API 호출을 줄일 수 있습니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS autopost_pro_seats (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  seat_id TEXT NOT NULL, -- 오토포스트 Pro 쪽 seat 식별자 (예: seat_9f83a1)
+  plan TEXT, -- 'trial' | 'paid' (마지막으로 확인한 값, 매 호출 시 최신화)
+  trial_remaining INTEGER,
+  status TEXT, -- 'active' | 'suspended'
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(advertiser_id)
+);
 
 -- 매체 계정 연동 정보. api_key/secret_key는 평문이 아니라 암호화된 값(*_encrypted)으로만 저장합니다.
 CREATE TABLE IF NOT EXISTS media_accounts (
@@ -473,3 +500,90 @@ CREATE TABLE IF NOT EXISTS reference_usage (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ref_usage_reference ON reference_usage(reference_id);
+
+-- ============================================================
+-- 실제 팀원 계정 + 역할 기반 권한 (권한 분리 1단계)
+-- ------------------------------------------------------------
+-- 예전엔 Railway 환경변수(HOWTOM_ADMIN_EMAIL/PASSWORD)로 만든 계정 하나뿐이었고,
+-- 로그인하는 사람 전원이 똑같이 관리자 권한을 받았습니다. '사용자 관리/권한 묶음/
+-- 기능별 이용 권한' 화면은 있었지만 브라우저 localStorage에만 저장되어 실제로는
+-- 아무것도 막지 않는 시안이었습니다. 이제 실제 계정 테이블과 서버 권한 검사로 옮깁니다.
+--
+-- app_users.is_owner=true인 계정은 기존의 그 최초 관리자와 동등한 최상위 권한이며
+-- (삭제・강등 불가), 이 테이블에 새로 추가되는 팀원 계정은 전부 is_owner=false로
+-- 시작해 역할(app_roles)과 광고주 범위(app_memberships.advertiser_ids)로 제한됩니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS app_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  password_hash TEXT, -- null이면 초대만 되고 아직 초기 비밀번호를 설정 안 한 상태
+  name TEXT NOT NULL,
+  title TEXT,
+  department TEXT,
+  status TEXT NOT NULL DEFAULT 'invited', -- 'invited' | 'active' | 'disabled'
+  is_owner BOOLEAN NOT NULL DEFAULT false,
+  last_login_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_app_users_tenant ON app_users(tenant_id);
+
+CREATE TABLE IF NOT EXISTS app_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  scope TEXT NOT NULL DEFAULT 'internal', -- 'internal' | 'advertiser'
+  permission_keys TEXT[] NOT NULL DEFAULT '{}',
+  is_system BOOLEAN NOT NULL DEFAULT false, -- 기본 제공 역할(예: 관리자)은 일부 화면에서 수정 제한
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_app_roles_tenant ON app_roles(tenant_id);
+
+-- 사용자 1명당 멤버십 1개(여러 역할을 가질 수 있고, 광고주 범위는 전체 공통 적용).
+-- advertiser_ids가 NULL이면 "전체 광고주", 배열이 있으면 그 안의 광고주만 접근 가능합니다.
+CREATE TABLE IF NOT EXISTS app_memberships (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  role_ids UUID[] NOT NULL DEFAULT '{}',
+  advertiser_ids UUID[], -- NULL = 전체 광고주
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(user_id)
+);
+-- ------------------------------------------------------------
+-- 예전엔 브라우저 localStorage에만 저장되어 팀원끼리 공유가 안 되고 기기를 바꾸면
+-- 사라졌습니다. 경쟁사 등록·관찰 소재를 references_store와 동일한 Postgres에 저장해
+-- 팀 전체가 공유하고, Meta 광고 라이브러리 등 실제 자동 수집 결과도 그대로 연결합니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS competitors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL, -- null = 광고주 공통(전사) 추적
+  name TEXT NOT NULL,
+  industry TEXT,
+  website_url TEXT,
+  channels JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{platform, profileUrl}]
+  priority TEXT NOT NULL DEFAULT 'normal', -- 'high' | 'normal' | 'low'
+  status TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'paused'
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_competitors_tenant ON competitors(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_competitors_advertiser ON competitors(advertiser_id);
+
+-- references_store를 "이 관찰 소재는 어느 경쟁사 것인지"와 연결합니다. 일반 레퍼런스 수집
+-- (콘텐츠 > 레퍼런스)은 특정 경쟁사 추적과 무관할 수 있어 competitor_id는 nullable입니다.
+ALTER TABLE references_store ADD COLUMN IF NOT EXISTS competitor_id UUID REFERENCES competitors(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_references_competitor ON references_store(competitor_id);
+-- 후킹 유형(예: 후기형, 가격형)은 자유 태그(reference_tags)와 달리 트렌드 엔진이 직접
+-- 집계하는 고정 분석 축이라 별도 배열 컬럼으로 둡니다.
+ALTER TABLE references_store ADD COLUMN IF NOT EXISTS hook_types TEXT[] NOT NULL DEFAULT '{}';
+-- 같은 경쟁사 소재를 여러 번 관찰할 때 "언제 처음 봤는지/최근까지도 노출 중인지"를 추적합니다.
+ALTER TABLE references_store ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ;
+ALTER TABLE references_store ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;

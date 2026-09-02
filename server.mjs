@@ -1702,6 +1702,77 @@ function blogAiStatus() {
   };
 }
 
+/* ========================================================================
+   오토포스트 Pro 연동 (블로그 자동 생성 - ㈜시온랩스 제휴 API, aiblog.zionlabs.org)
+   -----------------------------------------------------------------------
+   - 이 API는 위 BLOG_AI_PROVIDER(anthropic/openai/custom)와 완전히 다른
+     구조입니다. 광고주(사업자등록번호) 기준으로 "좌석(seat)"을 먼저 만들고,
+     그 좌석으로 블로그 초안을 생성합니다. 무료체험 3건 이후 유료 전환,
+     월 한도 초과 시 건당 3,000원 과금 - 실제 돈이 오가는 연동이라 서버가
+     임의로 confirm_overage=true를 보내는 일은 절대 없고, 항상 프론트에서
+     사용자가 명시적으로 동의한 경우에만 전달합니다.
+   - 업종은 자유 입력입니다(medical/tax/academy/vet 외의 값을 보내면 제휴사
+     API가 거부하는데, 이 경우 명확한 오류 메시지로 "제휴사에 업종 추가를
+     요청하라"고 안내합니다 - 코드에서 업종을 임의로 제한하지 않습니다).
+   ======================================================================== */
+const AUTOPOST_PRO_API_KEY = process.env.AUTOPOST_PRO_API_KEY || '';
+const AUTOPOST_PRO_BASE_URL = process.env.AUTOPOST_PRO_BASE_URL || 'https://aiblog.zionlabs.org';
+
+function autopostProConfigured() { return Boolean(AUTOPOST_PRO_API_KEY); }
+
+async function autopostProRequest(method, path, body, extraHeaders) {
+  const res = await fetch(`${AUTOPOST_PRO_BASE_URL}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${AUTOPOST_PRO_API_KEY}`, 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(data?.error?.message || `오토포스트 Pro API HTTP ${res.status}`);
+    err.code = data?.error?.code; err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+// HOWTOM 자체 업종(한글)을 오토포스트 Pro의 업종 코드(영문)로 매핑합니다. 매핑에 없는
+// 업종(예: 식품·이사·렌트카)은 advertiser.autopost_pro_industry에 제휴사가 안내해준 코드를
+// 직접 입력해 쓰면 됩니다 - 제휴사가 새 업종을 추가해주면 그 코드를 그대로 넣으세요.
+const AUTOPOST_INDUSTRY_MAP = {
+  '병원·의료기관': 'medical', '치과': 'medical', '한의원': 'medical',
+  '동물병원': 'vet',
+  '세무사·세무법인': 'tax',
+  '학원·교육': 'academy',
+};
+function mapIndustryToAutopostCode(advertiser) {
+  if (advertiser.autopost_pro_industry) return advertiser.autopost_pro_industry;
+  return AUTOPOST_INDUSTRY_MAP[advertiser.industry || ''] || advertiser.industry || '';
+}
+
+/** 이 광고주의 좌석을 캐시에서 찾고, 없으면 제휴 API에 새로 만듭니다(사업자번호 기준 - 이미 있으면 API가 기존 좌석을 그대로 돌려줍니다). */
+async function ensureAutopostProSeat(tenantId, advertiser) {
+  const cached = await pgPool.query('SELECT * FROM autopost_pro_seats WHERE advertiser_id = $1', [advertiser.id]);
+  if (cached.rows.length) return cached.rows[0];
+  if (!advertiser.business_reg_no) { const e = new Error('이 광고주는 사업자등록번호가 등록되어 있지 않습니다. 광고주 정보에서 먼저 입력하세요.'); e.status = 400; throw e; }
+  if (!advertiser.industry) { const e = new Error('이 광고주는 업종이 등록되어 있지 않습니다. 광고주 정보에서 먼저 입력하세요.'); e.status = 400; throw e; }
+  const industryCode = mapIndustryToAutopostCode(advertiser);
+  if (!['medical', 'tax', 'academy', 'vet'].includes(industryCode)) {
+    const e = new Error(`'${advertiser.industry}' 업종은 아직 오토포스트 Pro에 등록되지 않았습니다. 제휴사에 이 업종 추가를 요청한 뒤, 광고주 정보의 '오토포스트 Pro 업종 코드'에 안내받은 코드를 입력하세요.`);
+    e.status = 400; throw e;
+  }
+  const seat = await autopostProRequest('POST', '/v1/seats', {
+    business_reg_no: advertiser.business_reg_no, name: advertiser.name, industry: industryCode, external_id: advertiser.id,
+  });
+  const insert = await pgPool.query(
+    `INSERT INTO autopost_pro_seats (tenant_id, advertiser_id, seat_id, plan, trial_remaining, status)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (advertiser_id) DO UPDATE SET seat_id=EXCLUDED.seat_id, plan=EXCLUDED.plan, trial_remaining=EXCLUDED.trial_remaining, status=EXCLUDED.status, updated_at=now()
+     RETURNING *`,
+    [tenantId, advertiser.id, seat.id, seat.plan || null, seat.trial_remaining ?? null, seat.status || null]
+  );
+  return insert.rows[0];
+}
+
 function parseAiJson(text) {
   const cleaned = String(text ?? '').replace(/```json/gi, '').replace(/```/g, '').trim();
   let parsed;
@@ -2032,7 +2103,76 @@ const ADMIN_USER = {
   nickname: process.env.HOWTOM_ADMIN_NICKNAME || '',
   role: 'admin',
   advertiser_id: null,
+  isOwner: true,
 };
+
+const ALL_INTERNAL_PERMISSIONS = ['dashboard.view','ads.view','campaign.view','campaign.edit','insights.view','insights.ai.use','reports.view','reports.proposal','reports.generate','reports.approve','content.create','content.approve','content.blog','assets.view','assets.upload','automation.view','automation.manage','advertisers.view','advertisers.manage','settings.manage','admin.users.manage','admin.roles.manage','admin.plans.manage','admin.system.manage'];
+const MARKETER_PERMISSIONS = ['dashboard.view','ads.view','campaign.view','campaign.edit','insights.view','insights.ai.use','reports.view','reports.proposal','reports.generate','content.create','content.blog','assets.view','assets.upload','automation.view','advertisers.view'];
+const DESIGNER_PERMISSIONS = ['dashboard.view','insights.view','content.create','assets.view','assets.upload','advertisers.view'];
+const DEFAULT_ROLE_SEED = [
+  { name: '관리자', description: 'HOWTOM 전체 설정과 관리 기능을 사용할 수 있습니다.', scope: 'internal', permission_keys: ALL_INTERNAL_PERMISSIONS, is_system: true },
+  { name: '마케터', description: '광고 운영·분석·보고서·콘텐츠 실무 권한입니다.', scope: 'internal', permission_keys: MARKETER_PERMISSIONS, is_system: true },
+  { name: '디자이너', description: '콘텐츠·자산·소재 인사이트 중심 권한입니다.', scope: 'internal', permission_keys: DESIGNER_PERMISSIONS, is_system: true },
+];
+
+async function ensureDefaultRoles(tenantId) {
+  const existing = await pgPool.query('SELECT count(*) FROM app_roles WHERE tenant_id = $1', [tenantId]);
+  if (Number(existing.rows[0].count) > 0) return;
+  for (const role of DEFAULT_ROLE_SEED) {
+    await pgPool.query(
+      'INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys, is_system) VALUES ($1,$2,$3,$4,$5,$6)',
+      [tenantId, role.name, role.description, role.scope, role.permission_keys, role.is_system]
+    );
+  }
+}
+
+function hashUserPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return salt + ':' + hash;
+}
+function verifyUserPassword(password, stored) {
+  if (!stored || !stored.includes(':')) return false;
+  const parts = stored.split(':'); const salt = parts[0]; const hash = parts[1];
+  const check = crypto.scryptSync(password, salt, 64).toString('hex');
+  const a = Buffer.from(hash); const b = Buffer.from(check);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+async function resolveRequestUser(req) {
+  const payload = verifyToken(bearerToken(req));
+  if (!payload) return null;
+  if (payload.sub === ADMIN_USER.id && payload.email === ADMIN_USER.email) {
+    return { id: 'owner', email: ADMIN_USER.email, name: ADMIN_USER.name, isOwner: true, permissionKeys: ALL_INTERNAL_PERMISSIONS, advertiserIds: null, status: 'active' };
+  }
+  if (!pgPool || typeof payload.sub !== 'string') return null;
+  const result = await pgPool.query(
+    'SELECT u.id, u.email, u.name, u.status, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
+    [payload.sub]
+  );
+  const row = result.rows[0];
+  if (!row || row.status !== 'active') return null;
+  const roleIds = row.role_ids || [];
+  let permissionKeys = [];
+  if (roleIds.length) {
+    const roles = await pgPool.query('SELECT permission_keys FROM app_roles WHERE id = ANY($1::uuid[])', [roleIds]);
+    permissionKeys = [...new Set(roles.rows.flatMap(r => r.permission_keys || []))];
+  }
+  return { id: row.id, email: row.email, name: row.name, isOwner: false, permissionKeys, advertiserIds: row.advertiser_ids, status: row.status };
+}
+
+function hasPermission(user, key) {
+  return Boolean(user && (user.isOwner || (user.permissionKeys && user.permissionKeys.includes(key))));
+}
+function canAccessAdvertiser(user, advertiserId) {
+  if (!advertiserId) return true;
+  return Boolean(user && (user.isOwner || !user.advertiserIds || user.advertiserIds.includes(advertiserId)));
+}
+function denyUnlessPermitted(res, user, key) {
+  if (hasPermission(user, key)) return false;
+  sendJson(res, 403, { error: '이 작업을 수행할 권한이 없습니다.' });
+  return true;
+}
 
 async function handleAuth(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -2047,25 +2187,46 @@ async function handleAuth(req, res, pathname) {
     const ip = getClientIp(req);
     if (!email || !password) { sendJson(res, 400, { error: '아이디와 비밀번호를 입력하세요.' }); return true; }
 
-    const emailOk = timingSafeStringEqual(email, ADMIN_EMAIL);
-    const passwordOk = timingSafeStringEqual(password, ADMIN_PASSWORD);
-    if (!emailOk || !passwordOk) {
-      addLog({ action: 'login_failed', email, ip, result: 'fail' });
-      sendJson(res, 401, { error: '아이디 또는 비밀번호가 올바르지 않습니다.' }); return true;
+    const now = Math.floor(Date.now() / 1000);
+
+    // 1) 최초 관리자(owner) 계정 - 환경변수 로그인. 항상 그대로 유지합니다.
+    if (timingSafeStringEqual(email, ADMIN_EMAIL) && timingSafeStringEqual(password, ADMIN_PASSWORD)) {
+      const token = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + TOKEN_TTL_SECONDS });
+      addLog({ action: 'login_success', email, ip, result: 'success' });
+      sendJson(res, 200, { token, user: ADMIN_USER });
+      return true;
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const token = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + TOKEN_TTL_SECONDS });
-    addLog({ action: 'login_success', email, ip, result: 'success' });
-    sendJson(res, 200, { token, user: ADMIN_USER });
+    // 2) 실제 팀원 계정(app_users) - 비밀번호는 scrypt로 해시되어 있습니다.
+    if (pgPool) {
+      const tenantId = await getCurrentTenantId();
+      const result = await pgPool.query('SELECT id, email, name, password_hash, status FROM app_users WHERE tenant_id = $1 AND lower(email) = lower($2)', [tenantId, email]);
+      const row = result.rows[0];
+      if (row && row.password_hash && verifyUserPassword(password, row.password_hash)) {
+        if (row.status !== 'active') {
+          addLog({ action: 'login_failed', email, ip, result: 'fail' });
+          sendJson(res, 401, { error: row.status === 'invited' ? '아직 초대를 수락하지 않은 계정입니다. 관리자에게 문의하세요.' : '사용이 중지된 계정입니다.' });
+          return true;
+        }
+        await pgPool.query('UPDATE app_users SET last_login_at = now() WHERE id = $1', [row.id]);
+        const token = signToken({ sub: row.id, email: row.email, iat: now, exp: now + TOKEN_TTL_SECONDS });
+        const resolvedUser = await resolveRequestUser({ headers: { authorization: 'Bearer ' + token } });
+        addLog({ action: 'login_success', email, ip, result: 'success' });
+        sendJson(res, 200, { token, user: { id: row.id, email: row.email, name: row.name, role: resolvedUser?.permissionKeys?.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: resolvedUser?.permissionKeys || [], advertiserIds: resolvedUser?.advertiserIds ?? null, isOwner: false } });
+        return true;
+      }
+    }
+
+    addLog({ action: 'login_failed', email, ip, result: 'fail' });
+    sendJson(res, 401, { error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     return true;
   }
 
   if (req.method === 'GET' && pathname === '/api/auth/me') {
-    const token = bearerToken(req);
-    const payload = verifyToken(token);
-    if (!payload) { sendJson(res, 401, { error: '인증이 만료되었거나 유효하지 않습니다.' }); return true; }
-    sendJson(res, 200, { user: ADMIN_USER });
+    const user = await resolveRequestUser(req);
+    if (!user) { sendJson(res, 401, { error: '인증이 만료되었거나 유효하지 않습니다.' }); return true; }
+    if (user.isOwner) { sendJson(res, 200, { user: ADMIN_USER }); return true; }
+    sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, role: user.permissionKeys.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: user.permissionKeys, advertiserIds: user.advertiserIds, isOwner: false } });
     return true;
   }
 
@@ -2366,7 +2527,7 @@ async function handleApi(req, res, pathname) {
     // ---- 광고주 CRUD (PostgreSQL 기반) --------------------------------------------------
     async function pgFetchAdvertisers(tenantId, whereId) {
       const res = await pgPool.query(
-        `SELECT a.id, a.name, a.monthly_budget, a.brand_color, a.industry, a.website, a.phone, a.address,
+        `SELECT a.id, a.name, a.monthly_budget, a.brand_color, a.industry, a.website, a.phone, a.address, a.business_reg_no, a.autopost_pro_industry,
                 a.created_at, a.updated_at,
                 COALESCE(json_agg(json_build_object(
                   'channel', m.channel, 'status', m.status, 'account_id', m.account_id,
@@ -2382,7 +2543,8 @@ async function handleApi(req, res, pathname) {
       );
       return res.rows.map(r => ({
         id: r.id, name: r.name, monthly_budget: Number(r.monthly_budget) || 0, brand_color: r.brand_color,
-        industry: r.industry, website: r.website, phone: r.phone, address: r.address,
+        industry: r.industry, website: r.website, phone: r.phone, address: r.address, business_reg_no: r.business_reg_no,
+        autopost_pro_industry: r.autopost_pro_industry,
         created_at: r.created_at, updated_at: r.updated_at, accounts: r.accounts || [],
       }));
     }
@@ -2398,11 +2560,12 @@ async function handleApi(req, res, pathname) {
       if (!name) return sendJson(res, 400, { error: '광고주명을 입력하세요.' });
       const tenantId = await getCurrentTenantId();
       const advRes = await pgPool.query(
-        `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address, business_reg_no)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
         [tenantId, name, Number(body.monthly_budget ?? body.monthlyBudget ?? 0) || 0,
          cleanText(body.brand_color || body.color || '#2563eb', 30), cleanText(body.industry || '', 120),
-         cleanText(body.website || '', 500), cleanText(body.phone || '', 100), cleanText(body.address || '', 300)]
+         cleanText(body.website || '', 500), cleanText(body.phone || '', 100), cleanText(body.address || '', 300),
+         cleanText(body.business_reg_no || body.businessRegNo || '', 30) || null]
       );
       const newId = advRes.rows[0].id;
       for (const acc of (Array.isArray(body.accounts) ? body.accounts : [])) {
@@ -2422,10 +2585,10 @@ async function handleApi(req, res, pathname) {
       const [existing] = await pgFetchAdvertisers(tenantId, id);
       if (!existing) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
 
-      const fields = ['name','monthly_budget','brand_color','industry','website','phone','address'];
+      const fields = ['name','monthly_budget','brand_color','industry','website','phone','address','business_reg_no','autopost_pro_industry'];
       const updates = {};
       for (const f of fields) {
-        const camelKey = f === 'monthly_budget' ? 'monthlyBudget' : f === 'brand_color' ? 'color' : f;
+        const camelKey = f === 'monthly_budget' ? 'monthlyBudget' : f === 'brand_color' ? 'color' : f === 'business_reg_no' ? 'businessRegNo' : f === 'autopost_pro_industry' ? 'autopostProIndustry' : f;
         if (body[f] !== undefined) updates[f] = body[f];
         else if (body[camelKey] !== undefined) updates[f] = body[camelKey];
       }
@@ -3255,6 +3418,150 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
     // ============================================================
     // ── 경쟁사 추적 (인사이트 > 경쟁사 분석) ─────────────────────────────────
+    // ── 팀원 계정 관리 (설정 > 사용자 관리) ──────────────────────────────
+    if (pathname.startsWith('/api/users')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      await ensureDefaultRoles(tenantId);
+      const detailMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/users') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const rows = await pgPool.query(
+          `SELECT u.id, u.email, u.name, u.title, u.department, u.status, u.is_owner, u.last_login_at, u.created_at, u.updated_at,
+             m.role_ids, m.advertiser_ids
+           FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id
+           WHERE u.tenant_id = $1 ORDER BY u.created_at ASC`, [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/users') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const body = await readJson(req);
+        const email = cleanText(body.email || '', 200).toLowerCase();
+        const name = cleanText(body.name || '', 100);
+        if (!email || !email.includes('@')) return sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        // 초기 비밀번호는 관리자가 직접 정해서 팀원에게 별도로 전달합니다(이메일 발송 인프라가
+        // 아직 없어서, "초대 링크" 대신 이 방식을 씁니다 - 팀원은 로그인 후 설정에서 변경 가능).
+        const initialPassword = String(body.initialPassword || '');
+        if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO app_users (tenant_id, email, password_hash, name, title, department, status)
+             VALUES ($1,$2,$3,$4,$5,$6,'active') RETURNING id, email, name, title, department, status, is_owner, created_at, updated_at`,
+            [tenantId, email, hashUserPassword(initialPassword), name, cleanText(body.title || '', 100) || null, cleanText(body.department || '', 100) || null]
+          );
+          const user = insert.rows[0];
+          if (Array.isArray(body.roleIds) && body.roleIds.length) {
+            await pgPool.query(
+              `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)`,
+              [tenantId, user.id, body.roleIds, body.advertiserIds || null]
+            );
+          }
+          return sendJson(res, 201, user);
+        } catch (error) {
+          if (String(error?.message || '').includes('duplicate')) return sendJson(res, 409, { error: '이미 등록된 이메일입니다.' });
+          throw error;
+        }
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const targetId = detailMatch[1];
+        const body = await readJson(req);
+        const sets = []; const params = [targetId, tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.title !== undefined) set('title', cleanText(body.title || '', 100) || null);
+        if (body.department !== undefined) set('department', cleanText(body.department || '', 100) || null);
+        if (body.status !== undefined) set('status', body.status);
+        if (body.newPassword) {
+          if (String(body.newPassword).length < 8) return sendJson(res, 400, { error: '비밀번호는 8자 이상이어야 합니다.' });
+          set('password_hash', hashUserPassword(String(body.newPassword)));
+        }
+        if (sets.length) {
+          const upd = await pgPool.query(`UPDATE app_users SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 AND is_owner = false RETURNING id`, params);
+          if (!upd.rows.length) return sendJson(res, 404, { error: '팀원 계정을 찾을 수 없거나 수정할 수 없는 계정입니다.' });
+        }
+        if (body.roleIds !== undefined || body.advertiserIds !== undefined) {
+          const existing = await pgPool.query('SELECT role_ids, advertiser_ids FROM app_memberships WHERE user_id = $1', [targetId]);
+          const roleIds = body.roleIds !== undefined ? body.roleIds : (existing.rows[0]?.role_ids || []);
+          const advertiserIds = body.advertiserIds !== undefined ? body.advertiserIds : (existing.rows[0]?.advertiser_ids ?? null);
+          await pgPool.query(
+            `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (user_id) DO UPDATE SET role_ids = EXCLUDED.role_ids, advertiser_ids = EXCLUDED.advertiser_ids, updated_at = now()`,
+            [tenantId, targetId, roleIds, advertiserIds]
+          );
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        await pgPool.query('DELETE FROM app_users WHERE id = $1 AND tenant_id = $2 AND is_owner = false', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 권한 묶음(역할) 관리 (설정 > 권한 묶음 / 기능별 이용 권한) ────────────
+    if (pathname.startsWith('/api/roles')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      await ensureDefaultRoles(tenantId);
+      const detailMatch = pathname.match(/^\/api\/roles\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/roles') {
+        // 역할 "목록"은 사용자 편집 화면(역할 선택 드롭다운)에서도 필요해서, 팀원 관리 권한이
+        // 있으면 조회는 허용합니다. 실제 수정은 admin.roles.manage로 별도 검사합니다.
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const rows = await pgPool.query('SELECT * FROM app_roles WHERE tenant_id = $1 ORDER BY is_system DESC, created_at ASC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/roles') {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        const body = await readJson(req);
+        const name = cleanText(body.name || '', 100);
+        if (!name) return sendJson(res, 400, { error: '역할명을 입력하세요.' });
+        const insert = await pgPool.query(
+          'INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+          [tenantId, name, cleanText(body.description || '사용자 정의 역할', 300), body.scope || 'internal', body.permissionKeys || []]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        // '관리자' 시스템 역할은 실수로 스스로 잠기는 것을 막기 위해 권한 목록 수정을 막습니다
+        // (기존 프론트 시안의 안전장치를 서버에서도 동일하게 강제합니다).
+        const current = await pgPool.query('SELECT is_system, name FROM app_roles WHERE id = $1 AND tenant_id = $2', [detailMatch[1], tenantId]);
+        if (!current.rows.length) return sendJson(res, 404, { error: '역할을 찾을 수 없습니다.' });
+        const body = await readJson(req);
+        if (current.rows[0].is_system && current.rows[0].name === '관리자' && body.permissionKeys !== undefined) {
+          return sendJson(res, 400, { error: "'관리자' 역할의 권한은 안전을 위해 수정할 수 없습니다." });
+        }
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.description !== undefined) set('description', cleanText(body.description, 300));
+        if (body.permissionKeys !== undefined) set('permission_keys', body.permissionKeys);
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE app_roles SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        return sendJson(res, 200, upd.rows[0]);
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        await pgPool.query('DELETE FROM app_roles WHERE id = $1 AND tenant_id = $2 AND is_system = false', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
     if (pathname.startsWith('/api/competitors')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const tenantId = await getCurrentTenantId();
@@ -3920,6 +4227,81 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const tenantId = await getCurrentTenantId();
       await pgPool.query(`DELETE FROM blog_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
       return sendJson(res, 200, { ok: true });
+    }
+
+    // ── 오토포스트 Pro 연동 (블로그 자동 생성 - 제휴 API) ──────────────────
+    if (req.method === 'GET' && pathname === '/api/autopost-pro/status') {
+      return sendJson(res, 200, { configured: autopostProConfigured() });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/autopost-pro/seat') {
+      if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
+      const q = new URL(req.url, 'http://x').searchParams;
+      const advertiserId = q.get('advertiserId');
+      if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const [advertiser] = await pgFetchAdvertisers(tenantId, advertiserId);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      try {
+        const seatRow = await ensureAutopostProSeat(tenantId, advertiser);
+        // 캐시된 좌석 정보만으로는 무료체험 잔여 등이 오래됐을 수 있어, 실제 화면에 보여줄 때는
+        // 항상 최신 상태를 한 번 더 조회해서 캐시를 갱신합니다.
+        const fresh = await autopostProRequest('GET', `/v1/seats/${seatRow.seat_id}`);
+        await pgPool.query('UPDATE autopost_pro_seats SET plan=$2, trial_remaining=$3, status=$4, updated_at=now() WHERE advertiser_id=$1', [advertiser.id, fresh.plan || null, fresh.trial_remaining ?? null, fresh.status || null]);
+        return sendJson(res, 200, fresh);
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '좌석 정보를 가져오지 못했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/autopost-pro/drafts') {
+      if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다. 관리자가 AUTOPOST_PRO_API_KEY를 서버에 연결해주세요.' });
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const keyword = cleanText(body.keyword || '', 200);
+      if (!advertiserId || !keyword) return sendJson(res, 400, { error: 'advertiserId와 keyword가 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const [advertiser] = await pgFetchAdvertisers(tenantId, advertiserId);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      try {
+        const seatRow = await ensureAutopostProSeat(tenantId, advertiser);
+        // Idempotency-Key: 네트워크 오류로 프론트가 재시도해도 같은 초안이 중복 과금되지 않도록
+        // 요청 하나당 고정된 키를 씁니다(프론트가 안 보내면 서버가 매번 새로 만들어 재시도 시
+        // 중복 방지가 안 되므로, 가능하면 프론트에서 같은 키를 재전송하도록 안내합니다).
+        const idempotencyKey = cleanText(body.idempotencyKey || '', 100) || undefined;
+        const draft = await autopostProRequest('POST', `/v1/seats/${seatRow.seat_id}/drafts`, {
+          keyword, length: body.length || 'auto', num_images: Number.isFinite(Number(body.numImages)) ? Number(body.numImages) : 1,
+          confirm_overage: Boolean(body.confirmOverage),
+        }, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined);
+        return sendJson(res, 201, draft);
+      } catch (error) {
+        // overage_confirm_required는 "실패"가 아니라 "사용자 확인이 필요하다"는 정상 흐름이라
+        // 409로 구분해서 돌려주고, 프론트는 이걸 보고 과금 동의 확인창을 띄웁니다.
+        return sendJson(res, error?.code === 'overage_confirm_required' ? 409 : (error?.status || 502), { error: error?.message || '초안 생성에 실패했습니다.', code: error?.code });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/autopost-pro/usage') {
+      if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
+      const q = new URL(req.url, 'http://x').searchParams;
+      try {
+        const usage = await autopostProRequest('GET', `/v1/usage${q.get('month') ? `?month=${encodeURIComponent(q.get('month'))}` : ''}`);
+        return sendJson(res, 200, usage);
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '사용량 조회에 실패했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/autopost-pro/compliance') {
+      if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
+      const body = await readJson(req);
+      try {
+        // 규정검수는 무과금 엔드포인트입니다(AI 호출 없음) - 좌석 없이도 바로 호출 가능합니다.
+        const result = await autopostProRequest('POST', '/v1/compliance', { industry: body.industry, text: body.text, org_name: body.orgName });
+        return sendJson(res, 200, result);
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '규정검수에 실패했습니다.' });
+      }
     }
 
     if (req.method === 'GET' && pathname === '/api/blog/ai-status') {

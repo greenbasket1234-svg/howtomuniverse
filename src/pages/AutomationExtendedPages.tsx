@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../hooks/useApi';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { loadAdvertisers } from '../data/advertisers';
 import { loadAutomationJobs } from '../automation/automationStore';
 import { checkReportReadiness, deleteReportAutomationConfig, generateReportsNow, loadReportAutomationConfigs, nextReportRun, previousMonthKey, upsertReportAutomationConfig, type ReportAutomationConfig } from '../automation/report/reportAutomation';
 import { deleteAdCopyAutomationConfig, generateAdCopyNow, loadAdCopyAutomationConfigs, upsertAdCopyAutomationConfig, type AdCopyAutomationConfig, type AdCopyProvider } from '../automation/adCopy/adCopyAutomation';
 import { deleteBlogAutomationConfig, generateBlogNow, loadBlogAutomationConfigs, upsertBlogAutomationConfig, type BlogAutomationConfig } from '../automation/blog/blogAutomation';
+import { autopostProApi, OverageConfirmRequiredError, type AutopostDraft, type AutopostSeat } from '../features/blog/autopostProApi';
+import { blogApi } from '../features/blog/blogApi';
 import { deleteNotificationRule, loadInternalNotifications, loadNotificationRules, markNotificationRead, testNotificationRule, upsertNotificationRule } from '../automation/notifications/notificationEngine';
 import type { NotificationRule, NotificationTriggerType } from '../automation/notifications/notificationTypes';
 import { deleteWorkflow, loadWorkflows, runWorkflowNow, upsertWorkflow, validateWorkflow } from '../automation/workflow/workflowEngine';
@@ -63,7 +65,96 @@ export function BlogAutomationPage(){
  {aiConfigured===false&&<div className="auto28-note" style={{borderColor:'#f2c063'}}><b>AI 미연동 상태입니다</b><span>규칙은 저장·예약되지만, 실제 생성은 서버에 블로그 AI(BLOG_AI_PROVIDER)가 연결된 뒤에 실행됩니다. 지금 "지금 생성"을 눌러도 결과는 '보류'로 기록됩니다.</span></div>}
  <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>블로그 생성 규칙</h3><p>생성된 초안은 블로그 제작 화면(제목 후보·본문 블록 포함)에 그대로 이어집니다.</p></div><Link to="/content/blog">블로그 제작</Link></div><div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>광고주</th><th>키워드</th><th>플랫폼</th><th>주기</th><th>상태</th><th>작업</th></tr></thead><tbody>{configs.length===0?<tr><td colSpan={6}>등록된 생성 규칙이 없습니다.</td></tr>:configs.map(c=><tr key={c.configId}><td><b>{c.advertiserName}</b></td><td>{c.primaryKeyword||'-'}</td><td>{c.platform}</td><td>{c.cadence==='manual'?'수동':c.cadence==='weekly'?`매주 ${['일','월','화','수','목','금','토'][c.weekday??1]} ${c.time}`:`매월 ${c.dayOfMonth||1}일 ${c.time}`}</td><td><Pill tone={c.enabled?'green':'gray'}>{c.enabled?'ON':'중지'}</Pill></td><td><div className="auto28-actions"><button className="btn secondary mini" disabled={running===c.configId} onClick={()=>runNow(c)}>{running===c.configId?'생성 중...':'지금 생성'}</button><button className="btn secondary mini" onClick={()=>setEditing(c)}>수정</button><button className="btn secondary mini" onClick={()=>{if(confirm('삭제할까요?')){deleteBlogAutomationConfig(c.configId);bump()}}}>삭제</button></div></td></tr>)}</tbody></table></div></section>
  <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>최근 생성 기록</h3><p>AI 미연동 상태의 시도는 실패가 아니라 보류로 구분됩니다.</p></div></div>{runs.slice(0,5).map(r=><RunRow key={r.runId} run={r}/>)}</section>
- {editing&&<BlogConfigModal value={editing} onClose={()=>setEditing(null)} onSave={c=>{upsertBlogAutomationConfig(c);setEditing(null);bump()}}/>}</div>
+ {editing&&<BlogConfigModal value={editing} onClose={()=>setEditing(null)} onSave={c=>{upsertBlogAutomationConfig(c);setEditing(null);bump()}}/>}
+ <AutopostProSection/>
+ </div>
+}
+/** 오토포스트 Pro(㈜시온랩스) 제휴 API로 즉시 초안을 생성합니다. 위의 "생성 규칙"과는
+ * 완전히 별개의 흐름입니다 - 광고주(사업자등록번호) 기준 좌석 제도, 월 한도, 초과 시
+ * 실제 과금(건당 3,000원)이 있어 사용자가 명시적으로 동의해야만 진행합니다. */
+function AutopostProSection(){
+ const navigate=useNavigate();
+ const advs=advertisers();
+ const [configured,setConfigured]=useState<boolean|null>(null);
+ const [advertiserId,setAdvertiserId]=useState('');
+ const [seat,setSeat]=useState<AutopostSeat|null>(null);
+ const [seatError,setSeatError]=useState('');
+ const [seatLoading,setSeatLoading]=useState(false);
+ const [keyword,setKeyword]=useState('');
+ const [length,setLength]=useState<'short'|'medium'|'long'|'auto'>('auto');
+ const [numImages,setNumImages]=useState(1);
+ const [generating,setGenerating]=useState(false);
+ const [error,setError]=useState('');
+ const [result,setResult]=useState<AutopostDraft|null>(null);
+ const [overageConfirm,setOverageConfirm]=useState<{message:string}|null>(null);
+
+ useEffect(()=>{ autopostProApi.status().then(s=>setConfigured(s.configured)).catch(()=>setConfigured(false)); },[]);
+
+ async function loadSeat(id:string){
+   setSeat(null);setSeatError('');
+   if(!id)return;
+   setSeatLoading(true);
+   try{ setSeat(await autopostProApi.seat(id)); }
+   catch(e){ setSeatError(e instanceof Error?e.message:'좌석 정보를 가져오지 못했습니다.'); }
+   finally{ setSeatLoading(false); }
+ }
+
+ async function generate(confirmOverage=false){
+   if(!advertiserId||!keyword.trim())return;
+   setGenerating(true);setError('');setOverageConfirm(null);
+   const idempotencyKey=`${advertiserId}-${keyword.trim()}-${Date.now()}`;
+   try{
+     const draft=await autopostProApi.createDraft({advertiserId,keyword:keyword.trim(),length,numImages,confirmOverage,idempotencyKey});
+     setResult(draft);
+     await loadSeat(advertiserId); // 생성 후 잔여 체험/한도가 바뀌므로 최신화
+   }catch(e){
+     if(e instanceof OverageConfirmRequiredError){ setOverageConfirm({message:e.message}); }
+     else setError(e instanceof Error?e.message:'초안 생성에 실패했습니다.');
+   }finally{ setGenerating(false); }
+ }
+
+ async function saveToBlogProduction(){
+   if(!result)return;
+   const adv=advs.find(a=>a.id===advertiserId);
+   const project=await blogApi.createProject({
+     advertiserId, advertiserName:adv?.name||'', industry:adv?.industry||'', platform:'오토포스트 Pro',
+     contentType:'AI 생성', purpose:'오토포스트 Pro 즉시 생성', primaryKeyword:keyword, secondaryKeywords:[],
+     targetLength:0, tone:'', titleOptions:[result.title], selectedTitle:result.title,
+     blocks:[{blockId:`html-${Date.now()}`,type:'html',text:result.body}], status:'draft',
+   });
+   navigate(`/content/blog?project=${encodeURIComponent(project.projectId)}`);
+ }
+
+ if(configured===null) return <section className="card auto28-card"><p>오토포스트 Pro 연결 상태를 확인하는 중...</p></section>;
+ if(!configured) return <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>오토포스트 Pro (제휴 API)</h3><p>병원·세무·학원·동물병원 등 업종별 규정을 반영한 AI 블로그 초안을 생성합니다.</p></div></div><div className="auto28-note" style={{borderColor:'#f2c063'}}><b>아직 연결되지 않았습니다</b><span>관리자가 서버에 AUTOPOST_PRO_API_KEY를 연결하면 사용할 수 있습니다.</span></div></section>;
+
+ return <section className="card auto28-card">
+   <div className="auto28-cardhead"><div><h3>오토포스트 Pro로 즉시 생성</h3><p>사업자등록번호 기준 좌석을 사용합니다. 무료체험 3건 이후 월 한도를 넘으면 건당 3,000원이 청구되며, 반드시 아래에서 직접 동의해야 진행됩니다.</p></div></div>
+   <div className="auto28-form" style={{padding:'0 0 14px'}}>
+     <label>광고주<select value={advertiserId} onChange={e=>{setAdvertiserId(e.target.value);setResult(null);setError('');loadSeat(e.target.value)}}><option value="">선택하세요</option>{advs.filter(a=>a.id!=='default').map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+     <label>분량<select value={length} onChange={e=>setLength(e.target.value as any)}><option value="auto">자동</option><option value="short">짧게(700~900자)</option><option value="medium">보통(1,100~1,500자)</option><option value="long">길게(1,800~2,400자)</option></select></label>
+     <label className="span-2">키워드<input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="예: 무릎 인공관절 수술 후 재활"/></label>
+     <label>본문 이미지 자리 수<input type="number" min={0} max={8} value={numImages} onChange={e=>setNumImages(Number(e.target.value)||0)}/></label>
+   </div>
+   {advertiserId&&<div className="auto28-detailgrid" style={{padding:'0 0 14px'}}>
+     {seatLoading&&<div><span>좌석 상태</span><b>확인 중...</b></div>}
+     {seatError&&<div><span>좌석 상태</span><b style={{color:'#b42318'}}>{seatError}</b></div>}
+     {seat&&<><div><span>플랜</span><b>{seat.plan==='trial'?'무료체험':'유료'}</b></div>{seat.plan==='trial'&&<div><span>남은 체험</span><b>{seat.trial_remaining}건</b></div>}<div><span>상태</span><b>{seat.status==='active'?'정상':'정지됨'}</b></div></>}
+   </div>}
+   {error&&<div className="auto28-error"><span>{error}</span></div>}
+   {overageConfirm&&<div className="auto28-note" style={{borderColor:'#e08a00'}}>
+     <b>월 한도 초과 - 유료 결제 동의 필요</b><span>{overageConfirm.message}</span>
+     <div style={{marginTop:8,display:'flex',gap:8}}><button className="btn primary" onClick={()=>generate(true)} disabled={generating}>동의하고 3,000원으로 진행</button><button className="btn secondary" onClick={()=>setOverageConfirm(null)}>취소</button></div>
+   </div>}
+   <div className="content-final-actions" style={{marginTop:0}}>
+     <button className="btn primary" onClick={()=>generate(false)} disabled={generating||!advertiserId||!keyword.trim()}>{generating?'생성 중...':'초안 생성'}</button>
+   </div>
+   {result&&<div className="auto28-note" style={{borderColor:'#9bd6b0',marginTop:12}}>
+     <b>생성 완료: {result.title}</b>
+     <span>{result.billing.billable?`유료 초안(이번 달 ${result.billing.quota_used}/${result.billing.quota_limit}건)`:'무료체험 초안'}{result.billing.overage?' · 초과 과금 3,000원 청구됨':''}</span>
+     <div style={{marginTop:8}}><button className="btn primary" onClick={saveToBlogProduction}>블로그 제작 화면으로 가져가기</button></div>
+   </div>}
+ </section>;
 }
 function BlogConfigModal({value,onClose,onSave}:{value:BlogAutomationConfig;onClose:()=>void;onSave:(v:BlogAutomationConfig)=>void}){const [v,setV]=useState(value);const advs=advertisers();return <Modal title="블로그 자동 생성 설정" onClose={onClose}><div className="auto28-form"><label>광고주<select value={v.advertiserId} onChange={e=>{const a=advs.find(x=>x.id===e.target.value);setV({...v,advertiserId:e.target.value,advertiserName:a?.name||''})}}>{advs.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>업종<input value={v.industry||''} onChange={e=>setV({...v,industry:e.target.value})}/></label><label>플랫폼<input value={v.platform} onChange={e=>setV({...v,platform:e.target.value})} placeholder="네이버 블로그"/></label><label>콘텐츠 유형<input value={v.contentType} onChange={e=>setV({...v,contentType:e.target.value})} placeholder="정보형 / 후기형 등"/></label><label className="span-2">메인 키워드<input value={v.primaryKeyword} onChange={e=>setV({...v,primaryKeyword:e.target.value})}/></label><label className="span-2">서브 키워드(쉼표로 구분)<input value={v.secondaryKeywords.join(', ')} onChange={e=>setV({...v,secondaryKeywords:e.target.value.split(',').map(x=>x.trim()).filter(Boolean)})}/></label><label>지역<input value={v.region||''} onChange={e=>setV({...v,region:e.target.value})}/></label><label>목표 글자 수<input type="number" min="500" step="100" value={v.targetLength} onChange={e=>setV({...v,targetLength:Number(e.target.value)||2000})}/></label><label>톤앤매너<input value={v.tone||''} onChange={e=>setV({...v,tone:e.target.value})}/></label><label>CTA<input value={v.cta||''} onChange={e=>setV({...v,cta:e.target.value})}/></label><label>주기<select value={v.cadence} onChange={e=>setV({...v,cadence:e.target.value as any})}><option value="manual">수동</option><option value="weekly">매주</option><option value="monthly">매월</option></select></label><label>실행 시각<input type="time" value={v.time} onChange={e=>setV({...v,time:e.target.value})}/></label>{v.cadence==='weekly'&&<label>요일<select value={v.weekday} onChange={e=>setV({...v,weekday:Number(e.target.value)})}>{['일','월','화','수','목','금','토'].map((x,i)=><option key={i} value={i}>{x}</option>)}</select></label>}{v.cadence==='monthly'&&<label>실행일<input type="number" min="1" max="28" value={v.dayOfMonth||1} onChange={e=>setV({...v,dayOfMonth:Number(e.target.value)||1})}/></label>}<label><input type="checkbox" checked={v.enabled} onChange={e=>setV({...v,enabled:e.target.checked})}/> 규칙 ON</label></div><ModalActions onClose={onClose} onSave={()=>{if(!v.primaryKeyword.trim()){alert('메인 키워드를 입력하세요.');return}onSave(v)}}/></Modal>}
 

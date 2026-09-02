@@ -1,4 +1,4 @@
-export type BlogBlockType = 'paragraph'|'h2'|'h3'|'image'|'list'|'quote'|'faq'|'cta'|'divider';
+export type BlogBlockType = 'paragraph'|'h2'|'h3'|'image'|'list'|'quote'|'faq'|'cta'|'divider'|'html';
 export type BlogBlock = { blockId:string; type:BlogBlockType; title?:string; text?:string; assetId?:string };
 export type BlogMedicalReview = {
   required: boolean|null;

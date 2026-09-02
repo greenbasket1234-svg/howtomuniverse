@@ -32,6 +32,8 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
           website:       String(adv.website ?? ''),
           phone:         String(adv.phone ?? ''),
           address:       String(adv.address ?? ''),
+          businessRegNo: adv.business_reg_no ? String(adv.business_reg_no) : undefined,
+          autopostProIndustry: adv.autopost_pro_industry ? String(adv.autopost_pro_industry) : undefined,
           links: CHANNELS.map(channel => {
             const acc = accounts.find((a) => (a as Record<string,unknown>).channel === CH_KEY[channel]) as Record<string,unknown> | undefined;
             const status = acc?.status === 'connected' ? '연결됨' : acc?.status === 'error' ? '수집 실패' : '미연동';

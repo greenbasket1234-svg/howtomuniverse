@@ -196,7 +196,7 @@ export function AdvertiserManagementPage(){
  const [metaLoading,setMetaLoading]=useState(false);
  const [metaError,setMetaError]=useState('');
  const filtered=advertisers.filter(r=>matchesAdvertiserFilter(r.name,filterValue)&&r.name.includes(query.trim()));
- const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
+ const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',businessRegNo:'',autopostProIndustry:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
  const loadMetaAccounts=async()=>{
    setMetaLoading(true);setMetaError('');
    try{
@@ -222,7 +222,7 @@ export function AdvertiserManagementPage(){
        return {channel:CH_KEY[link.channel],status:'connected',account_id:accountId};
      })
      .filter((v):v is {channel:string;status:string;account_id:string}=>v!==null);
-   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||''),accounts};
+   const payload={name,monthly_budget:Number(f.get('monthlyBudget')||0),brand_color:String(f.get('color')||'#2563eb'),industry:String(f.get('industry')||''),website:String(f.get('website')||''),phone:String(f.get('phone')||''),address:String(f.get('address')||''),business_reg_no:String(f.get('businessRegNo')||'').trim()||null,autopost_pro_industry:String(f.get('autopostProIndustry')||'').trim()||null,accounts};
    try{
      if(editing.id) await apiFetch(`/advertisers/${encodeURIComponent(editing.id)}`,{method:'PATCH',body:JSON.stringify(payload)});
      else await apiFetch('/advertisers',{method:'POST',body:JSON.stringify(payload)});
@@ -248,10 +248,12 @@ export function AdvertiserManagementPage(){
    </section>
    {editing&&<Modal title={editing.id?'광고주 수정':'광고주 등록'} onClose={()=>setEditing(null)}><form className="final-form" onSubmit={saveAdvertiser}>
      <label>광고주명<input name="name" defaultValue={editing.name} required placeholder="광고주명"/></label>
-     <label>업종<select name="industry" defaultValue={editing.industry||''}><option value="">미설정</option><option>병원·의료기관</option><option>치과</option><option>한의원</option><option>동물병원</option><option>세무사·세무법인</option><option>학원·교육</option><option>자동차·렌트·리스</option><option>식품·쇼핑몰</option><option>부동산</option><option>법률</option><option>일반 서비스업</option></select></label>
+     <label>업종<select name="industry" defaultValue={editing.industry||''}><option value="">미설정</option><option>병원·의료기관</option><option>치과</option><option>한의원</option><option>동물병원</option><option>세무사·세무법인</option><option>학원·교육</option><option>자동차·렌트·리스</option><option>이사업체</option><option>식품·쇼핑몰</option><option>부동산</option><option>법률</option><option>일반 서비스업</option></select></label>
      <label>홈페이지<input name="website" defaultValue={editing.website||''} placeholder="https://"/></label>
      <label>전화번호<input name="phone" defaultValue={editing.phone||''}/></label>
      <label>주소<input name="address" defaultValue={editing.address||''}/></label>
+     <label>사업자등록번호<input name="businessRegNo" defaultValue={editing.businessRegNo||''} placeholder="123-45-67890" title="오토포스트 Pro 등 외부 제휴 API의 좌석(seat) 생성 기준입니다."/></label>
+     <label>오토포스트 Pro 업종 코드<input name="autopostProIndustry" defaultValue={editing.autopostProIndustry||''} placeholder="비워두면 업종에서 자동 매핑(병원/동물병원/세무/학원만 지원)" title="식품·이사·렌트카 등 자동 매핑에 없는 업종은 제휴사에 추가를 요청한 뒤 안내받은 코드를 여기 입력하세요."/></label>
      <label>월 예산<input name="monthlyBudget" type="number" min="0" step="10000" defaultValue={editing.monthlyBudget} required/></label>
      <label>브랜드 색상<input name="color" type="color" defaultValue={editing.color}/></label>
      <div className="final-form-meta">
