@@ -1,7 +1,8 @@
 import { createProject, type CopyVariant } from '../../utils/contentStore';
-import { recordUsage } from '../../utils/subscriptionStore';
+import { subscriptionApi } from '../../utils/subscriptionApi';
 import { createRun, finishRun } from '../execution/executionStore';
 import { removeAutomationJob, upsertAutomationJob } from '../automationStore';
+import { apiFetch } from '../../hooks/useApi';
 
 export type AdCopyProvider = 'template' | 'openai' | 'claude';
 export type AdCopyAutomationConfig = {
@@ -45,7 +46,6 @@ export function upsertAdCopyAutomationConfig(row: AdCopyAutomationConfig) {
 export function deleteAdCopyAutomationConfig(configId: string) { saveAdCopyAutomationConfigs(read().filter(x => x.configId !== configId)); removeAutomationJob(`adcopy-config-${configId}`); }
 
 function text(value?: string, fallback = '') { return value?.trim() || fallback; }
-function providerAvailable(provider: AdCopyProvider) { return provider === 'template'; }
 
 function templateVariants(config: AdCopyAutomationConfig): CopyVariant[] {
   const product = text(config.productName, config.advertiserName);
@@ -64,23 +64,38 @@ function templateVariants(config: AdCopyAutomationConfig): CopyVariant[] {
   return candidates.slice(0, Math.max(1, Math.min(5, config.variantCount || 3))).map((v, i) => ({ ...v, variantId: `copy-${Date.now()}-${i}` }));
 }
 
-export function generateAdCopyNow(config: AdCopyAutomationConfig) {
+/** 광고 문구는 이제 두 갈래입니다: 'template'(로컬, 항상 됨) / 'openai'|'claude'(서버에
+ * AD_COPY_AI_PROVIDER가 연결되어 있으면 실제 AI가 생성, 없으면 정직하게 보류). 블로그·
+ * 이미지 생성과 동일한 패턴입니다 - 서버 연결 전에도 템플릿 경로는 항상 정상 동작합니다. */
+export async function generateAdCopyNow(config: AdCopyAutomationConfig) {
   const run = createRun({ jobId: `adcopy-config-${config.configId}`, jobName: `${config.advertiserName} 광고 문구 생성`, advertiserId: config.advertiserId, advertiserName: config.advertiserName, type: 'ad-copy', trigger: 'manual', status: 'running', inputSummary: { channel: config.channel, provider: config.provider, objective: config.objective } });
-  if (!providerAvailable(config.provider)) {
-    return finishRun(run.runId, { status: 'blocked', error: { code: 'AI_PROVIDER_NOT_CONNECTED', message: `${config.provider === 'openai' ? 'OpenAI' : 'Claude'} API는 아직 서버에 연결되지 않았습니다. 현재는 템플릿 기반 생성만 사용할 수 있습니다.` } });
-  }
   try {
-    const variants = templateVariants(config);
+    let variants: CopyVariant[];
+    let generatorLabel = 'template';
+    if (config.provider === 'template') {
+      variants = templateVariants(config);
+    } else {
+      const status = await apiFetch<{ configured: boolean; provider: string | null }>('/ad-copy/ai-status');
+      if (!status.configured) {
+        return finishRun(run.runId, { status: 'blocked', error: { code: 'AI_PROVIDER_NOT_CONNECTED', message: `${config.provider === 'openai' ? 'OpenAI' : 'Claude'} API는 아직 서버에 연결되지 않았습니다. 관리자가 AD_COPY_AI_PROVIDER를 연결하면 실행됩니다. 그 전까지는 템플릿 기반 생성을 이용하세요.` } });
+      }
+      const result = await apiFetch<{ variants: CopyVariant[]; generator: string }>('/ad-copy/generate', {
+        method: 'POST',
+        body: JSON.stringify({ advertiserName: config.advertiserName, channel: config.channel, productName: config.productName, objective: config.objective, targetAudience: config.targetAudience, keyBenefit: config.keyBenefit, hookType: config.hookType, tone: config.tone, cta: config.cta, variantCount: config.variantCount }),
+      });
+      variants = result.variants;
+      generatorLabel = result.generator;
+    }
     const project = createProject({
       projectType: 'ad', title: `${config.advertiserName} ${config.channel} 광고 문구 · 자동화 초안`, advertiserId: config.advertiserId, advertiserName: config.advertiserName,
       channel: config.channel, objective: config.objective || '전환', creativeType: '광고 문구', target: config.targetAudience, keyBenefit: config.keyBenefit,
       referenceIds: [], hooks: variants.map(v => v.headline), copyVariants: variants, resultAssetIds: [], status: 'draft',
       hookType: config.hookType,
     });
-    recordUsage({ advertiserId: config.advertiserId, feature: 'ad-creation', action: 'generate', quantity: 1, sourceId: project.projectId, provider: 'template', providerCost: 0, aiCost: 0 });
-    return finishRun(run.runId, { status: 'success', outputSummary: { projectId: project.projectId, variantCount: variants.length, provider: 'template', aiCost: 0 }, steps: [
+    await subscriptionApi.recordUsage({ advertiserId: config.advertiserId, feature: 'ad-creation', action: 'generate', quantity: 1, sourceId: project.projectId, provider: generatorLabel, providerCost: 0, aiCost: 0 });
+    return finishRun(run.runId, { status: 'success', outputSummary: { projectId: project.projectId, variantCount: variants.length, provider: generatorLabel, aiCost: 0 }, steps: [
       { stepId: 'input', name: '광고주·매체·목적 입력 정리', status: 'success' },
-      { stepId: 'generate', name: '규칙/템플릿 기반 A/B/C 문구 생성', status: 'success' },
+      { stepId: 'generate', name: generatorLabel === 'template' ? '규칙/템플릿 기반 A/B/C 문구 생성' : '외부 AI로 문구 생성', status: 'success' },
       { stepId: 'content', name: '콘텐츠 제작 프로젝트에 초안 저장', status: 'success' },
     ] });
   } catch (error) {
