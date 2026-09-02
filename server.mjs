@@ -407,6 +407,31 @@ async function callAnthropic(systemPrompt, userPrompt) {
  * Meta 그래프 API 호출. 에러코드 2("Service temporarily unavailable")나 4(rate limit) 같은
  * Meta 쪽의 일시적인 문제는 몇 초 대기 후 최대 3번까지 자동으로 재시도합니다.
  */
+/**
+ * Meta 그래프 API 쓰기(POST) 호출. 캠페인/광고 ON-OFF처럼 실제 계정에 변경을 가하는
+ * 작업에 씁니다. 이 토큰에 ads_management 권한이 없으면 Meta가 오류를 반환하는데,
+ * 그 오류를 그대로 사용자에게 보여줍니다(가짜로 성공 처리하지 않습니다).
+ */
+async function metaGraphPost(path, params = {}, attempt = 1) {
+  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
+  const url = new URL(`${META_GRAPH_BASE}${path}`);
+  const body = new URLSearchParams({ ...params, access_token: META_ACCESS_TOKEN });
+  const res = await fetch(url.toString(), { method: 'POST', body });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const code = data?.error?.code;
+    const retryable = code === 1 || code === 2 || code === 4 || code === 17 || res.status >= 500;
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+      return metaGraphPost(path, params, attempt + 1);
+    }
+    const message = data?.error?.message || `Meta API HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+
 async function metaGraphGet(path, params = {}, attempt = 1) {
   if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
   const url = new URL(`${META_GRAPH_BASE}${path}`);
@@ -4292,7 +4317,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
-    // 기존 경로 호환: 내부 구현은 중앙 Metrics API와 같은 기간별 저장소를 사용합니다.
+
     if (req.method === 'GET' && pathname === '/api/daily-metrics') {
       const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
@@ -4344,7 +4369,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
               startAt: c.regTm || new Date().toISOString(), endAt: undefined,
               status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
               lastSyncedAt: new Date().toISOString(),
-              capability: { upload: false, toggle: false, schedule: false },
+              capability: { upload: false, toggle: true, schedule: false }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF가 가능합니다.
             });
           }
         } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
@@ -4352,8 +4377,42 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       return sendJson(res, 200, campaigns);
     }
     if (req.method === 'PUT' && pathname === '/api/campaigns') {
-      // 캠페인 on/off 전환 등 실제 Meta 반영은 ads_management 권한이 필요합니다(현재 ads_read만 사용).
-      return sendJson(res, 200, { ok: true, note: '읽기 전용 토큰이라 실제 매체에는 반영되지 않았습니다.' });
+      // 캠페인 ON/OFF처럼 실제 계정에 변경을 가하는 쓰기 작업이라, 소재 재등록 센터와
+      // 동일하게 campaign.edit 권한과 광고주 접근 범위를 반드시 검사합니다.
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const body = await readJson(req);
+      const campaignId = cleanText(body.id || '', 120);
+      const channel = cleanText(body.channel || '', 20);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const targetStatus = body.status === 'on' ? 'on' : body.status === 'off' ? 'off' : '';
+      if (!campaignId || !channel || !advertiserId || !targetStatus) return sendJson(res, 400, { error: 'id, channel, advertiserId, status(on|off)가 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      if (denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
+
+      if (channel === 'meta') {
+        // 현재 META_ACCESS_TOKEN은 ads_read 권한 기준으로 연결되어 있어(GET /api/campaigns의
+        // capability.toggle=false 참고), 실제 캠페인 상태 변경(ads_management 권한 필요)은
+        // 아직 지원하지 않습니다. 가짜로 성공 처리하지 않고 정직하게 안내합니다.
+        return sendJson(res, 400, { error: 'Meta는 현재 조회 전용 권한(ads_read)으로 연결되어 있어 ON/OFF 변경을 지원하지 않습니다. ads_management 권한이 있는 토큰으로 재연결하면 사용할 수 있습니다.' });
+      }
+
+      if (channel === 'naver') {
+        const tenantId = await getCurrentTenantId();
+        const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+        if (!account || account.status !== 'connected' || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되어 있지 않습니다.' });
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        try {
+          await naverApiRequest('PUT', `/ncc/campaigns/${campaignId}`, { fields: 'userLock' }, credentials, { nccCampaignId: campaignId, userLock: targetStatus === 'off' });
+          addLog({ action: 'campaign_toggle', advertiserId, channel, campaignId, result: 'success', data: { targetStatus } });
+          return sendJson(res, 200, { ok: true, status: targetStatus });
+        } catch (error) {
+          addLog({ action: 'campaign_toggle', advertiserId, channel, campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, 502, { error: error instanceof Error ? `네이버에서 상태 변경을 거부했습니다: ${error.message}` : '캠페인 상태 변경에 실패했습니다.' });
+        }
+      }
+
+      return sendJson(res, 400, { error: `${channel} 매체는 아직 ON/OFF 변경을 지원하지 않습니다.` });
     }
 
     if (req.method === 'GET' && pathname === '/api/funnels/channels') {

@@ -88,7 +88,9 @@ export function CampaignManagementPage() {
 
   function toggle(id:string) {
     const row=rows.find(r=>r.id===id); if(!row?.capability.toggle)return;
-    apiFetch('/campaigns',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:row.status==='on'?'off':'on'})}).then(()=>reloadCampaigns()).catch(error=>setCampaignError(error instanceof Error?error.message:String(error)));
+    const nextStatus=row.status==='on'?'off':'on';
+    if(!confirm(`${row.name} 캠페인을 실제로 ${nextStatus==='off'?'중지':'재개'}할까요? 이 작업은 실제 광고 계정에 바로 반영됩니다.`))return;
+    apiFetch('/campaigns',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,channel:row.platform,advertiserId:row.advertiserId,status:nextStatus})}).then(()=>reloadCampaigns()).catch(error=>setCampaignError(error instanceof Error?error.message:String(error)));
   }
 
   const scheduleTarget = rows.find(r=>r.id===showSchedule);
