@@ -3690,7 +3690,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const tenantId = await getCurrentTenantId(); const filters = parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
       const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
-      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
+      // (2026-09) 예전엔 여기에 dailyRows(키워드 × 날짜 단위 원본, 90일이면 키워드 2,000개
+      // 기준 최대 18만 행)까지 같이 내려줬는데, 이 화면 어디서도 실제로 쓰지 않는 완전히
+      // 낭비되는 데이터였습니다. 90일 이상 조회 시 심하게 느려지고 렉 걸리던 원인 중
+      // 가장 큰 부분이라 제거했습니다 - rows(키워드별로 이미 합산된 값)만으로 충분합니다.
+      return sendJson(res, 200, { rows, connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/funnel') {
       const tenantId = await getCurrentTenantId(); const filters=parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); const source=filterMetricRows(db.dailyMetrics,filters);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
@@ -58,6 +58,13 @@ export function KeywordAnalysisPage(){
   const [advertisers]=useAdvertisers();
   const found=advertisers.find(a=>a.id===brandId);
   const {rows:metricRows,meta,loading,error}=useMetricRows<KeywordMetricRow>('/metrics/keywords',{advertiserId:brandId});
+  // 90일 이상 조회하면 키워드가 많은 계정은 화면이 심하게 느려질 수 있어(수천 개 키워드를
+  // 그대로 그리고 정렬해야 함), 90일 이상일 때는 기본으로 전환이 1건이라도 있는 키워드만
+  // 보여줍니다. 꺼서 전체를 볼 수도 있습니다.
+  const rangeDays=meta?.from&&meta?.to?Math.round((new Date(meta.to).getTime()-new Date(meta.from).getTime())/86_400_000)+1:0;
+  const isLongRange=rangeDays>=90;
+  const [convertedOnly,setConvertedOnly]=useState(isLongRange);
+  useEffect(()=>{setConvertedOnly(isLongRange)},[isLongRange]);
 
   // found가 아직 없을 때(광고주 목록이 비동기로 로딩 중일 때)도 훅 호출 순서가 항상 같아야 하므로,
   // 조기 리턴(이 아래) 전에 필요한 훅을 전부 미리 호출해둡니다. (React 훅 규칙)
@@ -66,7 +73,8 @@ export function KeywordAnalysisPage(){
     impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount+(m.purchases||0)+(m.unconfirmed||0),dbCount:m.dbCount,unconfirmed:m.unconfirmed||0,purchases:m.purchases||0,addToCart:m.addToCart||0,completeRegistration:m.completeRegistration||0,revenue:m.revenue||0,status:'active' as const,
     grade:gradeOf({impressions:m.impressions,clicks:m.clicks,spend:m.spend,conversions:m.dbCount+(m.purchases||0)+(m.unconfirmed||0)})
   }));
-  const filteredRowsBase=allRows.filter(r=>(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade)&&(campaign==='전체'||r.campaign===campaign));
+  const zeroConversionCount=allRows.filter(r=>r.conversions===0).length;
+  const filteredRowsBase=allRows.filter(r=>(!convertedOnly||r.conversions>0)&&(!query||r.keyword.toLowerCase().includes(query.toLowerCase()))&&(grade==='all'||r.grade===grade)&&(campaign==='전체'||r.campaign===campaign));
   const campaigns=['전체',...new Set(allRows.map(r=>r.campaign).filter(c=>c&&c!=='-'))];
   const filteredRowsWithMetrics=filteredRowsBase.map(row=>({...row,cpm:row.impressions?row.spend/row.impressions*1000:0,cpc:row.clicks?row.spend/row.clicks:0,cvr:row.clicks?row.conversions/row.clicks:0,cpa:row.conversions?row.spend/row.conversions:0,roas:row.spend?row.revenue/row.spend*100:0,ctr:row.impressions?row.clicks/row.impressions:0}));
   const {sorted:filteredRows,toggleSort,arrow}=useSortableRows(filteredRowsWithMetrics,'spend',(r,k)=>(r as any)[k]);
@@ -80,6 +88,10 @@ export function KeywordAnalysisPage(){
     <Link className="breadcrumb-back" to="/keywords">← 광고주 목록으로</Link>
     <PageHeader title={`${found.name} 키워드 분석`} description="선택한 기간의 실제 keyword_daily_metrics로 노출·클릭·광고비·전환 효율을 분석합니다."/>
     <MetricsDateBar/>
+    {isLongRange&&<div className="content-notice" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+      <span>{rangeDays}일 조회라 키워드가 많으면 느려질 수 있어, 전환이 1건이라도 있는 키워드만 기본으로 표시합니다{zeroConversionCount>0&&convertedOnly?` (전환 0건 ${zeroConversionCount.toLocaleString()}개 숨김)`:''}.</span>
+      <button type="button" className="btn secondary mini" onClick={()=>setConvertedOnly(v=>!v)}>{convertedOnly?'전체 키워드 보기':'전환 있는 키워드만 보기'}</button>
+    </div>}
     <div className="keyword-platform-badges" style={{marginBottom:14}}>{KEYWORD_PLATFORMS.map(item=>{const c=connections.find(x=>x.channel===PLATFORM_TO_CHANNEL[item]);return <Badge key={item} tone={c?.status==='connected'?'success':c?.status==='error'?'danger':'neutral'}>{item} · {connectionLabel(c?.status)}</Badge>})}</div>
     {error&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{error}</div>}
     <div className="summary-grid">
