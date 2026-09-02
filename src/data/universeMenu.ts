@@ -11,7 +11,7 @@ export type UniverseMenuItem = {
 };
 
 /** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로 재지정할 수 있습니다. */
-const CONTENT_STUDIO_URL = import.meta.env?.VITE_CONTENT_STUDIO_URL || 'https://howtom-content-studio-production.up.railway.app/';
+export const CONTENT_STUDIO_URL = import.meta.env?.VITE_CONTENT_STUDIO_URL || 'https://howtom-content-studio-production.up.railway.app/';
 
 export type UniverseMenuGroup = {
   key: 'home' | 'operations' | 'insights' | 'content' | 'automation' | 'assets' | 'advertisers' | 'settings' | 'admin';

@@ -23,7 +23,8 @@ function baseProject(advertiserId:string, projectType:'blog'|'video-script'|'doc
     projectType,title:`${advertiser?.name||'광고주'} · 새 ${label}`,advertiserId,advertiserName:advertiser?.name||'',channel:projectType==='blog'?'블로그':projectType==='video-script'?'메타':'사내 문서',objective:projectType==='blog'?'SEO 콘텐츠':projectType==='video-script'?'영상 광고':'업무 문서',creativeType:label,referenceIds:[],hooks:[],copyVariants:[],resultAssetIds:[],status:'draft',
   };
 }
-function projectRoute(project:ContentProject){if(project.projectType==='blog')return `/content/blog?project=${project.projectId}`;if(project.projectType==='video-script')return `/content/video-scripts?project=${project.projectId}`;if(project.projectType==='document')return `/content/documents?project=${project.projectId}`;return `/content/ad-creation?project=${project.projectId}`;}
+import { CONTENT_STUDIO_URL } from '../data/universeMenu';
+function projectRoute(project:ContentProject){if(project.projectType==='blog')return CONTENT_STUDIO_URL.replace(/\/$/,'')+'/production/blog';if(project.projectType==='video-script')return `/content/video-scripts?project=${project.projectId}`;if(project.projectType==='document')return `/content/documents?project=${project.projectId}`;return `/content/ad-creation?project=${project.projectId}`;}
 /** 예전엔 localStorage에서 동기적으로 바로 계산했지만, 이제 서버에 물어봐야 해서
  * 비동기 상태 기반 컴포넌트로 바뀌었습니다 - 표시 문구와 판단 로직은 동일합니다. */
 function GateBadge({advertiserId,feature}:{advertiserId:string;feature:SubscriptionFeature}){

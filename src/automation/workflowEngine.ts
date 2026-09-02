@@ -1,5 +1,6 @@
 import { loadReportAutomationConfigs, generateReportsNow } from '../report/reportAutomation';
 import { loadAdCopyAutomationConfigs, generateAdCopyNow } from '../adCopy/adCopyAutomation';
+import { loadBlogAutomationConfigs, generateBlogNow } from '../blog/blogAutomation';
 import { sendInternalNotification } from '../notifications/notificationEngine';
 import { correlationId, createRun, finishRun } from '../execution/executionStore';
 import type { AutomationRunStep } from '../execution/executionTypes';
@@ -54,6 +55,11 @@ async function executeStep(step: WorkflowStep, workflow: AutomationWorkflow): Pr
     const configId = String(step.config.configId || ''); const config = loadAdCopyAutomationConfigs().find(x => x.configId === configId);
     if (!config) return { status: 'failed', message: '연결된 광고 문구 자동화 설정을 찾을 수 없습니다.' };
     const result = await generateAdCopyNow(config); return { status: result?.status === 'success' ? 'success' : result?.status === 'blocked' ? 'blocked' : 'failed', message: result?.error?.message };
+  }
+  if (step.type === 'blog_generation') {
+    const configId = String(step.config.configId || ''); const config = loadBlogAutomationConfigs().find(x => x.configId === configId);
+    if (!config) return { status: 'failed', message: '연결된 블로그 자동화 설정을 찾을 수 없습니다.' };
+    const result = await generateBlogNow(config); return { status: result?.status === 'success' ? 'success' : result?.status === 'blocked' ? 'blocked' : 'failed', message: result?.error?.message };
   }
   if (step.type === 'notification') {
     const notice = sendInternalNotification({ advertiserId: workflow.advertiserId, advertiserName: workflow.advertiserName, title: `${workflow.name} 실행 알림`, message: `${step.name} 단계가 실행되었습니다.`, severity: 'info', dedupeKey: `${workflow.workflowId}:${step.stepId}:${new Date().toISOString().slice(0,10)}` }, 24);

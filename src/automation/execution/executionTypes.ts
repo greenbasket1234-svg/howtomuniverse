@@ -23,7 +23,7 @@ export type ExtendedAutomationRun = {
   correlationId?: string;
   advertiserId?: string;
   advertiserName?: string;
-  type?: 'data' | 'campaign' | 'report' | 'ad-copy' | 'blog' | 'notification' | 'workflow' | 'other';
+  type?: 'data' | 'campaign' | 'report' | 'ad-copy' | 'notification' | 'workflow' | 'other';
   trigger: ExecutionTrigger;
   status: ExtendedRunStatus;
   startedAt: string;

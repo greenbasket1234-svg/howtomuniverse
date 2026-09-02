@@ -1,4 +1,4 @@
-export type WorkflowStepType = 'data_sync' | 'data_validation' | 'report_generation' | 'ad_copy_generation' | 'blog_generation' | 'notification' | 'approval' | 'wait';
+export type WorkflowStepType = 'data_sync' | 'data_validation' | 'report_generation' | 'ad_copy_generation' | 'notification' | 'approval' | 'wait';
 export type WorkflowStep = {
   stepId: string;
   type: WorkflowStepType;

@@ -5,6 +5,7 @@ import { ModalPortal } from '../components/ModalPortal';
 import { ChannelTag } from '../components/ChannelTag';
 import { apiFetch } from '../hooks/useApi';
 import { useAdvertisers } from '../hooks/useAdvertisers';
+import { CONTENT_STUDIO_URL } from '../data/universeMenu';
 
 // ============================================================
 // 타입
@@ -47,9 +48,9 @@ const pct = (n?: number | null) => (n == null ? '-' : `${(n * 100).toFixed(1)}%`
 const STATUS_LABEL: Record<ReferenceStatus, string> = { unread: '미확인', reviewing: '검토중', saved: '저장', used_in_production: '제작 사용', archived: '보관' };
 const CONTENT_TYPES = ['영상', '숏폼', '이미지', '카드뉴스', '텍스트', '광고', '기타'];
 const REFERENCE_SCOPES = ['구조만 참고', '후킹 참고', '톤앤매너 참고', '주제 참고', '전체적인 방향 참고'];
-const CREATE_TARGETS: { key: string; label: string; path: string }[] = [
+const CREATE_TARGETS: { key: string; label: string; path: string; external?: boolean }[] = [
   { key: 'ad_copy', label: '광고 문구 만들기', path: '/content/ad-creation' },
-  { key: 'blog', label: '블로그 글 만들기', path: '/content/blog' },
+  { key: 'blog', label: '블로그 글 만들기 ↗', path: CONTENT_STUDIO_URL.replace(/\/$/,'')+'/production/blog', external: true },
   { key: 'video_script', label: '영상 대본 만들기', path: '/content/video-scripts' },
   { key: 'image_ad', label: '이미지 광고 기획 만들기', path: '/content/image-creation' },
   { key: 'document', label: '문서에 추가', path: '/content/documents' },
@@ -426,7 +427,9 @@ function ReferenceDetailDrawer({ item, advertisers, collections, onClose, onUpda
     if (!createTarget) return;
     await apiFetch(`/references/${item.id}/usage`, { method: 'POST', body: JSON.stringify({ usedFor: createTarget.key, referenceScope: scope }) }).catch(() => {});
     const ctx = { referenceId: item.id, advertiserId: item.advertiser_id, referenceType: item.reference_type, platform: item.platform, title: item.title, body: item.body, url: item.url, thumbnailUrl: item.thumbnail_url, rawText: item.body, transcript: null, scope };
-    sessionStorage.setItem('howtom-reference-context', JSON.stringify(ctx));
+    // 콘텐츠 제작소는 완전히 다른 도메인이라 sessionStorage가 넘어가지 않습니다 - 그 경우엔
+    // 참고 자료 자동 전달 없이 이동만 하고, 사용자가 직접 내용을 옮겨 붙이게 됩니다.
+    if (!createTarget.external) sessionStorage.setItem('howtom-reference-context', JSON.stringify(ctx));
     window.location.href = createTarget.path;
   };
 
@@ -501,7 +504,7 @@ function ReferenceDetailDrawer({ item, advertisers, collections, onClose, onUpda
       {createTarget && (
         <ModalPortal onClose={() => setCreateTarget(null)}>
           <div className="modal-head"><h3>이 레퍼런스를 어떻게 참고할까요?</h3><button className="icon-btn" onClick={() => setCreateTarget(null)}><X size={18}/></button></div>
-          <p className="muted-text">"{createTarget.label}"로 이동하며, 이 레퍼런스의 내용을 참고 자료로 함께 전달합니다.</p>
+          <p className="muted-text">"{createTarget.label}"로 이동합니다.{createTarget.external?' 콘텐츠 제작소는 별도 서비스라 이 레퍼런스 내용이 자동으로 전달되지 않으니, 필요하면 직접 옮겨 붙여주세요.':' 이 레퍼런스의 내용을 참고 자료로 함께 전달합니다.'}</p>
           <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
             {REFERENCE_SCOPES.map(s => (
               <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="radio" name="scope" checked={scope === s} onChange={() => setScope(s)}/> {s}</label>
