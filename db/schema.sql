@@ -75,6 +75,63 @@ ALTER TABLE advertisers ADD COLUMN IF NOT EXISTS business_reg_no TEXT;
 ALTER TABLE advertisers ADD COLUMN IF NOT EXISTS autopost_pro_industry TEXT;
 
 -- ============================================================
+-- ============================================================
+-- 구독 상품 / 광고주별 구독 / 사용량 (구독 상품 서버 이전)
+-- ------------------------------------------------------------
+-- 예전엔 전부 브라우저 localStorage에 있어서, 실제로는 사용량 제한이 작동하는
+-- 것처럼 보여도 개발자도구로 손쉽게 우회 가능했고, 팀원이나 기기가 바뀌면
+-- 사용량 집계가 서로 다르게 보였습니다. 이제 광고주당 사용량은 서버가 유일한
+-- 원본(source of truth)이라, 어느 팀원이 어느 기기로 봐도 같은 값입니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  monthly_price NUMERIC,
+  vat_included BOOLEAN NOT NULL DEFAULT true,
+  status TEXT NOT NULL DEFAULT 'draft', -- 'draft' | 'active' | 'archived'
+  entitlements JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{featureKey, enabled, limit}]
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_plans_tenant ON subscription_plans(tenant_id);
+
+CREATE TABLE IF NOT EXISTS advertiser_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  plan_id UUID REFERENCES subscription_plans(id) ON DELETE SET NULL,
+  plan_name TEXT NOT NULL DEFAULT '미설정',
+  status TEXT NOT NULL DEFAULT 'active', -- 'trial' | 'active' | 'past_due' | 'paused' | 'cancelled'
+  entitlements JSONB NOT NULL DEFAULT '{}'::jsonb, -- FeatureEntitlements (blogEnabled, blogPostsPerMonth 등) - 상품 적용 시 통째로 교체
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  renews_at TIMESTAMPTZ,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(advertiser_id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  subscription_id UUID REFERENCES advertiser_subscriptions(id) ON DELETE SET NULL,
+  feature TEXT NOT NULL, -- 'blog' | 'video-script' | 'document' | 'ad-creation' | 'ai-generation'
+  action TEXT NOT NULL,  -- 'create' | 'complete' | 'generate' | 'publish' | 'export'
+  quantity INTEGER NOT NULL DEFAULT 1,
+  source_id TEXT, -- 같은 결과물에 대해 중복 집계되지 않도록(recordUsageOnce와 동일한 dedupe 기준)
+  provider TEXT,
+  provider_cost NUMERIC,
+  ai_cost NUMERIC,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_advertiser_feature ON usage_events(advertiser_id, feature, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_tenant ON usage_events(tenant_id, created_at DESC);
+
+
+-- ============================================================
 -- 오토포스트 Pro 연동 (블로그 자동 생성 - ㈜시온랩스 제휴 API)
 -- ------------------------------------------------------------
 -- 이 API는 광고주(사업자등록번호)마다 먼저 "좌석(seat)"을 만들어야 합니다.

@@ -4,7 +4,6 @@ import { Download, Plus, Save, ShieldCheck, Trash2, Upload } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader';
 import { loadAdvertisers } from '../data/advertisers';
 import { loadAssets } from '../utils/assetStore';
-import { loadSubscriptions, loadUsageEvents } from '../utils/subscriptionStore';
 import { getAllAutomationJobs, loadAutomationRuns } from '../automation/automationStore';
 import { FEATURE_CATALOG } from '../control/permissionEngine';
 import { BackendBadge, ControlEmpty, ControlKpi, ControlPanel, ControlStatus, DemoBadge } from '../control/ControlUi';
@@ -16,26 +15,18 @@ import {
   loadControlUiSettings,
   loadControlUsers,
   loadFeatureFlags,
-  loadMemberships,
   loadMenuVisibility,
   loadNotices,
   loadOrganization,
-  loadPlanDefinitions,
-  loadRoles,
   patchFeatureFlag,
   saveControlUiSettings,
-  saveControlUsers,
   saveFeatureFlags,
   saveMenuVisibility,
-  savePlanDefinitions,
-  saveRoles,
-  upsertControlUser,
-  upsertMembership,
   upsertNotice,
-  upsertPlanDefinition,
-  upsertRole,
 } from '../control/controlStore';
-import type { FeatureFlagState, RoleDefinition, SubscriptionPlanDefinition } from '../control/controlTypes';
+import type { FeatureFlagState } from '../control/controlTypes';
+import { teamApi, type AppRole, type TeamUserRow } from '../control/teamApi';
+import { subscriptionApi, type SubscriptionPlanRow } from '../utils/subscriptionApi';
 
 const ADMIN_SECTIONS = [
   ['users','사용자 관리'],['advertisers','광고주 관리'],['roles','권한 묶음 관리'],['feature-permissions','기능별 이용 권한'],['plans','구독 상품 관리'],
@@ -48,8 +39,10 @@ function bytes(v:number){if(v<1024)return `${v} B`;if(v<1024**2)return `${(v/102
 function money(v?:number){return v==null?'-':`${Math.round(v).toLocaleString()}원`}
 
 export function AdminControlDashboardPage(){
-  useRevision();const users=loadControlUsers();const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const subscriptions=loadSubscriptions();const usage=loadUsageEvents();const assets=loadAssets(true);const jobs=getAllAutomationJobs();const runs=loadAutomationRuns();const audits=loadAuditEvents();const failed=runs.filter(r=>r.status==='failed').length;
-  return <div className="ctrl-page"><PageHeader title="관리자 대시보드" description="HOWTOM 서비스의 사용자·광고주·구독·AI·자동화·저장공간·보안 상태를 관리합니다."/><div className="ctrl-toolbar"><DemoBadge/><BackendBadge/><span className="ctrl-muted">현재 수치는 프론트 저장 데이터 기준이며 실제 회원·결제·서버 세션 통계가 아닙니다.</span></div><div className="ctrl-kpi-grid admin"><ControlKpi label="프론트 사용자" value={`${users.length}명`}/><ControlKpi label="광고주" value={`${advertisers.length}곳`}/><ControlKpi label="구독 설정" value={`${subscriptions.length}건`} sub="결제 미연동"/><ControlKpi label="AI/콘텐츠 사용 이벤트" value={`${usage.length}건`}/><ControlKpi label="자동화 작업" value={`${jobs.length}개`}/><ControlKpi label="자동화 실패 기록" value={`${failed}건`}/><ControlKpi label="자산" value={`${assets.length}개`}/><ControlKpi label="감사 이벤트" value={`${audits.length}건`}/></div><div className="ctrl-admin-grid">{ADMIN_SECTIONS.map(([key,label])=><Link key={key} className="card ctrl-admin-card" to={`/admin/${key}`}><strong>{label}</strong><span>{adminDescription(key)}</span><em>관리 →</em></Link>)}</div></div>
+  useRevision();const users=loadControlUsers();const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const assets=loadAssets(true);const jobs=getAllAutomationJobs();const runs=loadAutomationRuns();const audits=loadAuditEvents();const failed=runs.filter(r=>r.status==='failed').length;
+  const [subCount,setSubCount]=useState<number|null>(null);const [usageCount,setUsageCount]=useState<number|null>(null);
+  useEffect(()=>{ subscriptionApi.listAllSubscriptions().then(rows=>setSubCount(rows.length)).catch(()=>setSubCount(0)); subscriptionApi.listUsage().then(rows=>setUsageCount(rows.length)).catch(()=>setUsageCount(0)); },[]);
+  return <div className="ctrl-page"><PageHeader title="관리자 대시보드" description="HOWTOM 서비스의 사용자·광고주·구독·AI·자동화·저장공간·보안 상태를 관리합니다."/><div className="ctrl-toolbar"><DemoBadge/><BackendBadge/><span className="ctrl-muted">현재 수치는 프론트 저장 데이터 기준이며 실제 회원·결제·서버 세션 통계가 아닙니다.</span></div><div className="ctrl-kpi-grid admin"><ControlKpi label="프론트 사용자" value={`${users.length}명`}/><ControlKpi label="광고주" value={`${advertisers.length}곳`}/><ControlKpi label="구독 설정" value={subCount==null?'확인 중':`${subCount}건`} sub="결제 미연동"/><ControlKpi label="AI/콘텐츠 사용 이벤트" value={usageCount==null?'확인 중':`${usageCount}건`}/><ControlKpi label="자동화 작업" value={`${jobs.length}개`}/><ControlKpi label="자동화 실패 기록" value={`${failed}건`}/><ControlKpi label="자산" value={`${assets.length}개`}/><ControlKpi label="감사 이벤트" value={`${audits.length}건`}/></div><div className="ctrl-admin-grid">{ADMIN_SECTIONS.map(([key,label])=><Link key={key} className="card ctrl-admin-card" to={`/admin/${key}`}><strong>{label}</strong><span>{adminDescription(key)}</span><em>관리 →</em></Link>)}</div></div>
 }
 function adminDescription(key:AdminSectionKey){const map:Record<AdminSectionKey,string>={users:'사용자 프로필과 상태를 관리합니다.',advertisers:'서비스 이용 광고주 현황을 확인합니다.',roles:'역할별 권한 묶음을 편집합니다.','feature-permissions':'기능을 역할 기준으로 비교합니다.',plans:'상품과 entitlement 설계안을 관리합니다.',payments:'PG 연결 후 결제·환불을 조회합니다.','ai-usage':'광고주·기능별 사용량과 원가 기록을 확인합니다.',storage:'자산과 브라우저 저장량을 확인합니다.',executions:'전체 자동화 실행 기록을 조회합니다.',security:'접속·권한·공유 변경 감사 이벤트를 확인합니다.',notices:'내부/광고주 공지사항을 관리합니다.',menu:'메뉴 노출 정책을 관리합니다.','feature-flags':'Internal·Beta·Public 공개 단계를 관리합니다.',backup:'프론트 데이터를 백업·복원합니다.',system:'서비스 공통 운영값을 관리합니다.'};return map[key]}
 
@@ -60,62 +53,81 @@ function renderAdmin(key:AdminSectionKey){
   if(key==='users')return <UsersAdmin/>;if(key==='advertisers')return <AdvertisersAdmin/>;if(key==='roles')return <RolesAdmin/>;if(key==='feature-permissions')return <FeaturePermissionAdmin/>;if(key==='plans')return <PlansAdmin/>;if(key==='payments')return <PaymentsAdmin/>;if(key==='ai-usage')return <AiUsageAdmin/>;if(key==='storage')return <StorageAdmin/>;if(key==='executions')return <ExecutionsAdmin/>;if(key==='security')return <SecurityAdmin/>;if(key==='notices')return <NoticesAdmin/>;if(key==='menu')return <MenuAdmin/>;if(key==='feature-flags')return <FlagsAdmin/>;if(key==='backup')return <BackupAdmin/>;return <SystemAdmin/>;
 }
 
+function useTeamData(){
+  const [users,setUsers]=useState<TeamUserRow[]>([]);
+  const [roles,setRoles]=useState<AppRole[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState('');
+  const refresh=async()=>{
+    setLoading(true);setError('');
+    try{ const [u,r]=await Promise.all([teamApi.listUsers(),teamApi.listRoles()]); setUsers(u);setRoles(r); }
+    catch(e){ setError(e instanceof Error?e.message:'불러오기에 실패했습니다.'); }
+    finally{ setLoading(false); }
+  };
+  useEffect(()=>{refresh()},[]);
+  return {users,roles,loading,error,refresh};
+}
 function UsersAdmin(){
-  const users=loadControlUsers();const memberships=loadMemberships();const roles=loadRoles();const advertisers=loadAdvertisers().filter(a=>a.id!=='default');
-  const [,force]=useState(0);const [name,setName]=useState('');const [newRoleId,setNewRoleId]=useState(roles[0]?.roleId||'');
+  const {users,roles,loading,error,refresh}=useTeamData();
+  const advertisers=loadAdvertisers().filter(a=>a.id!=='default');
+  const [email,setEmail]=useState('');const [name,setName]=useState('');const [initialPassword,setInitialPassword]=useState('');
+  const [newRoleId,setNewRoleId]=useState('');
   const [editingUserId,setEditingUserId]=useState<string|null>(null);
-  const membershipOf=(userId:string)=>memberships.find(m=>m.userId===userId);
-  const addUser=()=>{
-    if(!name.trim())return;
-    const row=upsertControlUser({name:name.trim(),status:'active'});
-    if(newRoleId)upsertMembership({userId:row.userId,roleIds:[newRoleId]});
-    setName('');force(x=>x+1);
+  const [formError,setFormError]=useState('');
+  useEffect(()=>{ if(!newRoleId&&roles.length)setNewRoleId(roles[0].id); },[roles,newRoleId]);
+  const addUser=async()=>{
+    setFormError('');
+    if(!email.trim()||!name.trim()){setFormError('이메일과 이름을 입력하세요.');return;}
+    if(initialPassword.length<8){setFormError('초기 비밀번호는 8자 이상이어야 합니다.');return;}
+    try{
+      await teamApi.createUser({email:email.trim(),name:name.trim(),initialPassword,roleIds:newRoleId?[newRoleId]:[]});
+      setEmail('');setName('');setInitialPassword('');refresh();
+    }catch(e){ setFormError(e instanceof Error?e.message:'추가에 실패했습니다.'); }
   };
-  const toggleStatus=(u:ReturnType<typeof loadControlUsers>[number])=>{
-    saveControlUsers(loadControlUsers().map(x=>x.userId===u.userId?{...x,status:x.status==='disabled'?'active':'disabled',updatedAt:new Date().toISOString()}:x));
-    force(x=>x+1);
+  const toggleStatus=async(u:TeamUserRow)=>{ await teamApi.patchUser(u.id,{status:u.status==='disabled'?'active':'disabled'}); refresh(); };
+  const toggleRole=async(u:TeamUserRow,roleId:string)=>{
+    const has=(u.role_ids||[]).includes(roleId);
+    const next=has?(u.role_ids||[]).filter(r=>r!==roleId):[...(u.role_ids||[]),roleId];
+    await teamApi.patchUser(u.id,{roleIds:next}); refresh();
   };
-  const toggleRole=(userId:string,roleId:string)=>{
-    const m=membershipOf(userId);const has=m?.roleIds.includes(roleId)??false;
-    const nextRoleIds=has?(m?.roleIds||[]).filter(r=>r!==roleId):[...(m?.roleIds||[]),roleId];
-    upsertMembership({userId,roleIds:nextRoleIds});force(x=>x+1);
-  };
-  const setScopeAll=(userId:string)=>{upsertMembership({userId,advertiserIds:undefined});force(x=>x+1)};
-  const toggleAdvertiserScope=(userId:string,advertiserId:string)=>{
-    const m=membershipOf(userId);const current=m?.advertiserIds||[];
+  const setScopeAll=async(u:TeamUserRow)=>{ await teamApi.patchUser(u.id,{advertiserIds:null}); refresh(); };
+  const toggleAdvertiserScope=async(u:TeamUserRow,advertiserId:string)=>{
+    const current=u.advertiser_ids||[];
     const next=current.includes(advertiserId)?current.filter(a=>a!==advertiserId):[...current,advertiserId];
-    upsertMembership({userId,advertiserIds:next});force(x=>x+1);
+    await teamApi.patchUser(u.id,{advertiserIds:next}); refresh();
   };
-  return <ControlPanel title="사용자" description="정식 회원가입·초대·세션 종료는 백엔드 연결 후 활성화합니다. 역할·광고주 범위·계정 상태는 지금도 여기서 바로 관리할 수 있습니다." actions={<BackendBadge/>}>
+  return <ControlPanel title="사용자" description="실제 팀원 계정입니다 - 초기 비밀번호를 정해서 추가하면 그 계정으로 바로 로그인할 수 있습니다(팀원에게 별도로 전달해주세요). 역할·광고주 범위·계정 상태는 여기서 바로 관리합니다." actions={<BackendBadge/>}>
+    {error&&<div className="ctrl-form-error">{error}</div>}
     <div className="ctrl-inline-form">
-      <input value={name} onChange={e=>setName(e.target.value)} placeholder="로컬 사용자 프로필"/>
-      <select value={newRoleId} onChange={e=>setNewRoleId(e.target.value)}>{roles.map(r=><option key={r.roleId} value={r.roleId}>{r.name}</option>)}</select>
+      <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="이메일"/>
+      <input value={name} onChange={e=>setName(e.target.value)} placeholder="이름"/>
+      <input value={initialPassword} onChange={e=>setInitialPassword(e.target.value)} placeholder="초기 비밀번호(8자 이상)" type="text"/>
+      <select value={newRoleId} onChange={e=>setNewRoleId(e.target.value)}>{roles.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       <button className="btn primary" onClick={addUser}><Plus size={14}/> 추가</button>
-      <button className="btn secondary" disabled>이메일 초대 (미구현)</button>
     </div>
+    {formError&&<div className="ctrl-form-error">{formError}</div>}
     <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>사용자</th><th>이메일</th><th>역할</th><th>광고주 범위</th><th>상태</th><th>계정 제어</th></tr></thead><tbody>
-      {users.map(u=>{
-        const ms=memberships.filter(m=>m.userId===u.userId);
-        const isEditing=editingUserId===u.userId;
+      {loading?<tr><td colSpan={6}>불러오는 중...</td></tr>:users.map(u=>{
+        const isEditing=editingUserId===u.id;
         return <>
-          <tr key={u.userId}>
-            <td><b>{u.name}</b>{u.isDemo&&<small className="ctrl-cell-sub">데모</small>}</td>
-            <td>{u.email||'-'}</td>
-            <td>{roles.filter(r=>ms.some(m=>m.roleIds.includes(r.roleId))).map(r=>r.name).join(', ')||'-'}</td>
-            <td>{ms.some(m=>!m.advertiserIds?.length)?'전체':`${new Set(ms.flatMap(m=>m.advertiserIds||[])).size}곳`}</td>
+          <tr key={u.id}>
+            <td><b>{u.name}</b>{u.is_owner&&<small className="ctrl-cell-sub">최초 관리자</small>}</td>
+            <td>{u.email}</td>
+            <td>{roles.filter(r=>(u.role_ids||[]).includes(r.id)).map(r=>r.name).join(', ')||'-'}</td>
+            <td>{!u.advertiser_ids?.length?'전체':`${u.advertiser_ids.length}곳`}</td>
             <td><ControlStatus tone={u.status==='active'?'success':'warning'}>{u.status==='active'?'활성':u.status==='invited'?'초대됨':'중지됨'}</ControlStatus></td>
             <td>
-              <button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.userId)}>{isEditing?'닫기':'역할 범위 편집'}</button>
-              {!u.isDemo&&<button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button>}
+              {!u.is_owner&&<><button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.id)}>{isEditing?'닫기':'역할 범위 편집'}</button>
+              <button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button></>}
             </td>
           </tr>
           {isEditing&&<tr className="ctrl-user-edit-row"><td colSpan={6}>
             <div className="ctrl-user-edit-panel">
-              <div><b>역할 (클릭해서 배정/해제)</b><div className="ctrl-chip-row">{roles.map(r=>{const has=membershipOf(u.userId)?.roleIds.includes(r.roleId)??false;return <button key={r.roleId} type="button" className={`ctrl-chip${has?' active':''}`} onClick={()=>toggleRole(u.userId,r.roleId)}>{r.name}</button>})}</div></div>
+              <div><b>역할 (클릭해서 배정/해제)</b><div className="ctrl-chip-row">{roles.map(r=>{const has=(u.role_ids||[]).includes(r.id);return <button key={r.id} type="button" className={`ctrl-chip${has?' active':''}`} onClick={()=>toggleRole(u,r.id)}>{r.name}</button>})}</div></div>
               <div><b>담당 광고주 범위</b>
                 <div className="ctrl-chip-row">
-                  <button type="button" className={`ctrl-chip${!membershipOf(u.userId)?.advertiserIds?.length?' active':''}`} onClick={()=>setScopeAll(u.userId)}>전체 광고주</button>
-                  {advertisers.map(a=>{const has=membershipOf(u.userId)?.advertiserIds?.includes(a.id)??false;return <button key={a.id} type="button" className={`ctrl-chip${has?' active':''}`} onClick={()=>toggleAdvertiserScope(u.userId,a.id)}>{a.name}</button>})}
+                  <button type="button" className={`ctrl-chip${!u.advertiser_ids?.length?' active':''}`} onClick={()=>setScopeAll(u)}>전체 광고주</button>
+                  {advertisers.map(a=>{const has=(u.advertiser_ids||[]).includes(a.id);return <button key={a.id} type="button" className={`ctrl-chip${has?' active':''}`} onClick={()=>toggleAdvertiserScope(u,a.id)}>{a.name}</button>})}
                 </div>
                 <small className="ctrl-cell-sub">개별 광고주를 하나라도 선택하면 "전체 광고주"에서 그 목록으로 범위가 좁혀집니다.</small>
               </div>
@@ -123,15 +135,88 @@ function UsersAdmin(){
           </td></tr>}
         </>;
       })}
+      {!loading&&!users.length&&<tr><td colSpan={6}>등록된 팀원이 없습니다.</td></tr>}
     </tbody></table></div>
   </ControlPanel>;
 }
-function AdvertisersAdmin(){const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const subs=loadSubscriptions();const assets=loadAssets(true);return <ControlPanel title="광고주 서비스 이용 현황" description="실무 광고주 관리와 달리 구독·자산·계정 준비 상태 관점으로 확인합니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>광고주</th><th>월 예산</th><th>연결 매체</th><th>구독 설정</th><th>자산</th><th></th></tr></thead><tbody>{advertisers.map(a=>{const sub=subs.find(s=>s.advertiserId===a.id);return <tr key={a.id}><td><b>{a.name}</b></td><td>{money(a.monthlyBudget)}</td><td>{a.links.filter(l=>l.status==='연결됨').length}개</td><td>{sub?.planName||'미설정'}</td><td>{assets.filter(x=>x.advertiserId===a.id).length}개</td><td><Link className="btn secondary" to={`/advertisers/dashboard?advertiser=${a.id}`}>Workspace</Link></td></tr>})}</tbody></table></div></ControlPanel>}
-function RolesAdmin(){const roles=loadRoles();const [name,setName]=useState('');return <ControlPanel title="권한 묶음" description="Role은 Permission key 묶음이며 사용자별 광고주 접근 범위와 분리됩니다."><div className="ctrl-inline-form"><input value={name} onChange={e=>setName(e.target.value)} placeholder="새 역할명"/><button className="btn primary" onClick={()=>{if(!name.trim())return;upsertRole({name:name.trim(),description:'사용자 정의 역할',scope:'internal'});setName('')}}>역할 추가</button></div><div className="ctrl-role-grid">{roles.map(r=><article className="card ctrl-role-card" key={r.roleId}><div><strong>{r.name}</strong><ControlStatus tone={r.scope==='internal'?'info':'neutral'}>{r.scope}</ControlStatus></div><p>{r.description}</p><small>{r.permissionKeys.length}개 권한 {r.system?'기본 역할':''}</small></article>)}</div></ControlPanel>}
-function FeaturePermissionAdmin(){const roles=loadRoles();const [,force]=useState(0);const locked=(role:RoleDefinition)=>role.roleId==='role-admin';const toggle=(role:RoleDefinition,featureKey:string)=>{if(locked(role))return;const has=role.permissionKeys.includes(featureKey);const nextKeys=has?role.permissionKeys.filter(k=>k!==featureKey):[...role.permissionKeys,featureKey];saveRoles(loadRoles().map(r=>r.roleId===role.roleId?{...r,permissionKeys:nextKeys,updatedAt:new Date().toISOString()}:r));force(x=>x+1)};return <ControlPanel title="기능별 이용 권한" description="셀을 클릭하면 해당 역할에 그 기능을 즉시 허용/차단합니다. '관리자' 역할만 실수로 스스로 잠기는 것을 막기 위해 여기서 수정할 수 없습니다."><div className="ctrl-table-wrap"><table className="ctrl-table wide"><thead><tr><th>기능</th>{roles.map(r=><th key={r.roleId}>{r.name}{locked(r)?' (수정 불가)':''}</th>)}</tr></thead><tbody>{FEATURE_CATALOG.map(f=><tr key={f.featureKey}><td><b>{f.label}</b><small className="ctrl-cell-sub">{f.featureKey}</small></td>{roles.map(r=>{const allowed=r.permissionKeys.includes(f.featureKey);return <td key={r.roleId}><button type="button" className="ctrl-permission-toggle" disabled={locked(r)} onClick={()=>toggle(r,f.featureKey)} title={locked(r)?'관리자 역할은 여기서 수정할 수 없습니다':'클릭해서 전환'}>{allowed?<ControlStatus tone="success">허용</ControlStatus>:<ControlStatus>차단</ControlStatus>}</button></td>})}</tr>)}</tbody></table></div></ControlPanel>}
-function PlansAdmin(){const plans=loadPlanDefinitions();const [,force]=useState(0);const [name,setName]=useState('');const [price,setPrice]=useState(0);const setStatus=(planId:string,status:SubscriptionPlanDefinition['status'])=>{upsertPlanDefinition({planId,name:plans.find(p=>p.planId===planId)!.name,status});force(x=>x+1)};return <ControlPanel title="구독 상품 설계" description="현재 상품은 실제 청구가 아닌 프론트 상품/entitlement 설계안입니다." actions={<DemoBadge/>}><div className="ctrl-inline-form"><input value={name} onChange={e=>setName(e.target.value)} placeholder="상품명"/><input type="number" value={price} onChange={e=>setPrice(Number(e.target.value))} placeholder="월 요금"/><button className="btn primary" onClick={()=>{if(!name.trim())return;upsertPlanDefinition({name:name.trim(),monthlyPrice:price,status:'draft'});setName('');setPrice(0);force(x=>x+1)}}>상품 추가</button></div><div className="ctrl-plan-grid">{plans.map(p=><article className="card ctrl-plan-card" key={p.planId}><div><strong>{p.name}</strong><ControlStatus tone={p.status==='active'?'success':'warning'}>{p.status==='draft'?'설계안':p.status==='active'?'판매중':'보관'}</ControlStatus></div><b>{money(p.monthlyPrice)} / 월</b><p>{p.description||'설명 없음'}</p><small>{p.entitlements.length}개 entitlement · 결제 미연동</small><div className="ctrl-plan-actions">{p.status!=='active'&&<button className="btn secondary sm" onClick={()=>setStatus(p.planId,'active')}>판매중으로 전환</button>}{p.status==='active'&&<button className="btn secondary sm" onClick={()=>setStatus(p.planId,'draft')}>설계안으로 되돌리기</button>}{p.status!=='archived'&&<button className="btn secondary sm" onClick={()=>setStatus(p.planId,'archived')}>보관</button>}</div></article>)}</div></ControlPanel>}
+function AdvertisersAdmin(){
+  const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const assets=loadAssets(true);
+  const [subs,setSubs]=useState<{advertiser_id:string;plan_name:string}[]>([]);
+  useEffect(()=>{ subscriptionApi.listAllSubscriptions().then(setSubs).catch(()=>setSubs([])); },[]);
+  return <ControlPanel title="광고주 서비스 이용 현황" description="실무 광고주 관리와 달리 구독·자산·계정 준비 상태 관점으로 확인합니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>광고주</th><th>월 예산</th><th>연결 매체</th><th>구독 설정</th><th>자산</th><th></th></tr></thead><tbody>{advertisers.map(a=>{const sub=subs.find(s=>s.advertiser_id===a.id);return <tr key={a.id}><td><b>{a.name}</b></td><td>{money(a.monthlyBudget)}</td><td>{a.links.filter(l=>l.status==='연결됨').length}개</td><td>{sub?.plan_name||'미설정'}</td><td>{assets.filter(x=>x.advertiserId===a.id).length}개</td><td><Link className="btn secondary" to={`/advertisers/dashboard?advertiser=${a.id}`}>Workspace</Link></td></tr>})}</tbody></table></div></ControlPanel>
+}
+function RolesAdmin(){
+  const {roles,loading,error,refresh}=useTeamData();
+  const [name,setName]=useState('');
+  const add=async()=>{ if(!name.trim())return; await teamApi.createRole({name:name.trim(),description:'사용자 정의 역할',scope:'internal'}); setName('');refresh(); };
+  return <ControlPanel title="권한 묶음" description="Role은 Permission key 묶음이며 사용자별 광고주 접근 범위와 분리됩니다.">
+    {error&&<div className="ctrl-form-error">{error}</div>}
+    <div className="ctrl-inline-form"><input value={name} onChange={e=>setName(e.target.value)} placeholder="새 역할명"/><button className="btn primary" onClick={add}>역할 추가</button></div>
+    <div className="ctrl-role-grid">{loading?<span>불러오는 중...</span>:roles.map(r=><article className="card ctrl-role-card" key={r.id}><div><strong>{r.name}</strong><ControlStatus tone={r.scope==='internal'?'info':'neutral'}>{r.scope}</ControlStatus></div><p>{r.description}</p><small>{r.permission_keys.length}개 권한 {r.is_system?'기본 역할':''}</small></article>)}</div>
+  </ControlPanel>;
+}
+function FeaturePermissionAdmin(){
+  const {roles,loading,error,refresh}=useTeamData();
+  const locked=(role:AppRole)=>role.is_system&&role.name==='관리자';
+  const toggle=async(role:AppRole,featureKey:string)=>{
+    if(locked(role))return;
+    const has=role.permission_keys.includes(featureKey);
+    const next=has?role.permission_keys.filter(k=>k!==featureKey):[...role.permission_keys,featureKey];
+    await teamApi.patchRole(role.id,{permissionKeys:next}); refresh();
+  };
+  return <ControlPanel title="기능별 이용 권한" description="셀을 클릭하면 해당 역할에 그 기능을 즉시 허용/차단합니다. '관리자' 역할만 실수로 스스로 잠기는 것을 막기 위해 여기서 수정할 수 없습니다.">
+    {error&&<div className="ctrl-form-error">{error}</div>}
+    <div className="ctrl-table-wrap">{loading?<span>불러오는 중...</span>:<table className="ctrl-table wide"><thead><tr><th>기능</th>{roles.map(r=><th key={r.id}>{r.name}{locked(r)?' (수정 불가)':''}</th>)}</tr></thead><tbody>{FEATURE_CATALOG.map(f=><tr key={f.featureKey}><td><b>{f.label}</b><small className="ctrl-cell-sub">{f.featureKey}</small></td>{roles.map(r=>{const allowed=r.permission_keys.includes(f.featureKey);return <td key={r.id}><button type="button" className="ctrl-permission-toggle" disabled={locked(r)} onClick={()=>toggle(r,f.featureKey)} title={locked(r)?'관리자 역할은 여기서 수정할 수 없습니다':'클릭해서 전환'}>{allowed?<ControlStatus tone="success">허용</ControlStatus>:<ControlStatus>차단</ControlStatus>}</button></td>})}</tr>)}</tbody></table>}</div>
+  </ControlPanel>;
+}
+const PLAN_FEATURE_KEYS:{key:string;label:string}[]=[
+  {key:'content.blog',label:'블로그'},{key:'content.video-script',label:'영상 대본'},{key:'content.document',label:'문서 작성'},
+  {key:'content.ad-creation',label:'광고 제작'},{key:'ai.content',label:'AI 생성 크레딧'},{key:'content.blog-integration',label:'블로그 외부 연동'},
+];
+function usePlans(){
+  const [plans,setPlans]=useState<SubscriptionPlanRow[]>([]);const [loading,setLoading]=useState(true);
+  const refresh=async()=>{setLoading(true);try{setPlans(await subscriptionApi.listPlans());}finally{setLoading(false);}};
+  useEffect(()=>{refresh()},[]);
+  return {plans,loading,refresh};
+}
+function PlansAdmin(){
+  const {plans,loading,refresh}=usePlans();
+  const [editing,setEditing]=useState<SubscriptionPlanRow|null>(null);
+  const setStatus=async(id:string,status:string)=>{await subscriptionApi.patchPlan(id,{status});refresh();};
+  const newPlan=():SubscriptionPlanRow=>({id:'',name:'',description:'',monthly_price:0,vat_included:true,status:'draft',entitlements:[],created_at:''});
+  const save=async(p:SubscriptionPlanRow)=>{
+    if(!p.name.trim())return;
+    if(p.id) await subscriptionApi.patchPlan(p.id,{name:p.name,description:p.description||undefined,monthlyPrice:p.monthly_price??undefined,entitlements:p.entitlements});
+    else await subscriptionApi.createPlan({name:p.name,description:p.description||undefined,monthlyPrice:p.monthly_price??undefined,entitlements:p.entitlements});
+    setEditing(null);refresh();
+  };
+  return <ControlPanel title="구독 상품 설계" description="여기서 만든 상품은 계약 구독 화면에서 광고주에게 실제로 적용되어 월 사용 한도를 강제합니다." actions={<button className="btn primary" onClick={()=>setEditing(newPlan())}><Plus size={14}/> 상품 추가</button>}>
+    {loading?<p className="ctrl-muted">불러오는 중...</p>:<div className="ctrl-plan-grid">{plans.map(p=><article className="card ctrl-plan-card" key={p.id}><div><strong>{p.name}</strong><ControlStatus tone={p.status==='active'?'success':'warning'}>{p.status==='draft'?'설계안':p.status==='active'?'판매중':'보관'}</ControlStatus></div><b>{money(p.monthly_price||0)} / 월</b><p>{p.description||'설명 없음'}</p><small>{p.entitlements.length}개 entitlement 설정됨 · 결제 미연동</small><div className="ctrl-plan-actions"><button className="btn secondary sm" onClick={()=>setEditing(p)}>편집</button>{p.status!=='active'&&<button className="btn secondary sm" onClick={()=>setStatus(p.id,'active')}>판매중으로 전환</button>}{p.status==='active'&&<button className="btn secondary sm" onClick={()=>setStatus(p.id,'draft')}>설계안으로 되돌리기</button>}{p.status!=='archived'&&<button className="btn secondary sm" onClick={()=>setStatus(p.id,'archived')}>보관</button>}</div></article>)}</div>}
+    {editing&&<PlanEditModal value={editing} onClose={()=>setEditing(null)} onSave={save}/>}
+  </ControlPanel>;
+}
+function PlanEditModal({value,onClose,onSave}:{value:SubscriptionPlanRow;onClose:()=>void;onSave:(p:SubscriptionPlanRow)=>void}){
+  const [v,setV]=useState(value);
+  const setLimit=(key:string,patch:Partial<{enabled:boolean;limit?:number}>)=>{
+    const rest=v.entitlements.filter(e=>e.featureKey!==key);const current=v.entitlements.find(e=>e.featureKey===key)||{featureKey:key,enabled:true};
+    setV({...v,entitlements:[...rest,{...current,...patch}]});
+  };
+  return <div className="ctrl-modal-backdrop" onClick={onClose}><div className="card ctrl-modal" onClick={e=>e.stopPropagation()}>
+    <h3>{value.id?'상품 수정':'새 상품'}</h3>
+    <div className="ctrl-form-grid"><label>상품명<input value={v.name} onChange={e=>setV({...v,name:e.target.value})}/></label><label>월 요금<input type="number" value={v.monthly_price||0} onChange={e=>setV({...v,monthly_price:Number(e.target.value)})}/></label><label className="span-2">설명<input value={v.description||''} onChange={e=>setV({...v,description:e.target.value})}/></label></div>
+    <b style={{display:'block',margin:'14px 0 8px'}}>기능별 월 한도(비워두면 무제한)</b>
+    <div className="ctrl-form-grid">{PLAN_FEATURE_KEYS.map(f=>{const e=v.entitlements.find(x=>x.featureKey===f.key);return <label key={f.key}><span>{f.label}</span><input type="number" placeholder="무제한" value={e?.limit??''} onChange={ev=>setLimit(f.key,{enabled:true,limit:ev.target.value===''?undefined:Number(ev.target.value)})}/></label>})}</div>
+    <div className="ctrl-modal-actions" style={{marginTop:16,display:'flex',justifyContent:'flex-end',gap:8}}><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={()=>onSave(v)}>저장</button></div>
+  </div></div>;
+}
 function PaymentsAdmin(){return <ControlPanel title="결제 내역" description="실제 거래를 가장한 샘플 결제는 표시하지 않습니다."><ControlEmpty><BackendBadge/> PG·Webhook·환불 처리가 연결되면 광고주별 결제 성공·실패·환불·갱신 내역이 이곳에 표시됩니다.</ControlEmpty></ControlPanel>}
-function AiUsageAdmin(){const usage=loadUsageEvents();const byFeature=useMemo(()=>{const m=new Map<string,number>();usage.forEach(u=>m.set(u.feature,(m.get(u.feature)||0)+u.quantity));return [...m.entries()]},[usage]);const cost=usage.reduce((s,u)=>s+(u.aiCost||u.providerCost||0),0);return <><div className="ctrl-kpi-grid"><ControlKpi label="사용 이벤트" value={`${usage.length}건`}/><ControlKpi label="기록된 원가" value={cost?money(cost):'실측 없음'} sub="Provider 비용이 기록된 이벤트만"/><ControlKpi label="연결 Provider" value="미연동"/><ControlKpi label="월 한도 강제" value="서버 연결 후"/></div><ControlPanel title="기능별 사용량"><div className="ctrl-list">{byFeature.map(([feature,q])=><div className="ctrl-list-row" key={feature}><b>{feature}</b><strong>{q.toLocaleString()}</strong></div>)}{!byFeature.length&&<ControlEmpty>AI/콘텐츠 사용 이벤트가 없습니다.</ControlEmpty>}</div></ControlPanel></>}
+function AiUsageAdmin(){
+  const [usage,setUsage]=useState<{feature:string;quantity:number;ai_cost:number|null;provider_cost:number|null}[]>([]);
+  useEffect(()=>{ subscriptionApi.listUsage().then(setUsage).catch(()=>setUsage([])); },[]);
+  const byFeature=useMemo(()=>{const m=new Map<string,number>();usage.forEach(u=>m.set(u.feature,(m.get(u.feature)||0)+u.quantity));return [...m.entries()]},[usage]);
+  const cost=usage.reduce((s,u)=>s+(u.ai_cost||u.provider_cost||0),0);
+  return <><div className="ctrl-kpi-grid"><ControlKpi label="사용 이벤트" value={`${usage.length}건`}/><ControlKpi label="기록된 원가" value={cost?money(cost):'실측 없음'} sub="Provider 비용이 기록된 이벤트만"/><ControlKpi label="연결 Provider" value="미연동"/><ControlKpi label="월 한도 강제" value="실시간 강제 중"/></div><ControlPanel title="기능별 사용량"><div className="ctrl-list">{byFeature.map(([feature,q])=><div className="ctrl-list-row" key={feature}><b>{feature}</b><strong>{q.toLocaleString()}</strong></div>)}{!byFeature.length&&<ControlEmpty>AI/콘텐츠 사용 이벤트가 없습니다.</ControlEmpty>}</div></ControlPanel></>
+}
 function StorageAdmin(){const assets=loadAssets(true);const fileBytes=assets.reduce((s,a)=>s+(a.fileSize||0),0);let localBytes=0;for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)localBytes+=(k.length+(localStorage.getItem(k)?.length||0))*2}return <div className="ctrl-kpi-grid"><ControlKpi label="자산" value={`${assets.length}개`}/><ControlKpi label="자산 메타 파일크기" value={bytes(fileBytes)}/><ControlKpi label="localStorage 추정" value={bytes(localBytes)}/><ControlKpi label="R2/클라우드" value="미연동"/></div>}
 function ExecutionsAdmin(){const runs=loadAutomationRuns();const jobs=new Map(getAllAutomationJobs().map(j=>[j.jobId,j]));return <ControlPanel title="전체 작업 실행 기록" description="AI 자동화 → 실행 기록과 같은 AutomationRun 저장소를 관리자 관점에서 조회합니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>시각</th><th>작업</th><th>광고주</th><th>상태</th><th>처리량</th></tr></thead><tbody>{runs.slice(0,100).map(r=>{const job=jobs.get(r.jobId);return <tr key={r.runId}><td>{new Date(r.startedAt||r.createdAt||Date.now()).toLocaleString('ko-KR')}</td><td><b>{r.jobName||job?.name||r.jobId}</b></td><td>{job?.advertiserName||job?.advertiserId||'-'}</td><td><ControlStatus tone={r.status==='success'?'success':r.status==='failed'?'danger':'warning'}>{r.status}</ControlStatus></td><td>{r.recordsProcessed??'-'}</td></tr>})}</tbody></table>{!runs.length&&<ControlEmpty>실행 기록이 없습니다.</ControlEmpty>}</div></ControlPanel>}
 type AccessLogRow = { id: string; createdAt: string; action: string; email?: string; ip?: string; result?: string; advertiserId?: string; advertiserName?: string; channel?: string; count?: number; error?: string | null };

@@ -2174,6 +2174,71 @@ function denyUnlessPermitted(res, user, key) {
   return true;
 }
 
+/* ========================================================================
+   구독 상품 / 광고주별 구독 / 사용량 (구독 상품 서버 이전)
+   -----------------------------------------------------------------------
+   예전엔 이 전체 로직(canUseFeature 등)이 브라우저 localStorage 위에서만
+   동작해서 개발자도구로 손쉽게 우회 가능했습니다. 아래는 그 로직을 그대로
+   서버로 옮긴 것으로, 동작 방식(한도 계산 규칙)은 완전히 동일합니다.
+   ======================================================================== */
+function deriveEntitlementsFromPlan(entitlements) {
+  const list = Array.isArray(entitlements) ? entitlements : [];
+  const find = key => list.find(e => e.featureKey === key);
+  const blog = find('content.blog'), videoScript = find('content.video-script'), document_ = find('content.document');
+  const adCreation = find('content.ad-creation'), aiContent = find('ai.content'), blogIntegration = find('content.blog-integration');
+  return {
+    blogEnabled: blog ? blog.enabled : true,
+    blogPostsPerMonth: blog?.limit ?? null,
+    videoScriptsPerMonth: videoScript?.limit ?? null,
+    documentsPerMonth: document_?.limit ?? null,
+    adCreationsPerMonth: adCreation?.limit ?? null,
+    aiCreditsPerMonth: aiContent?.limit ?? null,
+    blogIntegrations: blogIntegration?.limit ?? null,
+  };
+}
+async function ensureAdvertiserSubscription(tenantId, advertiserId) {
+  const existing = await pgPool.query('SELECT * FROM advertiser_subscriptions WHERE advertiser_id = $1', [advertiserId]);
+  if (existing.rows.length) return existing.rows[0];
+  const renewsAt = new Date(); renewsAt.setMonth(renewsAt.getMonth() + 1);
+  const insert = await pgPool.query(
+    `INSERT INTO advertiser_subscriptions (tenant_id, advertiser_id, plan_name, status, entitlements, renews_at, note)
+     VALUES ($1,$2,'미설정','active',$3,$4,'구독 상품이 아직 지정되지 않았습니다.') RETURNING *`,
+    [tenantId, advertiserId, JSON.stringify({ blogEnabled: true }), renewsAt.toISOString()]
+  );
+  return insert.rows[0];
+}
+function getFeatureLimit(sub, feature) {
+  const e = sub.entitlements || {};
+  if (feature === 'blog') return e.blogEnabled === false ? 0 : e.blogPostsPerMonth;
+  if (feature === 'video-script') return e.videoScriptsPerMonth;
+  if (feature === 'document') return e.documentsPerMonth;
+  if (feature === 'ad-creation') return e.adCreationsPerMonth;
+  if (feature === 'ai-generation') return e.aiCreditsPerMonth;
+  return undefined;
+}
+async function getMonthlyUsage(advertiserId, feature, date = new Date()) {
+  const monthStart = new Date(date.getFullYear(), date.getMonth(), 1).toISOString();
+  const nextMonthStart = new Date(date.getFullYear(), date.getMonth() + 1, 1).toISOString();
+  const res = await pgPool.query(
+    'SELECT COALESCE(SUM(quantity),0) as total FROM usage_events WHERE advertiser_id = $1 AND feature = $2 AND created_at >= $3 AND created_at < $4',
+    [advertiserId, feature, monthStart, nextMonthStart]
+  );
+  return Number(res.rows[0].total) || 0;
+}
+async function canUseFeatureCheck(tenantId, advertiserId, feature) {
+  const sub = await ensureAdvertiserSubscription(tenantId, advertiserId);
+  const limit = getFeatureLimit(sub, feature);
+  const used = await getMonthlyUsage(advertiserId, feature);
+  const statusOk = ['trial', 'active'].includes(sub.status);
+  const enabled = feature !== 'blog' || sub.entitlements?.blogEnabled !== false;
+  const allowed = statusOk && enabled && (limit == null || used < limit);
+  return {
+    allowed, subscription: sub, limit: limit ?? undefined, used,
+    remaining: limit == null ? undefined : Math.max(0, limit - used),
+    reason: !statusOk ? '구독 상태 확인 필요' : !enabled ? '기능 사용 안 함' : (limit != null && used >= limit) ? '이번 달 사용 한도 초과' : '',
+  };
+}
+
 async function handleAuth(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     if (!JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
@@ -3578,6 +3643,162 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
         await pgPool.query('DELETE FROM app_roles WHERE id = $1 AND tenant_id = $2 AND is_system = false', [detailMatch[1], tenantId]);
         return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 전체 구독 목록 (관리자 대시보드/광고주 현황용) ─────────────────────
+    if (req.method === 'GET' && pathname === '/api/subscriptions') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const clauses = ['tenant_id = $1']; const params = [tenantId];
+      if (!requester.isOwner && requester.advertiserIds) {
+        params.push(requester.advertiserIds); clauses.push(`advertiser_id = ANY($${params.length}::uuid[])`);
+      }
+      const rows = await pgPool.query(`SELECT * FROM advertiser_subscriptions WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`, params);
+      return sendJson(res, 200, { items: rows.rows });
+    }
+
+    // ── 구독 상품 관리 (관리자) ────────────────────────────────────────
+    if (pathname.startsWith('/api/subscription-plans')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const detailMatch = pathname.match(/^\/api\/subscription-plans\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/subscription-plans') {
+        const rows = await pgPool.query('SELECT * FROM subscription_plans WHERE tenant_id = $1 ORDER BY created_at DESC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/subscription-plans') {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        const name = cleanText(body.name || '', 100);
+        if (!name) return sendJson(res, 400, { error: '상품명을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO subscription_plans (tenant_id, name, description, monthly_price, vat_included, status, entitlements)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          [tenantId, name, body.description || null, body.monthlyPrice ?? null, body.vatIncluded ?? true, body.status || 'draft', JSON.stringify(body.entitlements || [])]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.description !== undefined) set('description', body.description);
+        if (body.monthlyPrice !== undefined) set('monthly_price', body.monthlyPrice);
+        if (body.status !== undefined) set('status', body.status);
+        if (body.entitlements !== undefined) set('entitlements', JSON.stringify(body.entitlements));
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE subscription_plans SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        if (!upd.rows.length) return sendJson(res, 404, { error: '상품을 찾을 수 없습니다.' });
+        return sendJson(res, 200, upd.rows[0]);
+      }
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        await pgPool.query('DELETE FROM subscription_plans WHERE id = $1 AND tenant_id = $2', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 광고주별 구독 조회/적용 ────────────────────────────────────────
+    const subMatch = pathname.match(/^\/api\/advertisers\/([^/]+)\/subscription$/);
+    if (subMatch) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const advertiserId = decodeURIComponent(subMatch[1]);
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET') {
+        return sendJson(res, 200, await ensureAdvertiserSubscription(tenantId, advertiserId));
+      }
+      if (req.method === 'PATCH') {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        await ensureAdvertiserSubscription(tenantId, advertiserId);
+        if (body.planId) {
+          const plan = await pgPool.query('SELECT * FROM subscription_plans WHERE id = $1 AND tenant_id = $2', [body.planId, tenantId]);
+          if (!plan.rows.length) return sendJson(res, 404, { error: '구독 상품을 찾을 수 없습니다.' });
+          const entitlements = deriveEntitlementsFromPlan(plan.rows[0].entitlements);
+          const upd = await pgPool.query(
+            `UPDATE advertiser_subscriptions SET plan_id=$3, plan_name=$4, entitlements=$5, updated_at=now() WHERE advertiser_id=$1 AND tenant_id=$2 RETURNING *`,
+            [advertiserId, tenantId, body.planId, plan.rows[0].name, JSON.stringify(entitlements)]
+          );
+          return sendJson(res, 200, upd.rows[0]);
+        }
+        const sets = []; const params = [advertiserId, tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.status !== undefined) set('status', body.status);
+        if (body.note !== undefined) set('note', body.note);
+        if (body.renewsAt !== undefined) set('renews_at', body.renewsAt);
+        if (body.entitlements !== undefined) {
+          // 관리자가 상품 없이 개별 항목(블로그 사용 여부, 월 한도 등)을 직접 조정하는 경우 -
+          // 기존 entitlements에 부분 병합합니다(상품 적용과 달리 완전 교체가 아님).
+          const current = await pgPool.query('SELECT entitlements FROM advertiser_subscriptions WHERE advertiser_id = $1 AND tenant_id = $2', [advertiserId, tenantId]);
+          const merged = { ...(current.rows[0]?.entitlements || {}), ...body.entitlements };
+          set('entitlements', JSON.stringify(merged));
+        }
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE advertiser_subscriptions SET ${sets.join(', ')}, updated_at = now() WHERE advertiser_id = $1 AND tenant_id = $2 RETURNING *`, params);
+        return sendJson(res, 200, upd.rows[0]);
+      }
+    }
+
+    // ── 사용량 기록/조회 (구독 한도 집계의 유일한 원본) ───────────────────
+    if (pathname === '/api/usage-events' || pathname === '/api/usage-events/check') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/usage-events/check') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId'); const feature = q.get('feature');
+        if (!advertiserId || !feature) return sendJson(res, 400, { error: 'advertiserId와 feature가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        return sendJson(res, 200, await canUseFeatureCheck(tenantId, advertiserId, feature));
+      }
+
+      if (req.method === 'GET' && pathname === '/api/usage-events') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['tenant_id = $1']; const params = [tenantId];
+        if (q.get('advertiserId')) {
+          if (!canAccessAdvertiser(requester, q.get('advertiserId'))) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+          params.push(q.get('advertiserId')); clauses.push(`advertiser_id = $${params.length}`);
+        } else if (!requester.isOwner && requester.advertiserIds) {
+          params.push(requester.advertiserIds); clauses.push(`advertiser_id = ANY($${params.length}::uuid[])`);
+        }
+        if (q.get('feature')) { params.push(q.get('feature')); clauses.push(`feature = $${params.length}`); }
+        const rows = await pgPool.query(`SELECT * FROM usage_events WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 500`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/usage-events') {
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const feature = cleanText(body.feature || '', 40);
+        const action = cleanText(body.action || '', 40);
+        if (!advertiserId || !feature || !action) return sendJson(res, 400, { error: 'advertiserId, feature, action이 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        // recordUsageOnce와 동일한 규칙: sourceId가 이미 기록되어 있으면 중복 집계하지 않고 기존 값을 그대로 돌려줍니다.
+        if (body.sourceId) {
+          const existing = await pgPool.query('SELECT * FROM usage_events WHERE advertiser_id=$1 AND feature=$2 AND action=$3 AND source_id=$4 LIMIT 1', [advertiserId, feature, action, body.sourceId]);
+          if (existing.rows.length) return sendJson(res, 200, existing.rows[0]);
+        }
+        const sub = await ensureAdvertiserSubscription(tenantId, advertiserId);
+        const insert = await pgPool.query(
+          `INSERT INTO usage_events (tenant_id, advertiser_id, subscription_id, feature, action, quantity, source_id, provider, provider_cost, ai_cost)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [tenantId, advertiserId, sub.id, feature, action, Number(body.quantity) || 1, body.sourceId || null, body.provider || null, body.providerCost ?? null, body.aiCost ?? null]
+        );
+        return sendJson(res, 201, insert.rows[0]);
       }
     }
 
