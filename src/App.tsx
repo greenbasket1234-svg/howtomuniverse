@@ -3,8 +3,6 @@ import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { AppErrorBoundary } from './layouts/AppErrorBoundary';
 import { AppLayout } from './layouts/AppLayout';
 import { AuthGate } from './gates/AuthGate';
-import { PortalLoginPage } from './portal/PortalLoginPage';
-import { PortalDashboardPage } from './portal/PortalDashboardPage';
 import { KeywordHubLayout, CreativeHubLayout, AutomationHubLayout, CalendarHubLayout, AdAccountsHubLayout, ReportsBrandLayout } from './layouts/HubLayouts';
 import { runAutoDbSyncIfDue } from './utils/googleSheetDbSync';
 
@@ -75,10 +73,7 @@ export default function App(){
     const timer = window.setInterval(() => { void run(); }, 15 * 60 * 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
-  return <AppErrorBoundary><Routes>
-  <Route path="/portal/login" element={<PortalLoginPage/>}/>
-  <Route path="/portal/dashboard" element={<PortalDashboardPage/>}/>
-  <Route path="/*" element={<AuthGate><Routes>
+  return <AppErrorBoundary><AuthGate><Routes>
   <Route path="/" element={<Navigate to="/home" replace/>}/>
   <Route element={<AppLayout/>}>
     <Route path="home" element={<UniverseHomePage/>}/>
@@ -141,6 +136,5 @@ export default function App(){
     <Route path="schedule-slots" element={<Navigate to="/operations-calendar/schedule" replace/>}/><Route path="weather-season-calendar" element={<Navigate to="/operations-calendar/weather" replace/>}/>
     <Route path="*" element={<NotFoundPage/>}/>
   </Route>
-</Routes></AuthGate>}/>
-</Routes></AppErrorBoundary>;
+</Routes></AuthGate></AppErrorBoundary>;
 }

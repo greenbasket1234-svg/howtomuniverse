@@ -2087,13 +2087,9 @@ async function canUseFeatureCheck(tenantId, advertiserId, feature) {
   };
 }
 
-/**
- * 광고주 포털 인증 - 내부 직원 인증(resolveRequestUser)과 완전히 분리되어 있습니다.
- * 토큰에 type:'advertiser-portal'을 명시해서, 직원 토큰이 실수로라도 광고주 포털
- * API를 통과하거나 그 반대가 되는 일이 없도록 합니다.
- */
 // 구독 상품 이름으로 등급을 판정합니다. "구독 상품 관리"에서 만든 상품명과 정확히
 // 일치해야 하므로, 상품명을 바꾸면 이 매핑도 같이 바꿔야 합니다.
+// resolveRequestUser()가 광고주 계정(is_advertiser_account=true)의 등급을 매길 때 씁니다.
 function portalTierFromPlanName(planName) {
   if (planName === 'HOWTOM CONTENT PRO') return 3;
   if (planName === 'HOWTOM INSIGHT') return 2;
@@ -2101,56 +2097,6 @@ function portalTierFromPlanName(planName) {
   return 0; // 미설정 또는 인식 못 하는 상품명
 }
 const PORTAL_TIER_LABEL = { 0: '미설정', 1: 'VIEW', 2: 'INSIGHT', 3: 'CONTENT PRO' };
-
-async function resolveAdvertiserSession(req) {
-  const token = bearerToken(req);
-  if (!token) return null;
-  const payload = verifyToken(token);
-  if (!payload || payload.type !== 'advertiser-portal') return null;
-  if (!pgPool) return null;
-  const result = await pgPool.query(
-    `SELECT id, tenant_id, advertiser_id, email, name, status FROM advertiser_accounts WHERE id = $1`,
-    [payload.sub]
-  );
-  const account = result.rows[0];
-  if (!account || account.status !== 'active') return null;
-  // 매 요청마다 최신 구독 상태를 다시 조회합니다 - 관리자가 방금 등급을 바꿨는데도
-  // 예전 토큰에 저장된 낡은 등급이 계속 적용되는 일이 없도록 합니다.
-  const sub = await pgPool.query('SELECT plan_name FROM advertiser_subscriptions WHERE advertiser_id = $1', [account.advertiser_id]);
-  const planName = sub.rows[0]?.plan_name || '미설정';
-  const tier = portalTierFromPlanName(planName);
-  return { accountId: account.id, tenantId: account.tenant_id, advertiserId: account.advertiser_id, email: account.email, name: account.name, planName, tier };
-}
-
-async function handleAdvertiserPortalAuth(req, res, pathname) {
-  if (req.method === 'POST' && pathname === '/api/advertiser-portal/login') {
-    if (!pgPool) return sendJson(res, 500, { error: 'DB가 설정되지 않았습니다.' });
-    const body = await readJson(req);
-    const email = cleanText(body.email || '', 200).toLowerCase();
-    const password = String(body.password || '');
-    if (!email || !password) return sendJson(res, 400, { error: '이메일과 비밀번호를 입력하세요.' });
-    const tenantId = await getCurrentTenantId();
-    const result = await pgPool.query(
-      `SELECT aa.*, a.name as advertiser_name FROM advertiser_accounts aa JOIN advertisers a ON a.id = aa.advertiser_id WHERE aa.tenant_id=$1 AND aa.email=$2`,
-      [tenantId, email]
-    );
-    const account = result.rows[0];
-    if (!account || !account.password_hash) return sendJson(res, 401, { error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
-    if (account.status !== 'active') return sendJson(res, 403, { error: '아직 활성화되지 않은 계정입니다. 초대 링크로 먼저 비밀번호를 설정하세요.' });
-    if (!verifyUserPassword(password, account.password_hash)) return sendJson(res, 401, { error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
-    const now = Math.floor(Date.now() / 1000);
-    const token = signToken({ sub: account.id, type: 'advertiser-portal', email: account.email, iat: now, exp: now + TOKEN_TTL_SECONDS });
-    await pgPool.query(`UPDATE advertiser_accounts SET last_login_at = now() WHERE id = $1`, [account.id]);
-    return sendJson(res, 200, { token, account: { id: account.id, email: account.email, name: account.name, advertiserId: account.advertiser_id, advertiserName: account.advertiser_name } });
-  }
-  if (req.method === 'GET' && pathname === '/api/advertiser-portal/me') {
-    const session = await resolveAdvertiserSession(req);
-    if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
-    const adv = await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [session.advertiserId]);
-    return sendJson(res, 200, { id: session.accountId, email: session.email, name: session.name, advertiserId: session.advertiserId, advertiserName: adv.rows[0]?.name || '', tier: session.tier, tierLabel: PORTAL_TIER_LABEL[session.tier], planName: session.planName });
-  }
-  return false;
-}
 
 async function handleAuth(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -2300,7 +2246,6 @@ async function handleApi(req, res, pathname) {
     }
 
     if (await handleAuth(req, res, pathname)) return;
-    if (await handleAdvertiserPortalAuth(req, res, pathname)) return;
 
     // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
@@ -3367,37 +3312,6 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     function metricMeta(db, filters) { return { from: filters.from || null, to: filters.to || null, connections: metricConnectionStatus(db, filters), generatedAt: new Date().toISOString() }; }
 
     // ── 광고주 포털 전용 대시보드 - 세션의 advertiserId로 강제 고정합니다 ──────
-    // 클라이언트가 다른 advertiserId를 보내도 무시합니다 - 오직 로그인한 본인 광고주
-    // 데이터만 나갈 수 있고, URL을 조작해도 다른 광고주 데이터는 절대 안 나옵니다.
-    if (req.method === 'GET' && pathname === '/api/advertiser-portal/dashboard') {
-      const session = await resolveAdvertiserSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
-      const q = new URLSearchParams((req.url || '').split('?')[1] || '');
-      const from = q.get('from') || ''; const to = q.get('to') || '';
-      const filters = { query: q, from, to, advertiserId: session.advertiserId, channels: [], accessibleAdvertiserIds: [session.advertiserId] };
-      const db = await pgReadDb(session.tenantId, filters);
-      const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-      const totalsSeed = { impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0 };
-      const totals = rows.reduce((acc, r) => {
-        for (const k of Object.keys(totalsSeed)) acc[k] = (acc[k] || 0) + metricNumber(r[k]);
-        return acc;
-      }, { ...totalsSeed });
-      return sendJson(res, 200, { rows, totals: withDerived(totals), meta: metricMeta(db, filters) });
-    }
-
-    // ── 캠페인별 분석 - INSIGHT 등급(2) 이상만 볼 수 있습니다. VIEW 등급은 403. ──
-    if (req.method === 'GET' && pathname === '/api/advertiser-portal/campaigns') {
-      const session = await resolveAdvertiserSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
-      if (session.tier < 2) return sendJson(res, 403, { error: `이 기능은 INSIGHT 이상 구독에서 이용할 수 있습니다. (현재: ${PORTAL_TIER_LABEL[session.tier]})`, requiredTier: 2, currentTier: session.tier });
-      const q = new URLSearchParams((req.url || '').split('?')[1] || '');
-      const filters = { query: q, from: q.get('from') || '', to: q.get('to') || '', advertiserId: session.advertiserId, channels: [], accessibleAdvertiserIds: [session.advertiserId] };
-      const db = await pgReadDb(session.tenantId, filters);
-      const rows = groupMetrics(filterMetricRows(db.campaignMetrics, filters), r => `${r.channel}|${r.campaignId}`, r => ({ channel: r.channel, campaignId: r.campaignId || '', campaignName: r.campaignName || '', impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 })).sort((a, b) => b.spend - a.spend);
-      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
-    }
-
-
     if (req.method === 'GET' && pathname === '/api/metrics/daily') {
       const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters));
       const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
@@ -3420,6 +3334,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
+      // 광고주 계정(내부 직원 아님)은 INSIGHT 등급(2) 이상이어야 캠페인별 분석을 볼 수 있습니다.
+      const requesterForTier = await resolveRequestUser(req);
+      if (requesterForTier?.isAdvertiserAccount && (requesterForTier.tier ?? 0) < 2) {
+        return sendJson(res, 403, { error: `이 기능은 INSIGHT 이상 구독에서 이용할 수 있습니다. (현재: ${PORTAL_TIER_LABEL[requesterForTier.tier ?? 0]})`, requiredTier: 2, currentTier: requesterForTier.tier ?? 0 });
+      }
       const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
       const rows = groupMetrics(source, r => `${r.advertiserId}|${r.channel}|${r.campaignId}`, r => ({ advertiserId:r.advertiserId, advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId), channel:r.channel, campaignId:r.campaignId, campaignName:r.campaignName, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
