@@ -2071,6 +2071,16 @@ async function canUseFeatureCheck(tenantId, advertiserId, feature) {
  * 토큰에 type:'advertiser-portal'을 명시해서, 직원 토큰이 실수로라도 광고주 포털
  * API를 통과하거나 그 반대가 되는 일이 없도록 합니다.
  */
+// 구독 상품 이름으로 등급을 판정합니다. "구독 상품 관리"에서 만든 상품명과 정확히
+// 일치해야 하므로, 상품명을 바꾸면 이 매핑도 같이 바꿔야 합니다.
+function portalTierFromPlanName(planName) {
+  if (planName === 'HOWTOM CONTENT PRO') return 3;
+  if (planName === 'HOWTOM INSIGHT') return 2;
+  if (planName === 'HOWTOM VIEW') return 1;
+  return 0; // 미설정 또는 인식 못 하는 상품명
+}
+const PORTAL_TIER_LABEL = { 0: '미설정', 1: 'VIEW', 2: 'INSIGHT', 3: 'CONTENT PRO' };
+
 async function resolveAdvertiserSession(req) {
   const token = bearerToken(req);
   if (!token) return null;
@@ -2083,7 +2093,12 @@ async function resolveAdvertiserSession(req) {
   );
   const account = result.rows[0];
   if (!account || account.status !== 'active') return null;
-  return { accountId: account.id, tenantId: account.tenant_id, advertiserId: account.advertiser_id, email: account.email, name: account.name };
+  // 매 요청마다 최신 구독 상태를 다시 조회합니다 - 관리자가 방금 등급을 바꿨는데도
+  // 예전 토큰에 저장된 낡은 등급이 계속 적용되는 일이 없도록 합니다.
+  const sub = await pgPool.query('SELECT plan_name FROM advertiser_subscriptions WHERE advertiser_id = $1', [account.advertiser_id]);
+  const planName = sub.rows[0]?.plan_name || '미설정';
+  const tier = portalTierFromPlanName(planName);
+  return { accountId: account.id, tenantId: account.tenant_id, advertiserId: account.advertiser_id, email: account.email, name: account.name, planName, tier };
 }
 
 async function handleAdvertiserPortalAuth(req, res, pathname) {
@@ -2111,7 +2126,7 @@ async function handleAdvertiserPortalAuth(req, res, pathname) {
     const session = await resolveAdvertiserSession(req);
     if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
     const adv = await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [session.advertiserId]);
-    return sendJson(res, 200, { id: session.accountId, email: session.email, name: session.name, advertiserId: session.advertiserId, advertiserName: adv.rows[0]?.name || '' });
+    return sendJson(res, 200, { id: session.accountId, email: session.email, name: session.name, advertiserId: session.advertiserId, advertiserName: adv.rows[0]?.name || '', tier: session.tier, tierLabel: PORTAL_TIER_LABEL[session.tier], planName: session.planName });
   }
   return false;
 }
@@ -3347,6 +3362,18 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         return acc;
       }, { ...totalsSeed });
       return sendJson(res, 200, { rows, totals: withDerived(totals), meta: metricMeta(db, filters) });
+    }
+
+    // ── 캠페인별 분석 - INSIGHT 등급(2) 이상만 볼 수 있습니다. VIEW 등급은 403. ──
+    if (req.method === 'GET' && pathname === '/api/advertiser-portal/campaigns') {
+      const session = await resolveAdvertiserSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+      if (session.tier < 2) return sendJson(res, 403, { error: `이 기능은 INSIGHT 이상 구독에서 이용할 수 있습니다. (현재: ${PORTAL_TIER_LABEL[session.tier]})`, requiredTier: 2, currentTier: session.tier });
+      const q = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const filters = { query: q, from: q.get('from') || '', to: q.get('to') || '', advertiserId: session.advertiserId, channels: [], accessibleAdvertiserIds: [session.advertiserId] };
+      const db = await pgReadDb(session.tenantId, filters);
+      const rows = groupMetrics(filterMetricRows(db.campaignMetrics, filters), r => `${r.channel}|${r.campaignId}`, r => ({ channel: r.channel, campaignId: r.campaignId || '', campaignName: r.campaignName || '', impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0 })).sort((a, b) => b.spend - a.spend);
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
 
 

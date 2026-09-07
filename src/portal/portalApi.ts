@@ -29,14 +29,25 @@ export async function portalFetch<T = unknown>(path: string, options: RequestIni
     clearPortalToken();
     throw new Error('로그인이 만료되었습니다. 다시 로그인해주세요.');
   }
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? res.statusText);
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string; requiredTier?: number; currentTier?: number };
+  if (!res.ok) {
+    const err = new Error((data as { error?: string }).error ?? res.statusText) as Error & { requiredTier?: number; currentTier?: number };
+    err.requiredTier = (data as { requiredTier?: number }).requiredTier;
+    err.currentTier = (data as { currentTier?: number }).currentTier;
+    throw err;
+  }
   return data;
 }
 
-export type PortalAccount = { id: string; email: string; name: string; advertiserId: string; advertiserName: string };
+export type PortalAccount = { id: string; email: string; name: string; advertiserId: string; advertiserName: string; tier: number; tierLabel: string; planName: string };
+export type PortalCampaignRow = { channel: string; campaignId: string; campaignName: string; impressions: number; clicks: number; spend: number; dbCount: number; purchases: number; revenue: number };
 export type PortalDashboardRow = { date: string; advertiserId: string; channel: string; impressions: number; clicks: number; spend: number; dbCount: number; purchases: number; revenue: number; ctr: number; cpc: number; roas: number };
 export type PortalDashboardTotals = PortalDashboardRow & { totalConversions: number; cvr: number; cpa: number };
+
+export class TierRestrictedError extends Error {
+  requiredTier: number; currentTier: number;
+  constructor(message: string, requiredTier: number, currentTier: number) { super(message); this.requiredTier = requiredTier; this.currentTier = currentTier; }
+}
 
 export const portalApi = {
   login: (email: string, password: string) => portalFetch<{ token: string; account: PortalAccount }>('/advertiser-portal/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
@@ -47,5 +58,14 @@ export const portalApi = {
     if (params?.to) q.set('to', params.to);
     const qs = q.toString();
     return portalFetch<{ rows: PortalDashboardRow[]; totals: PortalDashboardTotals; meta: { from: string | null; to: string | null; generatedAt: string } }>(`/advertiser-portal/dashboard${qs ? `?${qs}` : ''}`);
+  },
+  async campaigns() {
+    try {
+      return await portalFetch<{ rows: PortalCampaignRow[] }>('/advertiser-portal/campaigns');
+    } catch (e) {
+      const err = e as Error & { requiredTier?: number; currentTier?: number };
+      if (err.requiredTier !== undefined) throw new TierRestrictedError(err.message, err.requiredTier, err.currentTier ?? 0);
+      throw e;
+    }
   },
 };
