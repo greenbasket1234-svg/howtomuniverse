@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'reac
 import { ChevronLeft, ChevronRight, LogOut, Menu, Settings, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { activeUniverseGroup, isUniverseItemActive, universeMenuGroups, type UniverseMenuGroup } from '../data/universeMenu';
+import { activeUniverseGroup, isUniverseItemActive, universeMenuGroups, CONTENT_STUDIO_URL, type UniverseMenuGroup } from '../data/universeMenu';
 import { HowtomUniverseLogo } from '../components/HowtomUniverseLogo';
 import { loadMenuVisibility } from '../control/controlStore';
 const SIDEBAR_COLLAPSED_KEY = 'howtom-universe-v08-sidebar-collapsed';
@@ -55,7 +55,7 @@ function SidebarFooter({ collapsed }: { collapsed: boolean }) {
 
 export function Sidebar() {
   const { pathname } = useLocation();
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const currentGroup = activeUniverseGroup(pathname);
   // 모바일(좁은 화면)에서는 사이드바 전체를 화면 밖에 숨겨두고, 상단 햄버거 버튼을 눌렀을 때만
   // 오프캔버스 드로어로 슬라이드해 들어오게 합니다. 데스크톱 사이드바를 그냥 축소한 아이콘
@@ -72,12 +72,24 @@ export function Sidebar() {
     return () => window.removeEventListener('howtom:control-changed', bump);
   }, []);
   const menuVisibility = useMemo(() => loadMenuVisibility(), [menuRevision]);
+  // 광고주 계정은 9개 직원용 메뉴를 그대로 필터링하지 않고, 완전히 별도인
+  // 최소 메뉴(홈 + 등급별 추가 항목)만 보여줍니다 - 직원 메뉴에 실수로라도
+  // 관리 기능이 섞여 나가는 걸 원천적으로 막기 위해서입니다.
+  const advertiserGroups = useMemo((): UniverseMenuGroup[] => {
+    const tier = user?.tier ?? 0;
+    const items: UniverseMenuGroup['items'] = [{ key: 'home', label: '홈', path: '/home', icon: 'dashboard' }];
+    if (tier >= 2) items.push({ key: 'insights-performance', label: '광고 성과 분석', path: '/insights/performance', icon: 'dashboard' });
+    if (tier >= 3) items.push({ key: 'content-studio', label: '콘텐츠 제작소 ↗', path: CONTENT_STUDIO_URL, icon: 'dashboard', external: true });
+    return [{ key: 'home', label: '홈', path: '/home', planet: 'earth', items }];
+  }, [user?.tier]);
   const groups = useMemo(
-    () => universeMenuGroups
+    () => user?.isAdvertiserAccount
+      ? advertiserGroups
+      : universeMenuGroups
       .filter(group => !group.adminOnly || isAdmin)
       // 설정 메뉴는 관리자 메뉴 노출 화면 설명대로 "메인 메뉴 마지막 유지" 대상이라 항상 보여줍니다.
       .filter(group => group.label === '설정' || menuVisibility[group.label] !== false),
-    [isAdmin, menuVisibility],
+    [isAdmin, menuVisibility, user?.isAdvertiserAccount, advertiserGroups],
   );
 
   const [manualCollapsed, setManualCollapsed] = useState(() => {

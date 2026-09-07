@@ -16,6 +16,12 @@ export type AuthUser = {
   isOwner?: boolean;
   permissionKeys?: string[];
   advertiserIds?: string[] | null;
+  // 광고주 본인 계정(내부 직원이 아님)인지 여부. true면 프론트에서 메뉴를 대폭
+  // 단순화해서 보여줍니다. tier는 이 광고주의 현재 구독 등급입니다(0=미설정,
+  // 1=VIEW, 2=INSIGHT, 3=CONTENT PRO).
+  isAdvertiserAccount?: boolean;
+  tier?: number | null;
+  tierLabel?: string | null;
 };
 
 type AuthState = {

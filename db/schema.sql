@@ -582,12 +582,18 @@ CREATE TABLE IF NOT EXISTS app_users (
   department TEXT,
   status TEXT NOT NULL DEFAULT 'invited', -- 'invited' | 'active' | 'disabled'
   is_owner BOOLEAN NOT NULL DEFAULT false,
+  -- true면 "광고주 본인" 계정입니다(내부 직원이 아님). 로그인·권한 검사는 팀원과
+  -- 완전히 동일한 시스템(app_users/app_memberships)을 그대로 씁니다 - 별도로 만들지
+  -- 않고, 광고주 범위를 정확히 그 광고주 1곳으로만 제한한 "특수한 팀원"으로 취급합니다.
+  -- 프론트엔드는 이 값을 보고 메뉴를 단순화해서 보여줍니다.
+  is_advertiser_account BOOLEAN NOT NULL DEFAULT false,
   last_login_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(tenant_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_app_users_tenant ON app_users(tenant_id);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS is_advertiser_account BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS app_roles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

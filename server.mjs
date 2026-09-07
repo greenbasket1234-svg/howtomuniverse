@@ -1953,6 +1953,20 @@ async function ensureDefaultRoles(tenantId) {
   }
 }
 
+// 이미 기본 역할이 세팅된(오래된) 테넌트는 ensureDefaultRoles가 통째로 건너뛰므로,
+// "광고주" 역할만 따로 보장합니다 - 광고주 계정을 처음 만들 때 자동으로 생성됩니다.
+// 광고주는 최소 권한(대시보드 열람)만 갖고, 등급별 세부 기능은 각 API가 구독 등급을
+// 직접 확인해서 별도로 제한합니다(역할 권한만으로는 등급을 표현할 수 없기 때문).
+async function ensureAdvertiserRole(tenantId) {
+  const existing = await pgPool.query(`SELECT id FROM app_roles WHERE tenant_id = $1 AND name = '광고주'`, [tenantId]);
+  if (existing.rows.length) return existing.rows[0].id;
+  const insert = await pgPool.query(
+    `INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys, is_system) VALUES ($1,'광고주','광고주 본인 계정입니다. 본인 광고주 데이터만 열람할 수 있습니다.','advertiser',$2,true) RETURNING id`,
+    [tenantId, ['dashboard.view']]
+  );
+  return insert.rows[0].id;
+}
+
 function hashUserPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -1970,11 +1984,11 @@ async function resolveRequestUser(req) {
   const payload = verifyToken(bearerToken(req));
   if (!payload) return null;
   if (payload.sub === ADMIN_USER.id && payload.email === ADMIN_USER.email) {
-    return { id: 'owner', email: ADMIN_USER.email, name: ADMIN_USER.name, isOwner: true, permissionKeys: ALL_INTERNAL_PERMISSIONS, advertiserIds: null, status: 'active' };
+    return { id: 'owner', email: ADMIN_USER.email, name: ADMIN_USER.name, isOwner: true, permissionKeys: ALL_INTERNAL_PERMISSIONS, advertiserIds: null, status: 'active', isAdvertiserAccount: false, tier: null };
   }
   if (!pgPool || typeof payload.sub !== 'string') return null;
   const result = await pgPool.query(
-    'SELECT u.id, u.email, u.name, u.status, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
+    'SELECT u.id, u.email, u.name, u.status, u.is_advertiser_account, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
     [payload.sub]
   );
   const row = result.rows[0];
@@ -1985,7 +1999,14 @@ async function resolveRequestUser(req) {
     const roles = await pgPool.query('SELECT permission_keys FROM app_roles WHERE id = ANY($1::uuid[])', [roleIds]);
     permissionKeys = [...new Set(roles.rows.flatMap(r => r.permission_keys || []))];
   }
-  return { id: row.id, email: row.email, name: row.name, isOwner: false, permissionKeys, advertiserIds: row.advertiser_ids, status: row.status };
+  // 광고주 계정은 항상 광고주 1곳으로 범위가 고정되어 있으므로, 그 광고주의 현재
+  // 구독 등급을 매 요청마다 다시 조회합니다(등급을 바꾸면 재로그인 없이 즉시 반영).
+  let tier = null;
+  if (row.is_advertiser_account && row.advertiser_ids && row.advertiser_ids.length === 1) {
+    const sub = await pgPool.query('SELECT plan_name FROM advertiser_subscriptions WHERE advertiser_id = $1', [row.advertiser_ids[0]]);
+    tier = portalTierFromPlanName(sub.rows[0]?.plan_name || '미설정');
+  }
+  return { id: row.id, email: row.email, name: row.name, isOwner: false, permissionKeys, advertiserIds: row.advertiser_ids, status: row.status, isAdvertiserAccount: row.is_advertiser_account, tier };
 }
 
 function hasPermission(user, key) {
@@ -2169,7 +2190,7 @@ async function handleAuth(req, res, pathname) {
         const token = signToken({ sub: row.id, email: row.email, iat: now, exp: now + TOKEN_TTL_SECONDS });
         const resolvedUser = await resolveRequestUser({ headers: { authorization: 'Bearer ' + token } });
         addLog({ action: 'login_success', email, ip, result: 'success' });
-        sendJson(res, 200, { token, user: { id: row.id, email: row.email, name: row.name, role: resolvedUser?.permissionKeys?.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: resolvedUser?.permissionKeys || [], advertiserIds: resolvedUser?.advertiserIds ?? null, isOwner: false } });
+        sendJson(res, 200, { token, user: { id: row.id, email: row.email, name: row.name, role: resolvedUser?.permissionKeys?.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: resolvedUser?.permissionKeys || [], advertiserIds: resolvedUser?.advertiserIds ?? null, isOwner: false, isAdvertiserAccount: resolvedUser?.isAdvertiserAccount || false, tier: resolvedUser?.tier ?? null, tierLabel: resolvedUser?.tier != null ? PORTAL_TIER_LABEL[resolvedUser.tier] : null } });
         return true;
       }
     }
@@ -2183,7 +2204,7 @@ async function handleAuth(req, res, pathname) {
     const user = await resolveRequestUser(req);
     if (!user) { sendJson(res, 401, { error: '인증이 만료되었거나 유효하지 않습니다.' }); return true; }
     if (user.isOwner) { sendJson(res, 200, { user: ADMIN_USER }); return true; }
-    sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, role: user.permissionKeys.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: user.permissionKeys, advertiserIds: user.advertiserIds, isOwner: false } });
+    sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, role: user.permissionKeys.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: user.permissionKeys, advertiserIds: user.advertiserIds, isOwner: false, isAdvertiserAccount: user.isAdvertiserAccount || false, tier: user.tier ?? null, tierLabel: user.tier != null ? PORTAL_TIER_LABEL[user.tier] : null } });
     return true;
   }
 
@@ -3534,13 +3555,21 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const q = new URL(req.url, 'http://x').searchParams;
         const advertiserId = q.get('advertiserId');
         if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        // 광고주 계정 = is_advertiser_account=true인 app_users. advertiser_ids는 항상
+        // 정확히 그 광고주 1곳입니다(팀원과 달리 여러 광고주를 담당하지 않음).
         const rows = await pgPool.query(
-          `SELECT aa.id, aa.email, aa.name, aa.status, aa.advertiser_id, a.name as advertiser_name, aa.last_login_at, aa.created_at
-           FROM advertiser_accounts aa JOIN advertisers a ON a.id = aa.advertiser_id
-           WHERE aa.tenant_id = $1 ${advertiserId ? 'AND aa.advertiser_id = $2' : ''} ORDER BY aa.created_at DESC`,
-          advertiserId ? [tenantId, advertiserId] : [tenantId]
+          `SELECT u.id, u.email, u.name, u.status, m.advertiser_ids, u.last_login_at, u.created_at
+           FROM app_users u JOIN app_memberships m ON m.user_id = u.id
+           WHERE u.tenant_id = $1 AND u.is_advertiser_account = true ORDER BY u.created_at DESC`,
+          [tenantId]
         );
-        const accessible = rows.rows.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
+        const withAdvName = await Promise.all(rows.rows.map(async r => {
+          const advId = (r.advertiser_ids || [])[0];
+          const adv = advId ? await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [advId]) : { rows: [] };
+          return { id: r.id, email: r.email, name: r.name, status: r.status, advertiser_id: advId || null, advertiser_name: adv.rows[0]?.name || '', last_login_at: r.last_login_at, created_at: r.created_at };
+        }));
+        const filtered = advertiserId ? withAdvName.filter(r => r.advertiser_id === advertiserId) : withAdvName;
+        const accessible = filtered.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
         return sendJson(res, 200, { items: accessible });
       }
       if (req.method === 'POST' && pathname === '/api/advertiser-accounts') {
@@ -3556,13 +3585,19 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const initialPassword = String(body.initialPassword || '');
         if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
         try {
+          const roleId = await ensureAdvertiserRole(tenantId);
           const insert = await pgPool.query(
-            `INSERT INTO advertiser_accounts (tenant_id, advertiser_id, email, password_hash, name, status)
-             VALUES ($1,$2,$3,$4,$5,'active') RETURNING id, email, name, advertiser_id, status, created_at`,
-            [tenantId, advertiserId, email, hashUserPassword(initialPassword), name]
+            `INSERT INTO app_users (tenant_id, email, password_hash, name, status, is_advertiser_account)
+             VALUES ($1,$2,$3,$4,'active',true) RETURNING id, email, name, status, created_at`,
+            [tenantId, email, hashUserPassword(initialPassword), name]
+          );
+          const user = insert.rows[0];
+          await pgPool.query(
+            `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)`,
+            [tenantId, user.id, [roleId], [advertiserId]]
           );
           addLog({ action: 'advertiser_account_create', advertiserId, email, actorId: requester.id });
-          return sendJson(res, 201, insert.rows[0]);
+          return sendJson(res, 201, { ...user, advertiser_id: advertiserId });
         } catch (error) {
           if (String(error?.message || '').includes('duplicate')) return sendJson(res, 409, { error: '이미 등록된 이메일입니다.' });
           throw error;
@@ -3572,9 +3607,12 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       if (req.method === 'PATCH' && advertiserAccountMatch) {
         if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
         const accountId = advertiserAccountMatch[1];
-        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        const existing = await pgPool.query(
+          `SELECT m.advertiser_ids FROM app_users u JOIN app_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.tenant_id=$2 AND u.is_advertiser_account=true`,
+          [accountId, tenantId]
+        );
         if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
-        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        if (!canAccessAdvertiser(requester, (existing.rows[0].advertiser_ids || [])[0])) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
         const body = await readJson(req);
         const sets = []; const params = [];
         if (body.status && ['active', 'disabled'].includes(body.status)) { params.push(body.status); sets.push(`status = $${params.length}`); }
@@ -3585,16 +3623,19 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         }
         if (!sets.length) return sendJson(res, 400, { error: '변경할 내용이 없습니다.' });
         params.push(accountId, tenantId);
-        await pgPool.query(`UPDATE advertiser_accounts SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length - 1} AND tenant_id = $${params.length}`, params);
+        await pgPool.query(`UPDATE app_users SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length - 1} AND tenant_id = $${params.length}`, params);
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === 'DELETE' && advertiserAccountMatch) {
         if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
         const accountId = advertiserAccountMatch[1];
-        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        const existing = await pgPool.query(
+          `SELECT m.advertiser_ids FROM app_users u JOIN app_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.tenant_id=$2 AND u.is_advertiser_account=true`,
+          [accountId, tenantId]
+        );
         if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
-        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
-        await pgPool.query('DELETE FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        if (!canAccessAdvertiser(requester, (existing.rows[0].advertiser_ids || [])[0])) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        await pgPool.query('DELETE FROM app_users WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
         return sendJson(res, 200, { ok: true });
       }
 
