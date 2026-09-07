@@ -5,6 +5,7 @@ import { PageHeader } from '../components/PageHeader';
 import { loadAdvertisers } from '../data/advertisers';
 import { loadAssets } from '../utils/assetStore';
 import { subscriptionApi, type AdvertiserSubscriptionRow } from '../utils/subscriptionApi';
+import { advertiserAccountApi, type AdvertiserAccountRow } from '../control/advertiserAccountApi';
 import { advertiserVisibleFeatures, FEATURE_CATALOG } from '../control/permissionEngine';
 import {
   createApprovalRequest,
@@ -101,6 +102,82 @@ export function AdvertiserSharedMaterialsPage(){
 export function AdvertiserActivityPage(){
   useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const events=loadAuditEvents().filter(e=>e.advertiserId===advertiserId);
   return <div className="ctrl-page"><PageHeader title="활동 기록" description="광고주와 관련된 권한·담당자·공유·승인 변경을 한 타임라인에서 확인합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><span className="ctrl-muted">현재는 프론트 감사 이벤트입니다. 정식 보안 감사로그는 서버 append-only 저장이 필요합니다.</span></div><ControlPanel title="광고주 활동 타임라인"><div className="ctrl-timeline">{events.map(e=><div key={e.auditId}><time>{new Date(e.createdAt).toLocaleString('ko-KR')}</time><div><b>{e.action}</b><small>{e.targetType||'system'} {e.targetId?`· ${e.targetId}`:''}</small></div><ControlStatus tone={e.result==='success'?'success':'danger'}>{e.result}</ControlStatus></div>)}{!events.length&&<ControlEmpty>아직 기록된 활동이 없습니다.</ControlEmpty>}</div></ControlPanel></div>
+}
+
+export function AdvertiserAccountsAdminPage(){
+  const advertisersList=advertisers();
+  const [advertiserId,setAdvertiserId]=useState(advertisersList[0]?.id||'');
+  const [accounts,setAccounts]=useState<AdvertiserAccountRow[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [email,setEmail]=useState('');const [name,setName]=useState('');const [initialPassword,setInitialPassword]=useState('');
+  const [formError,setFormError]=useState('');
+  const [notice,setNotice]=useState('');
+
+  const reload=async()=>{
+    setLoading(true);
+    try{ setAccounts(await advertiserAccountApi.list()); }
+    catch(e){ setFormError(e instanceof Error?e.message:'목록을 불러오지 못했습니다.'); }
+    finally{ setLoading(false); }
+  };
+  useEffect(()=>{ void reload(); },[]);
+
+  const addAccount=async()=>{
+    setFormError('');setNotice('');
+    if(!advertiserId){setFormError('광고주를 선택하세요.');return;}
+    if(!email.trim()||!name.trim()){setFormError('이메일과 이름을 입력하세요.');return;}
+    if(initialPassword.length<8){setFormError('초기 비밀번호는 8자 이상이어야 합니다.');return;}
+    try{
+      await advertiserAccountApi.create({advertiserId,email:email.trim(),name:name.trim(),initialPassword});
+      setEmail('');setName('');setInitialPassword('');
+      setNotice('계정을 발급했습니다. 이메일과 초기 비밀번호를 광고주에게 직접 전달해주세요.');
+      await reload();
+    }catch(e){ setFormError(e instanceof Error?e.message:'발급에 실패했습니다.'); }
+  };
+  const toggleStatus=async(a:AdvertiserAccountRow)=>{ await advertiserAccountApi.patch(a.id,{status:a.status==='disabled'?'active':'disabled'}); await reload(); };
+  const removeAccount=async(a:AdvertiserAccountRow)=>{
+    if(!confirm(`${a.email} 계정을 완전히 삭제할까요? 되돌릴 수 없습니다.`))return;
+    await advertiserAccountApi.remove(a.id); await reload();
+  };
+  const resetPassword=async(a:AdvertiserAccountRow)=>{
+    const newPassword=prompt('새 비밀번호를 입력하세요(8자 이상). 광고주에게 직접 전달해주세요.');
+    if(!newPassword)return;
+    if(newPassword.length<8){alert('비밀번호는 8자 이상이어야 합니다.');return;}
+    await advertiserAccountApi.patch(a.id,{resetPassword:newPassword});
+    setNotice(`${a.email}의 비밀번호를 재설정했습니다.`);
+  };
+
+  return <div className="ctrl-page">
+    <PageHeader title="광고주 포털 계정" description="광고주 본인이 로그인해서 자기 데이터만 보는 계정입니다. 내부 팀원 계정(설정 > 사용자 관리)과는 완전히 별개입니다."/>
+    <ControlPanel title="계정 발급" description="이메일·이름·초기 비밀번호를 정해서 발급하면, 그 계정으로 광고주 포털에 바로 로그인할 수 있습니다(이메일 발송 인프라가 없어 초기 비밀번호를 직접 전달해주세요)." actions={<BackendBadge/>}>
+      {formError&&<div className="ctrl-form-error">{formError}</div>}
+      {notice&&<div className="ctrl-notice">{notice}</div>}
+      <div className="ctrl-inline-form">
+        <AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/>
+        <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="이메일"/>
+        <input value={name} onChange={e=>setName(e.target.value)} placeholder="담당자 이름"/>
+        <input value={initialPassword} onChange={e=>setInitialPassword(e.target.value)} placeholder="초기 비밀번호(8자 이상)" type="text"/>
+        <button className="btn primary" onClick={addAccount}><Plus size={14}/> 발급</button>
+      </div>
+    </ControlPanel>
+    <ControlPanel title="발급된 계정 목록" description="">
+      <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>담당자</th><th>이메일</th><th>광고주</th><th>상태</th><th>마지막 로그인</th><th>계정 제어</th></tr></thead><tbody>
+        {loading?<tr><td colSpan={6}>불러오는 중...</td></tr>:accounts.length===0?<tr><td colSpan={6}>아직 발급된 계정이 없습니다.</td></tr>:accounts.map(a=>
+          <tr key={a.id}>
+            <td><b>{a.name}</b></td>
+            <td>{a.email}</td>
+            <td>{a.advertiser_name}</td>
+            <td><ControlStatus tone={a.status==='active'?'success':'warning'}>{a.status==='active'?'활성':a.status==='invited'?'초대됨':'중지됨'}</ControlStatus></td>
+            <td>{date(a.last_login_at||undefined)}</td>
+            <td>
+              <button className="btn secondary sm" onClick={()=>toggleStatus(a)}>{a.status==='disabled'?'재활성화':'사용 중지'}</button>
+              <button className="btn secondary sm" onClick={()=>resetPassword(a)}>비밀번호 재설정</button>
+              <button className="btn secondary sm" onClick={()=>removeAccount(a)}><Trash2 size={13}/> 삭제</button>
+            </td>
+          </tr>
+        )}
+      </tbody></table></div>
+    </ControlPanel>
+  </div>;
 }
 
 export function AdvertiserPortalPreviewPage(){

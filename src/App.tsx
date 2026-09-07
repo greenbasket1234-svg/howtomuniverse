@@ -56,7 +56,7 @@ import { ContentReferencesPage } from './pages/ContentReferencesPage';
 import { ImageCreationPage } from './pages/ImageCreationPage';
 import { PromptLibraryPage } from './pages/PromptLibraryPage';
 import { VideoScriptsPage, DocumentsWritingPage, AdvertiserSubscriptionsPage } from './pages/ProfessionalContentPages';
-import { AdvertiserWorkspaceDashboardPage, AdvertiserContactsPage, AdvertiserPermissionsPage, AdvertiserApprovalsPage, AdvertiserSharedMaterialsPage, AdvertiserActivityPage, AdvertiserPortalPreviewPage } from './pages/AdvertiserControlPages';
+import { AdvertiserWorkspaceDashboardPage, AdvertiserContactsPage, AdvertiserPermissionsPage, AdvertiserApprovalsPage, AdvertiserSharedMaterialsPage, AdvertiserActivityPage, AdvertiserPortalPreviewPage, AdvertiserAccountsAdminPage } from './pages/AdvertiserControlPages';
 import { PlatformSettingsHubPage, PlatformSettingsSectionPage } from './pages/SettingsControlPages';
 import { AdminControlDashboardPage, AdminControlPage } from './pages/AdminControlPages';
 import { AdminOnlyGate } from './gates/AdminOnlyGate';
@@ -110,7 +110,7 @@ export default function App(){
     <Route path="search-ads/google" element={<GoogleSearchAdBrandListPage/>}/><Route path="search-ads/google/:brandId" element={<GoogleSearchAdDetailPage/>}/>
     <Route path="search-ads/daangn" element={<DaangnSearchAdBrandListPage/>}/><Route path="search-ads/daangn/:brandId" element={<DaangnSearchAdDetailPage/>}/>
     <Route path="search-ads/kakao" element={<KakaoSearchAdBrandListPage/>}/><Route path="search-ads/kakao/:brandId" element={<KakaoSearchAdDetailPage/>}/>
-    <Route path="campaigns" element={<CampaignManagementPage/>}/><Route path="advertisers/subscription" element={<AdvertiserSubscriptionsPage/>}/><Route path="advertisers/dashboard" element={<AdvertiserWorkspaceDashboardPage/>}/><Route path="advertisers/contacts" element={<AdvertiserContactsPage/>}/><Route path="advertisers/permissions" element={<AdvertiserPermissionsPage/>}/><Route path="advertisers/approvals" element={<AdvertiserApprovalsPage/>}/><Route path="advertisers/shared-materials" element={<AdvertiserSharedMaterialsPage/>}/><Route path="advertisers/activity" element={<AdvertiserActivityPage/>}/><Route path="advertisers/portal-preview" element={<AdvertiserPortalPreviewPage/>}/>
+    <Route path="campaigns" element={<CampaignManagementPage/>}/><Route path="advertisers/subscription" element={<AdvertiserSubscriptionsPage/>}/><Route path="advertisers/dashboard" element={<AdvertiserWorkspaceDashboardPage/>}/><Route path="advertisers/contacts" element={<AdvertiserContactsPage/>}/><Route path="advertisers/permissions" element={<AdvertiserPermissionsPage/>}/><Route path="advertisers/approvals" element={<AdvertiserApprovalsPage/>}/><Route path="advertisers/shared-materials" element={<AdvertiserSharedMaterialsPage/>}/><Route path="advertisers/activity" element={<AdvertiserActivityPage/>}/><Route path="advertisers/portal-preview" element={<AdvertiserPortalPreviewPage/>}/><Route path="advertisers/portal-accounts" element={<AdvertiserAccountsAdminPage/>}/>
     <Route path="support" element={<SupportHubPage/>}/>
     <Route path="support/knowledge" element={<SupportKnowledgePage/>}/>
     <Route path="support/sales" element={<SupportSalesPage/>}/>

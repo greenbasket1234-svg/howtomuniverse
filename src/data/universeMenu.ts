@@ -118,6 +118,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'advertiser-share', label: '공유 자료', path: '/advertisers/shared-materials', icon: 'link' },
       { key: 'advertiser-activity', label: '활동 기록', path: '/advertisers/activity', icon: 'history' },
       { key: 'advertiser-portal', label: '광고주 접속 화면', path: '/advertisers/portal-preview', icon: 'dashboard' },
+      { key: 'advertiser-portal-accounts', label: '광고주 포털 계정', path: '/advertisers/portal-accounts', icon: 'dashboard' },
     ],
   },
   {
