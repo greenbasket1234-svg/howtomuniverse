@@ -614,6 +614,29 @@ CREATE TABLE IF NOT EXISTS app_memberships (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(user_id)
 );
+
+-- ============================================================
+-- 광고주 포털 계정 (광고주 본인 로그인 - 내부 직원 계정과 완전히 별개)
+-- ------------------------------------------------------------
+-- 위 app_users/app_memberships는 "내부 직원끼리" 광고주 범위를 나누는 것이고,
+-- 이건 "광고주 본인"이 로그인해서 자기 데이터만 보는 완전히 다른 시스템입니다.
+-- 광고주 계정 1개는 광고주 1곳에만 연결됩니다(직원과 달리 여러 광고주를 관리하지 않음).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS advertiser_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  password_hash TEXT, -- null이면 초대만 되고 아직 초기 비밀번호를 설정 안 한 상태
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'invited', -- 'invited' | 'active' | 'disabled'
+  last_login_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_advertiser_accounts_advertiser ON advertiser_accounts(advertiser_id);
+
 -- ------------------------------------------------------------
 -- 예전엔 브라우저 localStorage에만 저장되어 팀원끼리 공유가 안 되고 기기를 바꾸면
 -- 사라졌습니다. 경쟁사 등록·관찰 소재를 references_store와 동일한 Postgres에 저장해

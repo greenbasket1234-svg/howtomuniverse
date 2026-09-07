@@ -2066,6 +2066,56 @@ async function canUseFeatureCheck(tenantId, advertiserId, feature) {
   };
 }
 
+/**
+ * 광고주 포털 인증 - 내부 직원 인증(resolveRequestUser)과 완전히 분리되어 있습니다.
+ * 토큰에 type:'advertiser-portal'을 명시해서, 직원 토큰이 실수로라도 광고주 포털
+ * API를 통과하거나 그 반대가 되는 일이 없도록 합니다.
+ */
+async function resolveAdvertiserSession(req) {
+  const token = bearerToken(req);
+  if (!token) return null;
+  const payload = verifyToken(token);
+  if (!payload || payload.type !== 'advertiser-portal') return null;
+  if (!pgPool) return null;
+  const result = await pgPool.query(
+    `SELECT id, tenant_id, advertiser_id, email, name, status FROM advertiser_accounts WHERE id = $1`,
+    [payload.sub]
+  );
+  const account = result.rows[0];
+  if (!account || account.status !== 'active') return null;
+  return { accountId: account.id, tenantId: account.tenant_id, advertiserId: account.advertiser_id, email: account.email, name: account.name };
+}
+
+async function handleAdvertiserPortalAuth(req, res, pathname) {
+  if (req.method === 'POST' && pathname === '/api/advertiser-portal/login') {
+    if (!pgPool) return sendJson(res, 500, { error: 'DB가 설정되지 않았습니다.' });
+    const body = await readJson(req);
+    const email = cleanText(body.email || '', 200).toLowerCase();
+    const password = String(body.password || '');
+    if (!email || !password) return sendJson(res, 400, { error: '이메일과 비밀번호를 입력하세요.' });
+    const tenantId = await getCurrentTenantId();
+    const result = await pgPool.query(
+      `SELECT aa.*, a.name as advertiser_name FROM advertiser_accounts aa JOIN advertisers a ON a.id = aa.advertiser_id WHERE aa.tenant_id=$1 AND aa.email=$2`,
+      [tenantId, email]
+    );
+    const account = result.rows[0];
+    if (!account || !account.password_hash) return sendJson(res, 401, { error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    if (account.status !== 'active') return sendJson(res, 403, { error: '아직 활성화되지 않은 계정입니다. 초대 링크로 먼저 비밀번호를 설정하세요.' });
+    if (!verifyUserPassword(password, account.password_hash)) return sendJson(res, 401, { error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    const now = Math.floor(Date.now() / 1000);
+    const token = signToken({ sub: account.id, type: 'advertiser-portal', email: account.email, iat: now, exp: now + TOKEN_TTL_SECONDS });
+    await pgPool.query(`UPDATE advertiser_accounts SET last_login_at = now() WHERE id = $1`, [account.id]);
+    return sendJson(res, 200, { token, account: { id: account.id, email: account.email, name: account.name, advertiserId: account.advertiser_id, advertiserName: account.advertiser_name } });
+  }
+  if (req.method === 'GET' && pathname === '/api/advertiser-portal/me') {
+    const session = await resolveAdvertiserSession(req);
+    if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+    const adv = await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [session.advertiserId]);
+    return sendJson(res, 200, { id: session.accountId, email: session.email, name: session.name, advertiserId: session.advertiserId, advertiserName: adv.rows[0]?.name || '' });
+  }
+  return false;
+}
+
 async function handleAuth(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     if (!JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
@@ -2214,6 +2264,7 @@ async function handleApi(req, res, pathname) {
     }
 
     if (await handleAuth(req, res, pathname)) return;
+    if (await handleAdvertiserPortalAuth(req, res, pathname)) return;
 
     // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
@@ -2445,8 +2496,11 @@ async function handleApi(req, res, pathname) {
       const tenantId = await getCurrentTenantId();
       const rows = await pgFetchAdvertisers(tenantId);
       // 권한 분리: 광고주 범위가 제한된 팀원에게는 그 목록만 보여줍니다(owner/전체 접근 사용자는 그대로 전체).
+      // 이전에는 인증 자체가 실패해도(비로그인 등) 그냥 전체 목록을 돌려주는 취약점이 있었습니다 -
+      // 반드시 로그인된 사용자여야 합니다.
       const requester = await resolveRequestUser(req);
-      const scoped = requester && !requester.isOwner && requester.advertiserIds
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const scoped = !requester.isOwner && requester.advertiserIds
         ? rows.filter(r => requester.advertiserIds.includes(String(r.id)))
         : rows;
       return sendJson(res, 200, scoped.map(redactAdvertiser));
@@ -3212,8 +3266,12 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       // 권한 분리: 이 요청 사용자가 광고주 범위 제한이 있는 팀원이면(owner/전체 접근 아님),
       // accessibleAdvertiserIds에 그 범위만 담습니다. filterMetricRows/metricConnectionStatus가
       // 이 값을 보고 그 범위 밖 데이터는 결과에서 완전히 제외합니다.
+      // 중요: 인증 자체가 안 되면(비로그인, 무효 토큰) 이 함수가 예전엔 "제한 없음"으로
+      // 취급해서 전체 데이터를 그대로 돌려주는 심각한 취약점이 있었습니다 - 여기서 바로
+      // 401을 응답하고 null을 반환합니다(호출부는 null이면 즉시 return해야 합니다).
       const requester = await resolveRequestUser(req);
-      const accessibleAdvertiserIds = requester && !requester.isOwner && requester.advertiserIds ? requester.advertiserIds.map(String) : null;
+      if (!requester) { sendJson(res, 401, { error: '인증이 필요합니다.' }); return null; }
+      const accessibleAdvertiserIds = !requester.isOwner && requester.advertiserIds ? requester.advertiserIds.map(String) : null;
       return { query, from, to, advertiserId, channels, accessibleAdvertiserIds };
     }
     function filterMetricRows(rows, filters) {
@@ -3274,33 +3332,33 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // 중앙 Metrics API — 모든 데이터 화면은 이 계층만 사용합니다.
     if (req.method === 'GET' && pathname === '/api/metrics/daily') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters));
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters));
       const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/summary') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const source = filterMetricRows(db.dailyMetrics, filters);
       const summary = withDerived(aggregateMetricRows(source));
       return sendJson(res, 200, { summary, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/media') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
       const rows = groupMetrics(source, r => `${r.channel}`, r => ({ channel: r.channel, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       void names;
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/advertisers') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
       const rows = groupMetrics(source, r => `${r.advertiserId}`, r => ({ advertiserId: r.advertiserId, advertiserName: names.get(String(r.advertiserId)) || String(r.advertiserId), impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
       const rows = groupMetrics(source, r => `${r.advertiserId}|${r.channel}|${r.campaignId}`, r => ({ advertiserId:r.advertiserId, advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId), channel:r.channel, campaignId:r.campaignId, campaignName:r.campaignName, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/creatives') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
       const grouped = new Map();
       for (const row of source) {
         const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
@@ -3382,6 +3440,8 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       if (req.method === 'PATCH' && detailMatch) {
         if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
         const targetId = detailMatch[1];
+
+
         const body = await readJson(req);
         const sets = []; const params = [targetId, tenantId];
         const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
@@ -3416,6 +3476,84 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         return sendJson(res, 200, { ok: true });
       }
     }
+    // ── 광고주 포털 계정 관리 (내부 직원이 광고주에게 발급) ──────────────
+    if (pathname.startsWith('/api/advertiser-accounts')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/advertiser-accounts') {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId');
+        if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const rows = await pgPool.query(
+          `SELECT aa.id, aa.email, aa.name, aa.status, aa.advertiser_id, a.name as advertiser_name, aa.last_login_at, aa.created_at
+           FROM advertiser_accounts aa JOIN advertisers a ON a.id = aa.advertiser_id
+           WHERE aa.tenant_id = $1 ${advertiserId ? 'AND aa.advertiser_id = $2' : ''} ORDER BY aa.created_at DESC`,
+          advertiserId ? [tenantId, advertiserId] : [tenantId]
+        );
+        const accessible = rows.rows.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
+        return sendJson(res, 200, { items: accessible });
+      }
+      if (req.method === 'POST' && pathname === '/api/advertiser-accounts') {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const email = cleanText(body.email || '', 200).toLowerCase();
+        const name = cleanText(body.name || '', 100);
+        if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        if (!email || !email.includes('@')) return sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        const initialPassword = String(body.initialPassword || '');
+        if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO advertiser_accounts (tenant_id, advertiser_id, email, password_hash, name, status)
+             VALUES ($1,$2,$3,$4,$5,'active') RETURNING id, email, name, advertiser_id, status, created_at`,
+            [tenantId, advertiserId, email, hashUserPassword(initialPassword), name]
+          );
+          addLog({ action: 'advertiser_account_create', advertiserId, email, actorId: requester.id });
+          return sendJson(res, 201, insert.rows[0]);
+        } catch (error) {
+          if (String(error?.message || '').includes('duplicate')) return sendJson(res, 409, { error: '이미 등록된 이메일입니다.' });
+          throw error;
+        }
+      }
+      const advertiserAccountMatch = pathname.match(/^\/api\/advertiser-accounts\/([^/]+)$/);
+      if (req.method === 'PATCH' && advertiserAccountMatch) {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const accountId = advertiserAccountMatch[1];
+        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const body = await readJson(req);
+        const sets = []; const params = [];
+        if (body.status && ['active', 'disabled'].includes(body.status)) { params.push(body.status); sets.push(`status = $${params.length}`); }
+        if (body.resetPassword) {
+          const newPassword = String(body.resetPassword);
+          if (newPassword.length < 8) return sendJson(res, 400, { error: '새 비밀번호는 8자 이상이어야 합니다.' });
+          params.push(hashUserPassword(newPassword)); sets.push(`password_hash = $${params.length}`);
+        }
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 내용이 없습니다.' });
+        params.push(accountId, tenantId);
+        await pgPool.query(`UPDATE advertiser_accounts SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length - 1} AND tenant_id = $${params.length}`, params);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && advertiserAccountMatch) {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const accountId = advertiserAccountMatch[1];
+        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        await pgPool.query('DELETE FROM advertiser_accounts WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+    }
+
 
     // ── 권한 묶음(역할) 관리 (설정 > 권한 묶음 / 기능별 이용 권한) ────────────
     if (pathname.startsWith('/api/roles')) {
@@ -4073,7 +4211,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     }
 
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
-      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
       const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
       // (2026-09) 예전엔 여기에 dailyRows(키워드 × 날짜 단위 원본, 90일이면 키워드 2,000개
@@ -4083,15 +4221,15 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       return sendJson(res, 200, { rows, connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
     }
     if (req.method === 'GET' && pathname === '/api/metrics/funnel') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); const source=filterMetricRows(db.dailyMetrics,filters);
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); const source=filterMetricRows(db.dailyMetrics,filters);
       const rows=groupMetrics(source,r=>r.channel,r=>({channel:r.channel,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
       return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/metrics/status') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/integrations/sync-validation') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); const db=(await pgReadDb(tenantId, filters)); let rows=db.syncValidationLogs||[];
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); let rows=db.syncValidationLogs||[];
       const totalBeforeFilter = rows.length;
       if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
       const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
@@ -4121,13 +4259,13 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
 
     if (req.method === 'GET' && pathname === '/api/daily-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/creative-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
     }
     if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
-      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery();const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
     }
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
