@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowRight, ChevronLeft, Download, ImagePlus, Save, Spar
 import { PageHeader } from '../components/PageHeader';
 import { loadProjects, patchProject } from '../utils/contentStore';
 import { createAssetsFromFiles, patchAsset } from '../utils/assetStore';
-import { loadAdvertisers } from '../data/advertisers';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { imageApi, type GeneratedImage, type ImagePlanInput } from '../features/image/imageApi';
 
 const VISUAL_TYPES = ['제품 단독컷', '모델 착용컷', '라이프스타일', '비교·후기형', '인포그래픽', '일러스트'];
@@ -31,7 +31,7 @@ export function ImageCreationPage() {
   const [params] = useSearchParams();
   const projectId = params.get('project') || '';
   const project = useMemo(() => projectId ? loadProjects().find(p => p.projectId === projectId) : undefined, [projectId]);
-  const advertisers = loadAdvertisers();
+  const [advertisers] = useAdvertisers();
   const advertiser = advertisers.find(a => a.id === project?.advertiserId);
 
   const [plan, setPlan] = useState<ImagePlanInput>(() => ({

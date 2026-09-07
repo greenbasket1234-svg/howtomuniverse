@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { Download, Plus, Save, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { loadAdvertisers } from '../data/advertisers';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { loadAssets } from '../utils/assetStore';
 import { getAllAutomationJobs, loadAutomationRuns } from '../automation/automationStore';
 import { FEATURE_CATALOG } from '../control/permissionEngine';
@@ -39,7 +39,7 @@ function bytes(v:number){if(v<1024)return `${v} B`;if(v<1024**2)return `${(v/102
 function money(v?:number){return v==null?'-':`${Math.round(v).toLocaleString()}원`}
 
 export function AdminControlDashboardPage(){
-  useRevision();const users=loadControlUsers();const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const assets=loadAssets(true);const jobs=getAllAutomationJobs();const runs=loadAutomationRuns();const audits=loadAuditEvents();const failed=runs.filter(r=>r.status==='failed').length;
+  useRevision();const users=loadControlUsers();const [advertisers]=useAdvertisers();const assets=loadAssets(true);const jobs=getAllAutomationJobs();const runs=loadAutomationRuns();const audits=loadAuditEvents();const failed=runs.filter(r=>r.status==='failed').length;
   const [subCount,setSubCount]=useState<number|null>(null);const [usageCount,setUsageCount]=useState<number|null>(null);
   useEffect(()=>{ subscriptionApi.listAllSubscriptions().then(rows=>setSubCount(rows.length)).catch(()=>setSubCount(0)); subscriptionApi.listUsage().then(rows=>setUsageCount(rows.length)).catch(()=>setUsageCount(0)); },[]);
   return <div className="ctrl-page"><PageHeader title="관리자 대시보드" description="HOWTOM 서비스의 사용자·광고주·구독·AI·자동화·저장공간·보안 상태를 관리합니다."/><div className="ctrl-toolbar"><DemoBadge/><BackendBadge/><span className="ctrl-muted">현재 수치는 프론트 저장 데이터 기준이며 실제 회원·결제·서버 세션 통계가 아닙니다.</span></div><div className="ctrl-kpi-grid admin"><ControlKpi label="프론트 사용자" value={`${users.length}명`}/><ControlKpi label="광고주" value={`${advertisers.length}곳`}/><ControlKpi label="구독 설정" value={subCount==null?'확인 중':`${subCount}건`} sub="결제 미연동"/><ControlKpi label="AI/콘텐츠 사용 이벤트" value={usageCount==null?'확인 중':`${usageCount}건`}/><ControlKpi label="자동화 작업" value={`${jobs.length}개`}/><ControlKpi label="자동화 실패 기록" value={`${failed}건`}/><ControlKpi label="자산" value={`${assets.length}개`}/><ControlKpi label="감사 이벤트" value={`${audits.length}건`}/></div><div className="ctrl-admin-grid">{ADMIN_SECTIONS.map(([key,label])=><Link key={key} className="card ctrl-admin-card" to={`/admin/${key}`}><strong>{label}</strong><span>{adminDescription(key)}</span><em>관리 →</em></Link>)}</div></div>
@@ -69,7 +69,7 @@ function useTeamData(){
 }
 function UsersAdmin(){
   const {users,roles,loading,error,refresh}=useTeamData();
-  const advertisers=loadAdvertisers().filter(a=>a.id!=='default');
+  const [advertisers]=useAdvertisers();
   const [email,setEmail]=useState('');const [name,setName]=useState('');const [initialPassword,setInitialPassword]=useState('');
   const [newRoleId,setNewRoleId]=useState('');
   const [editingUserId,setEditingUserId]=useState<string|null>(null);
@@ -140,7 +140,7 @@ function UsersAdmin(){
   </ControlPanel>;
 }
 function AdvertisersAdmin(){
-  const advertisers=loadAdvertisers().filter(a=>a.id!=='default');const assets=loadAssets(true);
+  const [advertisers]=useAdvertisers();const assets=loadAssets(true);
   const [subs,setSubs]=useState<{advertiser_id:string;plan_name:string}[]>([]);
   useEffect(()=>{ subscriptionApi.listAllSubscriptions().then(setSubs).catch(()=>setSubs([])); },[]);
   return <ControlPanel title="광고주 서비스 이용 현황" description="실무 광고주 관리와 달리 구독·자산·계정 준비 상태 관점으로 확인합니다."><div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>광고주</th><th>월 예산</th><th>연결 매체</th><th>구독 설정</th><th>자산</th><th></th></tr></thead><tbody>{advertisers.map(a=>{const sub=subs.find(s=>s.advertiser_id===a.id);return <tr key={a.id}><td><b>{a.name}</b></td><td>{money(a.monthlyBudget)}</td><td>{a.links.filter(l=>l.status==='연결됨').length}개</td><td>{sub?.plan_name||'미설정'}</td><td>{assets.filter(x=>x.advertiserId===a.id).length}개</td><td><Link className="btn secondary" to={`/advertisers/dashboard?advertiser=${a.id}`}>Workspace</Link></td></tr>})}</tbody></table></div></ControlPanel>
