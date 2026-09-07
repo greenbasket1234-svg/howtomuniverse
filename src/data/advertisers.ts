@@ -31,11 +31,19 @@ export type Advertiser = {
 
 export const DEFAULT_ADVERTISERS: Advertiser[] = [];
 
-/** 광고주 데이터의 Source of Truth는 백엔드입니다. 브라우저에는 업무 데이터를 영구 저장하지 않습니다. */
+// useAdvertisers() 훅이 서버에서 데이터를 받아올 때마다 saveAdvertisers()를 호출해
+// 이 캐시를 채웁니다. 리액트 훅을 쓸 수 없는 순수 로직 파일(controlStore/contentStore/
+// assetStore 등)은 이 캐시를 통해 실제 광고주 데이터를 읽습니다 - 단, 화면이 최소 한 번
+// useAdvertisers()로 데이터를 불러온 "이후"에만 값이 채워집니다(그 전에는 빈 배열).
+let cachedAdvertisers: Advertiser[] = [];
+
+/** 광고주 데이터의 Source of Truth는 백엔드입니다. 브라우저에는 업무 데이터를 영구 저장하지 않고,
+ * useAdvertisers() 훅이 마지막으로 받아온 결과를 메모리에만 캐시해서 돌려줍니다. */
 export function loadAdvertisers(): Advertiser[] {
-  return [];
+  return cachedAdvertisers;
 }
 
 export function saveAdvertisers(advertisers: Advertiser[]): void {
+  cachedAdvertisers = advertisers;
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('adcc:advertisers-changed', { detail: advertisers }));
 }
