@@ -642,6 +642,28 @@ CREATE TABLE IF NOT EXISTS advertiser_accounts (
   UNIQUE(tenant_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_advertiser_accounts_advertiser ON advertiser_accounts(advertiser_id);
+-- 참고: advertiser_accounts 테이블은 광고주 포털을 팀원 시스템(app_users)에 통합하면서
+-- 더 이상 사용하지 않습니다. 과거 데이터 보존을 위해 테이블 자체는 지우지 않았습니다.
+
+-- ============================================================
+-- 광고주 회사 담당자(연락처) - 예전엔 브라우저 localStorage에만 저장되어 기기를
+-- 바꾸거나 다른 사람이 보면 안 보이는 문제가 있었습니다. 팀 전체가 공유하도록
+-- 서버에 저장합니다. (아직 로그인 계정이 아닌 순수 연락처 정보입니다 - 광고주
+-- 본인이 로그인하는 계정은 app_users/is_advertiser_account를 씁니다.)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS advertiser_contacts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  title TEXT,
+  email TEXT,
+  phone TEXT,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_advertiser_contacts_advertiser ON advertiser_contacts(advertiser_id);
 
 -- ------------------------------------------------------------
 -- 예전엔 브라우저 localStorage에만 저장되어 팀원끼리 공유가 안 되고 기기를 바꾸면

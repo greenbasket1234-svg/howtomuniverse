@@ -3,19 +3,18 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Eye, Plus, Save, Trash2, Users, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { useAdvertisers } from '../hooks/useAdvertisers';
+import { apiFetch } from '../hooks/useApi';
 import { loadAssets } from '../utils/assetStore';
 import { subscriptionApi, type AdvertiserSubscriptionRow } from '../utils/subscriptionApi';
 import { advertiserAccountApi, type AdvertiserAccountRow } from '../control/advertiserAccountApi';
 import { advertiserVisibleFeatures, FEATURE_CATALOG } from '../control/permissionEngine';
 import {
   createApprovalRequest,
-  deleteExternalContact,
   ensureAdvertiserWorkspaces,
   loadAdvertiserFeatureAccess,
   loadApprovalRequests,
   loadAuditEvents,
   loadControlUsers,
-  loadExternalContacts,
   loadMemberships,
   loadSharedAssets,
   patchAdvertiserWorkspace,
@@ -23,7 +22,6 @@ import {
   setAdvertiserFeatureAccess,
   shareAsset,
   unshareAsset,
-  upsertExternalContact,
   upsertMembership,
 } from '../control/controlStore';
 import { BackendBadge, ControlEmpty, ControlKpi, ControlPanel, ControlStatus, DemoBadge } from '../control/ControlUi';
@@ -57,7 +55,11 @@ export function AdvertiserWorkspaceDashboardPage(){
   },[requestedId]);
   const advertiser=rows.find(a=>a.id===advertiserId);
   const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);
-  const contacts=loadExternalContacts().filter(c=>c.advertiserId===advertiserId);
+  const [contactCount,setContactCount]=useState(0);
+  useEffect(()=>{
+    if(!advertiserId){setContactCount(0);return;}
+    apiFetch<{items:unknown[]}>(`/advertiser-contacts?advertiserId=${encodeURIComponent(advertiserId)}`).then(r=>setContactCount(r.items.length)).catch(()=>setContactCount(0));
+  },[advertiserId]);
   const shared=loadSharedAssets().filter(s=>s.advertiserId===advertiserId&&s.status==='shared');
   const approvals=loadApprovalRequests().filter(a=>a.advertiserId===advertiserId&&a.status==='pending');
   const [subscription,setSubscription]=useState<AdvertiserSubscriptionRow|null>(null);
@@ -68,7 +70,7 @@ export function AdvertiserWorkspaceDashboardPage(){
     <div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><DemoBadge/><span className="ctrl-muted">외부 로그인은 아직 연결하지 않고 내부 운영 상태만 표시합니다.</span></div>
     <div className="ctrl-kpi-grid"><ControlKpi label="월 광고 예산" value={money(advertiser?.monthlyBudget)}/><ControlKpi label="연결 매체" value={`${connected}개`} sub="현재 저장된 연결 상태 기준"/><ControlKpi label="승인 대기" value={`${approvals.length}건`}/><ControlKpi label="공유 자료" value={`${shared.length}건`}/><ControlKpi label="허용 기능" value={`${features.length}개`}/></div>
     <div className="ctrl-grid-2">
-      <ControlPanel title="운영 상태" description="광고주 Workspace의 프론트 설정 상태입니다."><div className="ctrl-info-list"><div><span>광고주</span><b>{advertiser?.name||'-'}</b></div><div><span>상태</span><ControlStatus tone={workspace?.status==='active'?'success':'warning'}>{workspace?.status==='active'?'운영 중':workspace?.status==='paused'?'일시중지':'보관'}</ControlStatus></div><div><span>포털</span><ControlStatus tone={workspace?.portalEnabled?'info':'neutral'}>{workspace?.portalEnabled?'미리보기 사용':'비활성'}</ControlStatus></div><div><span>외부 담당자</span><b>{contacts.length}명</b></div></div></ControlPanel>
+      <ControlPanel title="운영 상태" description="광고주 Workspace의 프론트 설정 상태입니다."><div className="ctrl-info-list"><div><span>광고주</span><b>{advertiser?.name||'-'}</b></div><div><span>상태</span><ControlStatus tone={workspace?.status==='active'?'success':'warning'}>{workspace?.status==='active'?'운영 중':workspace?.status==='paused'?'일시중지':'보관'}</ControlStatus></div><div><span>포털</span><ControlStatus tone={workspace?.portalEnabled?'info':'neutral'}>{workspace?.portalEnabled?'미리보기 사용':'비활성'}</ControlStatus></div><div><span>외부 담당자</span><b>{contactCount}명</b></div></div></ControlPanel>
       <ControlPanel title="계약·구독" description="결제와 분리된 프론트 구독 설정입니다." actions={<Link className="btn secondary" to="/advertisers/subscription">구독 설정</Link>}><div className="ctrl-info-list"><div><span>상품</span><b>{subscription?.plan_name||'미설정'}</b></div><div><span>상태</span><ControlStatus tone={subscription? 'info':'neutral'}>{subscription?.status||'결제 미연동'}</ControlStatus></div><div><span>시작일</span><b>{date(subscription?.started_at)}</b></div><div><span>갱신 예정</span><b>{date(subscription?.renews_at||undefined)}</b></div></div></ControlPanel>
     </div>
     <div className="ctrl-grid-3">
@@ -80,11 +82,27 @@ export function AdvertiserWorkspaceDashboardPage(){
 }
 
 export function AdvertiserContactsPage(){
-  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [name,setName]=useState('');const [title,setTitle]=useState('');const users=loadControlUsers();const memberships=loadMemberships();const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const contacts=loadExternalContacts().filter(c=>c.advertiserId===advertiserId);const managers=users.filter(u=>workspace?.internalManagerIds.includes(u.userId));
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [name,setName]=useState('');const [title,setTitle]=useState('');const users=loadControlUsers();const memberships=loadMemberships();const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const managers=users.filter(u=>workspace?.internalManagerIds.includes(u.userId));
+  const [contacts,setContacts]=useState<{id:string;name:string;title?:string;email?:string}[]>([]);
+  const [loading,setLoading]=useState(true);
+  const reloadContacts=async(id:string)=>{
+    if(!id){setContacts([]);setLoading(false);return;}
+    setLoading(true);
+    try{const r=await apiFetch<{items:{id:string;name:string;title?:string;email?:string}[]}>(`/advertiser-contacts?advertiserId=${encodeURIComponent(id)}`);setContacts(r.items);}
+    catch{setContacts([]);}
+    finally{setLoading(false);}
+  };
+  useEffect(()=>{void reloadContacts(advertiserId);},[advertiserId]);
+  const addContact=async()=>{
+    if(!name.trim()||!advertiserId)return;
+    await apiFetch('/advertiser-contacts',{method:'POST',body:JSON.stringify({advertiserId,name:name.trim(),title:title.trim()})});
+    setName('');setTitle('');void reloadContacts(advertiserId);
+  };
+  const removeContact=async(id:string)=>{await apiFetch(`/advertiser-contacts/${id}`,{method:'DELETE'});void reloadContacts(advertiserId);};
   const toggleManager=(userId:string)=>{if(!workspace)return;const set=new Set(workspace.internalManagerIds);set.has(userId)?set.delete(userId):set.add(userId);patchAdvertiserWorkspace(advertiserId,{internalManagerIds:[...set]});const m=memberships.find(x=>x.userId===userId);if(m){const a=new Set(m.advertiserIds||[]);a.add(advertiserId);upsertMembership({...m,advertiserIds:[...a]});}};
-  return <div className="ctrl-page"><PageHeader title="담당자" description="HOWTOM 내부 담당자와 광고주 회사 담당자를 분리해 관리합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><BackendBadge/><span className="ctrl-muted">현재 담당자 정보는 로컬 Workspace 설정이며 실제 회원 계정과는 아직 분리되어 있습니다.</span></div><div className="ctrl-grid-2">
+  return <div className="ctrl-page"><PageHeader title="담당자" description="HOWTOM 내부 담당자와 광고주 회사 담당자를 분리해 관리합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><BackendBadge/><span className="ctrl-muted">광고주 회사 담당자는 서버에 저장되어 팀 전체가 공유합니다. 내부 담당자 지정은 아직 프론트 Workspace 설정입니다.</span></div><div className="ctrl-grid-2">
     <ControlPanel title="HOWTOM 내부 담당자" description="팀원 계정 연결 전에는 프론트 프로필 기준으로 담당 범위를 관리합니다."><div className="ctrl-check-list">{users.map(u=><label key={u.userId}><input type="checkbox" checked={workspace?.internalManagerIds.includes(u.userId)||false} onChange={()=>toggleManager(u.userId)}/><span><b>{u.name}</b><small>{u.title||'직책 미설정'} {u.isDemo?'· 데모 사용자':''}</small></span></label>)}</div>{!users.length&&<ControlEmpty>등록된 팀원이 없습니다.</ControlEmpty>}</ControlPanel>
-    <ControlPanel title="광고주 회사 담당자" description="외부 담당자는 아직 로그인 계정이 아닌 연락처 정보입니다."><form className="ctrl-inline-form" onSubmit={e=>{e.preventDefault();if(!name.trim())return;upsertExternalContact({advertiserId,name:name.trim(),title:title.trim()});setName('');setTitle('')}}><input value={name} onChange={e=>setName(e.target.value)} placeholder="이름"/><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="직책"/><button className="btn primary" type="submit"><Plus size={14}/> 추가</button></form><div className="ctrl-list">{contacts.map(c=><div className="ctrl-list-row" key={c.contactId}><div><b>{c.name}</b><small>{c.title||'직책 미설정'} {c.email?`· ${c.email}`:''}</small></div><button className="icon-btn danger" onClick={()=>deleteExternalContact(c.contactId)}><Trash2 size={15}/></button></div>)}{!contacts.length&&<ControlEmpty>등록된 광고주 담당자가 없습니다.</ControlEmpty>}</div></ControlPanel>
+    <ControlPanel title="광고주 회사 담당자" description="외부 담당자는 아직 로그인 계정이 아닌 연락처 정보입니다."><form className="ctrl-inline-form" onSubmit={e=>{e.preventDefault();void addContact();}}><input value={name} onChange={e=>setName(e.target.value)} placeholder="이름"/><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="직책"/><button className="btn primary" type="submit"><Plus size={14}/> 추가</button></form><div className="ctrl-list">{loading?<p className="ctrl-muted">불러오는 중...</p>:contacts.map(c=><div className="ctrl-list-row" key={c.id}><div><b>{c.name}</b><small>{c.title||'직책 미설정'} {c.email?`· ${c.email}`:''}</small></div><button className="icon-btn danger" onClick={()=>void removeContact(c.id)}><Trash2 size={15}/></button></div>)}{!loading&&!contacts.length&&<ControlEmpty>등록된 광고주 담당자가 없습니다.</ControlEmpty>}</div></ControlPanel>
   </div></div>
 }
 

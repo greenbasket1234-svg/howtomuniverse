@@ -3463,6 +3463,50 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
     // ── 광고주 포털 계정 관리 (내부 직원이 광고주에게 발급) ──────────────
+    // ── 광고주 회사 담당자(연락처) - 서버 저장, 팀 전체 공유 ──────────────
+    if (pathname.startsWith('/api/advertiser-contacts')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/advertiser-contacts') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId');
+        if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const rows = await pgPool.query(
+          `SELECT id, advertiser_id, name, title, email, phone, note, created_at, updated_at FROM advertiser_contacts
+           WHERE tenant_id = $1 ${advertiserId ? 'AND advertiser_id = $2' : ''} ORDER BY created_at DESC`,
+          advertiserId ? [tenantId, advertiserId] : [tenantId]
+        );
+        const accessible = rows.rows.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
+        return sendJson(res, 200, { items: accessible });
+      }
+      if (req.method === 'POST' && pathname === '/api/advertiser-contacts') {
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const name = cleanText(body.name || '', 100);
+        if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO advertiser_contacts (tenant_id, advertiser_id, name, title, email, phone, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, advertiser_id, name, title, email, phone, note, created_at, updated_at`,
+          [tenantId, advertiserId, name, cleanText(body.title || '', 100) || null, cleanText(body.email || '', 200) || null, cleanText(body.phone || '', 50) || null, cleanText(body.note || '', 500) || null]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const contactMatch = pathname.match(/^\/api\/advertiser-contacts\/([^/]+)$/);
+      if (req.method === 'DELETE' && contactMatch) {
+        const contactId = contactMatch[1];
+        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_contacts WHERE id=$1 AND tenant_id=$2', [contactId, tenantId]);
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '담당자를 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        await pgPool.query('DELETE FROM advertiser_contacts WHERE id=$1 AND tenant_id=$2', [contactId, tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
     if (pathname.startsWith('/api/advertiser-accounts')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const requester = await resolveRequestUser(req);
