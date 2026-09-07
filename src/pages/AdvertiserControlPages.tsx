@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Eye, Plus, Save, Trash2, Users, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { loadAdvertisers } from '../data/advertisers';
+import { useAdvertisers } from '../hooks/useAdvertisers';
 import { loadAssets } from '../utils/assetStore';
 import { subscriptionApi, type AdvertiserSubscriptionRow } from '../utils/subscriptionApi';
 import { advertiserAccountApi, type AdvertiserAccountRow } from '../control/advertiserAccountApi';
@@ -33,14 +33,19 @@ function useControlRevision(){
   useEffect(()=>{const fn=()=>setV(x=>x+1);window.addEventListener('howtom:control-changed',fn);window.addEventListener('howtom:subscriptions-changed',fn as EventListener);window.addEventListener('howtom:assets-changed',fn as EventListener);return()=>{window.removeEventListener('howtom:control-changed',fn);window.removeEventListener('howtom:subscriptions-changed',fn as EventListener);window.removeEventListener('howtom:assets-changed',fn as EventListener)}},[]);
   return v;
 }
-function advertisers(){return loadAdvertisers().filter(a=>a.id!=='default')}
-function AdvertiserSelect({value,onChange}:{value:string;onChange:(v:string)=>void}){const rows=advertisers();return <select className="ctrl-select" value={value} onChange={e=>onChange(e.target.value)}>{rows.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>}
+function AdvertiserSelect({value,onChange}:{value:string;onChange:(v:string)=>void}){
+  const [rows]=useAdvertisers();
+  // loadAdvertisers()는 예전 localStorage 시절의 껍데기 함수라 항상 빈 배열만 돌려줍니다 -
+  // 실제 광고주 목록은 서버 API를 쓰는 useAdvertisers()로만 가져와야 합니다.
+  useEffect(()=>{ if(!value&&rows.length)onChange(rows[0].id); },[rows,value,onChange]);
+  return <select className="ctrl-select" value={value} onChange={e=>onChange(e.target.value)}>{rows.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>;
+}
 function money(v?:number){return v==null?'-':`${Math.round(v).toLocaleString()}원`}
 function date(v?:string){return v?new Date(v).toLocaleDateString('ko-KR'):'-'}
 
 export function AdvertiserWorkspaceDashboardPage(){
   useControlRevision();
-  const rows=advertisers();
+  const [rows]=useAdvertisers();
   const [searchParams]=useSearchParams();
   const requestedId=searchParams.get('advertiser');
   const [advertiserId,setAdvertiserId]=useState(()=>(requestedId&&rows.some(a=>a.id===requestedId))?requestedId:(rows[0]?.id||''));
@@ -75,7 +80,7 @@ export function AdvertiserWorkspaceDashboardPage(){
 }
 
 export function AdvertiserContactsPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [name,setName]=useState('');const [title,setTitle]=useState('');const users=loadControlUsers();const memberships=loadMemberships();const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const contacts=loadExternalContacts().filter(c=>c.advertiserId===advertiserId);const managers=users.filter(u=>workspace?.internalManagerIds.includes(u.userId));
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [name,setName]=useState('');const [title,setTitle]=useState('');const users=loadControlUsers();const memberships=loadMemberships();const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const contacts=loadExternalContacts().filter(c=>c.advertiserId===advertiserId);const managers=users.filter(u=>workspace?.internalManagerIds.includes(u.userId));
   const toggleManager=(userId:string)=>{if(!workspace)return;const set=new Set(workspace.internalManagerIds);set.has(userId)?set.delete(userId):set.add(userId);patchAdvertiserWorkspace(advertiserId,{internalManagerIds:[...set]});const m=memberships.find(x=>x.userId===userId);if(m){const a=new Set(m.advertiserIds||[]);a.add(advertiserId);upsertMembership({...m,advertiserIds:[...a]});}};
   return <div className="ctrl-page"><PageHeader title="담당자" description="HOWTOM 내부 담당자와 광고주 회사 담당자를 분리해 관리합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><BackendBadge/><span className="ctrl-muted">현재 담당자 정보는 로컬 Workspace 설정이며 실제 회원 계정과는 아직 분리되어 있습니다.</span></div><div className="ctrl-grid-2">
     <ControlPanel title="HOWTOM 내부 담당자" description="팀원 계정 연결 전에는 프론트 프로필 기준으로 담당 범위를 관리합니다."><div className="ctrl-check-list">{users.map(u=><label key={u.userId}><input type="checkbox" checked={workspace?.internalManagerIds.includes(u.userId)||false} onChange={()=>toggleManager(u.userId)}/><span><b>{u.name}</b><small>{u.title||'직책 미설정'} {u.isDemo?'· 데모 사용자':''}</small></span></label>)}</div>{!users.length&&<ControlEmpty>등록된 팀원이 없습니다.</ControlEmpty>}</ControlPanel>
@@ -84,28 +89,28 @@ export function AdvertiserContactsPage(){
 }
 
 export function AdvertiserPermissionsPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const all=loadAdvertiserFeatureAccess();const existing=new Map(all.filter(x=>x.advertiserId===advertiserId).map(x=>[x.featureKey,x]));const features=advertiserVisibleFeatures();
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const all=loadAdvertiserFeatureAccess();const existing=new Map(all.filter(x=>x.advertiserId===advertiserId).map(x=>[x.featureKey,x]));const features=advertiserVisibleFeatures();
   const enabled=(key:string)=>existing.get(key)?.enabled ?? ['dashboard.view','reports.view','assets.view'].includes(key);
   return <div className="ctrl-page"><PageHeader title="기능 권한" description="광고주별로 외부 포털에서 열람·승인할 수 있는 기능을 설정합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><DemoBadge/><span className="ctrl-muted">서버 권한 강제 전 단계의 프론트 권한 설계입니다.</span></div><ControlPanel title="광고주 기능 권한" description="상품명 대신 featureKey를 사용해 구독 상품이 바뀌어도 기능 코드를 유지합니다."><div className="ctrl-permission-grid">{features.map(f=><label key={f.featureKey} className="ctrl-permission-row"><input type="checkbox" checked={enabled(f.featureKey)} onChange={e=>setAdvertiserFeatureAccess(advertiserId,f.featureKey,e.target.checked)}/><div><b>{f.label}</b><small>{f.group} · {f.featureKey}</small></div><ControlStatus tone={enabled(f.featureKey)?'success':'neutral'}>{enabled(f.featureKey)?'허용':'차단'}</ControlStatus></label>)}</div></ControlPanel></div>
 }
 
 export function AdvertiserApprovalsPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [title,setTitle]=useState('');const approvals=loadApprovalRequests().filter(x=>x.advertiserId===advertiserId);
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const [title,setTitle]=useState('');const approvals=loadApprovalRequests().filter(x=>x.advertiserId===advertiserId);
   return <div className="ctrl-page"><PageHeader title="승인 요청" description="보고서·제안서·콘텐츠 등 사람의 확인이 필요한 항목을 광고주 단위로 관리합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><DemoBadge/><span className="ctrl-muted">실제 광고주 계정 승인 대신 내부 검증용 승인 상태를 저장합니다.</span></div><ControlPanel title="승인 요청" actions={<form className="ctrl-inline-form" onSubmit={e=>{e.preventDefault();if(!title.trim())return;createApprovalRequest({advertiserId,targetType:'monthly-report',title:title.trim(),status:'pending',requestedBy:'demo-admin'});setTitle('')}}><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="검토 요청 제목"/><button className="btn primary" type="submit"><Plus size={14}/> 등록</button></form>} description="승인 또는 수정 요청 처리 이력은 활동 기록에 남습니다."><div className="ctrl-list">{approvals.map(a=><div className="ctrl-list-row ctrl-approval-row" key={a.approvalId}><div><b>{a.title}</b><small>{a.targetType} · {date(a.createdAt)}</small></div><ControlStatus tone={a.status==='pending'?'warning':a.status==='approved'?'success':'danger'}>{a.status==='pending'?'확인 대기':a.status==='approved'?'승인':'수정 요청'}</ControlStatus><div className="ctrl-row-actions">{a.status==='pending'&&<><button className="btn secondary" onClick={()=>patchApprovalRequest(a.approvalId,{status:'revision_requested'})}>수정 요청</button><button className="btn primary" onClick={()=>patchApprovalRequest(a.approvalId,{status:'approved'})}>승인</button></>}</div></div>)}{!approvals.length&&<ControlEmpty>승인 요청이 없습니다.</ControlEmpty>}</div></ControlPanel></div>
 }
 
 export function AdvertiserSharedMaterialsPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const assets=useMemo(()=>loadAssets().filter(a=>!a.advertiserId||a.advertiserId===advertiserId),[advertiserId]);const shared=loadSharedAssets().filter(s=>s.advertiserId===advertiserId&&s.status==='shared');const assetById=new Map(loadAssets(true).map(a=>[a.assetId,a]));
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const assets=useMemo(()=>loadAssets().filter(a=>!a.advertiserId||a.advertiserId===advertiserId),[advertiserId]);const shared=loadSharedAssets().filter(s=>s.advertiserId===advertiserId&&s.status==='shared');const assetById=new Map(loadAssets(true).map(a=>[a.assetId,a]));
   return <div className="ctrl-page"><PageHeader title="공유 자료" description="Asset Engine의 동일 파일을 복제하지 않고 광고주 공유 관계만 관리합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><BackendBadge/><span className="ctrl-muted">실제 외부 URL·만료 링크는 인증 서버 연결 후 제공합니다.</span></div><div className="ctrl-grid-2"><ControlPanel title="현재 공유 자료" description="광고주 포털 미리보기에도 동일 목록이 노출됩니다."><div className="ctrl-list">{shared.map(s=>{const a=assetById.get(s.assetId);return <div className="ctrl-list-row" key={s.shareId}><div><b>{a?.name||s.label||s.assetId}</b><small>{a?.assetType||'asset'} · {date(s.createdAt)}</small></div><button className="icon-btn danger" onClick={()=>unshareAsset(s.shareId)}><X size={15}/></button></div>})}{!shared.length&&<ControlEmpty>공유 중인 자료가 없습니다.</ControlEmpty>}</div></ControlPanel><ControlPanel title="자산에서 공유 추가" description="실제 파일은 자산관리에서 한 번만 저장됩니다."><div className="ctrl-list ctrl-scroll-list">{assets.slice(0,80).map(a=><div className="ctrl-list-row" key={a.assetId}><div><b>{a.name}</b><small>{a.assetType} · {a.advertiserName||'공통'}</small></div><button className="btn secondary" disabled={shared.some(s=>s.assetId===a.assetId)} onClick={()=>shareAsset(advertiserId,a.assetId,a.name)}>{shared.some(s=>s.assetId===a.assetId)?'공유 중':'공유'}</button></div>)}{!assets.length&&<ControlEmpty>공유 가능한 자산이 없습니다.</ControlEmpty>}</div></ControlPanel></div></div>
 }
 
 export function AdvertiserActivityPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const events=loadAuditEvents().filter(e=>e.advertiserId===advertiserId);
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const events=loadAuditEvents().filter(e=>e.advertiserId===advertiserId);
   return <div className="ctrl-page"><PageHeader title="활동 기록" description="광고주와 관련된 권한·담당자·공유·승인 변경을 한 타임라인에서 확인합니다."/><div className="ctrl-toolbar"><AdvertiserSelect value={advertiserId} onChange={setAdvertiserId}/><span className="ctrl-muted">현재는 프론트 감사 이벤트입니다. 정식 보안 감사로그는 서버 append-only 저장이 필요합니다.</span></div><ControlPanel title="광고주 활동 타임라인"><div className="ctrl-timeline">{events.map(e=><div key={e.auditId}><time>{new Date(e.createdAt).toLocaleString('ko-KR')}</time><div><b>{e.action}</b><small>{e.targetType||'system'} {e.targetId?`· ${e.targetId}`:''}</small></div><ControlStatus tone={e.result==='success'?'success':'danger'}>{e.result}</ControlStatus></div>)}{!events.length&&<ControlEmpty>아직 기록된 활동이 없습니다.</ControlEmpty>}</div></ControlPanel></div>
 }
 
 export function AdvertiserAccountsAdminPage(){
-  const advertisersList=advertisers();
+  const [advertisersList]=useAdvertisers();
   const [advertiserId,setAdvertiserId]=useState(advertisersList[0]?.id||'');
   const [accounts,setAccounts]=useState<AdvertiserAccountRow[]>([]);
   const [loading,setLoading]=useState(true);
@@ -181,7 +186,7 @@ export function AdvertiserAccountsAdminPage(){
 }
 
 export function AdvertiserPortalPreviewPage(){
-  useControlRevision();const rows=advertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const advertiser=rows.find(a=>a.id===advertiserId);const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const features=loadAdvertiserFeatureAccess().filter(f=>f.advertiserId===advertiserId&&f.enabled);const explicit=new Map(features.map(f=>[f.featureKey,f.enabled]));const fallback=(key:string)=>explicit.has(key)?!!explicit.get(key):['dashboard.view','reports.view','assets.view'].includes(key);const shared=loadSharedAssets().filter(s=>s.advertiserId===advertiserId&&s.status==='shared').length;const approvals=loadApprovalRequests().filter(a=>a.advertiserId===advertiserId&&a.status==='pending').length;
+  useControlRevision();const [rows]=useAdvertisers();const [advertiserId,setAdvertiserId]=useState(rows[0]?.id||'');const advertiser=rows.find(a=>a.id===advertiserId);const workspace=ensureAdvertiserWorkspaces().find(w=>w.advertiserId===advertiserId);const features=loadAdvertiserFeatureAccess().filter(f=>f.advertiserId===advertiserId&&f.enabled);const explicit=new Map(features.map(f=>[f.featureKey,f.enabled]));const fallback=(key:string)=>explicit.has(key)?!!explicit.get(key):['dashboard.view','reports.view','assets.view'].includes(key);const shared=loadSharedAssets().filter(s=>s.advertiserId===advertiserId&&s.status==='shared').length;const approvals=loadApprovalRequests().filter(a=>a.advertiserId===advertiserId&&a.status==='pending').length;
   const [subscription,setSubscription]=useState<AdvertiserSubscriptionRow|null>(null);
   useEffect(()=>{ if(!advertiserId){setSubscription(null);return;} subscriptionApi.getSubscription(advertiserId).then(setSubscription).catch(()=>setSubscription(null)); },[advertiserId]);
   const menu=[['성과 홈','dashboard.view'],['광고 데이터','ads.view'],['인사이트','insights.view'],['AI 추천','insights.ai.use'],['월간 보고서','reports.view'],['다음달 제안서','reports.proposal'],['공유 자료','assets.view'],['승인 요청','reports.approve']].filter(([,key])=>fallback(key));
