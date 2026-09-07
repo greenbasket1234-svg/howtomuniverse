@@ -3330,7 +3330,26 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     }
     function metricMeta(db, filters) { return { from: filters.from || null, to: filters.to || null, connections: metricConnectionStatus(db, filters), generatedAt: new Date().toISOString() }; }
 
-    // 중앙 Metrics API — 모든 데이터 화면은 이 계층만 사용합니다.
+    // ── 광고주 포털 전용 대시보드 - 세션의 advertiserId로 강제 고정합니다 ──────
+    // 클라이언트가 다른 advertiserId를 보내도 무시합니다 - 오직 로그인한 본인 광고주
+    // 데이터만 나갈 수 있고, URL을 조작해도 다른 광고주 데이터는 절대 안 나옵니다.
+    if (req.method === 'GET' && pathname === '/api/advertiser-portal/dashboard') {
+      const session = await resolveAdvertiserSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+      const q = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const from = q.get('from') || ''; const to = q.get('to') || '';
+      const filters = { query: q, from, to, advertiserId: session.advertiserId, channels: [], accessibleAdvertiserIds: [session.advertiserId] };
+      const db = await pgReadDb(session.tenantId, filters);
+      const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const totalsSeed = { impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0 };
+      const totals = rows.reduce((acc, r) => {
+        for (const k of Object.keys(totalsSeed)) acc[k] = (acc[k] || 0) + metricNumber(r[k]);
+        return acc;
+      }, { ...totalsSeed });
+      return sendJson(res, 200, { rows, totals: withDerived(totals), meta: metricMeta(db, filters) });
+    }
+
+
     if (req.method === 'GET' && pathname === '/api/metrics/daily') {
       const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters));
       const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
