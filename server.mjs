@@ -2091,9 +2091,14 @@ async function canUseFeatureCheck(tenantId, advertiserId, feature) {
 // 일치해야 하므로, 상품명을 바꾸면 이 매핑도 같이 바꿔야 합니다.
 // resolveRequestUser()가 광고주 계정(is_advertiser_account=true)의 등급을 매길 때 씁니다.
 function portalTierFromPlanName(planName) {
-  if (planName === 'HOWTOM CONTENT PRO') return 3;
-  if (planName === 'HOWTOM INSIGHT') return 2;
-  if (planName === 'HOWTOM VIEW') return 1;
+  // 예전엔 "HOWTOM CONTENT PRO"와 완전히 똑같은 문자열이어야만 매칭됐습니다 - 실제로
+  // "CONTENT PRO"(HOWTOM 접두어 없이)로 저장된 구독이 있어서 조용히 "미설정"으로
+  // 떨어지는 사고가 있었습니다. 대소문자·공백·접두어 차이에 안전하도록 부분 일치로
+  // 바꿉니다. 순서가 중요합니다 - "CONTENT PRO"를 "INSIGHT"보다 먼저 검사해야 합니다.
+  const upper = (planName || '').toUpperCase();
+  if (upper.includes('CONTENT PRO')) return 3;
+  if (upper.includes('INSIGHT')) return 2;
+  if (upper.includes('VIEW')) return 1;
   return 0; // 미설정 또는 인식 못 하는 상품명
 }
 const PORTAL_TIER_LABEL = { 0: '미설정', 1: 'VIEW', 2: 'INSIGHT', 3: 'CONTENT PRO' };
