@@ -3912,6 +3912,52 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
+    // ── AI 이미지 생성 (콘텐츠 > 이미지 제작) ────────────────────────────
+    // callExternalImageAi/imageAiStatus는 이미 구현되어 있었지만, 실제로 호출하는
+    // API 라우트가 없어서 IMAGE_AI_API_KEY를 설정해도 항상 404가 나던 상태였습니다.
+    if (req.method === 'GET' && pathname === '/api/images/ai-status') {
+      return sendJson(res, 200, imageAiStatus());
+    }
+    if (req.method === 'POST' && pathname === '/api/images/generate') {
+      if (!imageAiConfigured()) return sendJson(res, 400, { error: 'AI 이미지 생성이 아직 연결되지 않았습니다(IMAGE_AI_PROVIDER 미설정).', configured: false });
+      const body = await readJson(req);
+      const plan = {
+        visualType: cleanText(body.visualType || '', 60), subject: cleanText(body.subject || '', 200),
+        background: cleanText(body.background || '', 200), mainText: cleanText(body.mainText || '', 100),
+        ratio: cleanText(body.ratio || '1:1', 10), extraPrompt: cleanText(body.extraPrompt || '', 500),
+      };
+      try {
+        const result = await callExternalImageAi(plan);
+        return sendJson(res, 200, { generator: IMAGE_AI_PROVIDER, images: result.images, prompt: result.prompt });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 이미지 생성에 실패했습니다.' });
+      }
+    }
+
+    // ── AI 광고 문구 생성 (AI 자동화 > 광고 문구 자동 생성) ───────────────
+    // 마찬가지로 callExternalAdCopyAi/adCopyAiStatus는 구현되어 있었지만 호출할
+    // 라우트가 없었습니다. 미설정 시에는 프론트가 템플릿 기반으로 대체하므로
+    // 여기서는 "미설정"만 정직하게 응답하면 됩니다.
+    if (req.method === 'GET' && pathname === '/api/ad-copy/ai-status') {
+      return sendJson(res, 200, adCopyAiStatus());
+    }
+    if (req.method === 'POST' && pathname === '/api/ad-copy/generate') {
+      if (!adCopyAiConfigured()) return sendJson(res, 400, { error: '광고 문구 AI가 아직 연결되지 않았습니다(AD_COPY_AI_PROVIDER 미설정).', configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), channel: cleanText(body.channel || '', 60), productName: cleanText(body.productName || '', 120),
+        objective: cleanText(body.objective || '', 60), targetAudience: cleanText(body.targetAudience || '', 200), keyBenefit: cleanText(body.keyBenefit || '', 300),
+        hookType: cleanText(body.hookType || '', 60), tone: cleanText(body.tone || '', 60), cta: cleanText(body.cta || '', 40),
+        variantCount: Math.min(Math.max(Number(body.variantCount) || 3, 1), 10),
+      };
+      try {
+        const variants = await callExternalAdCopyAi(brief);
+        return sendJson(res, 200, { generator: AD_COPY_AI_PROVIDER, variants });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 광고 문구 생성에 실패했습니다.' });
+      }
+    }
+
     if (pathname.startsWith('/api/references') || pathname.startsWith('/api/reference-')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const tenantId = await getCurrentTenantId();
