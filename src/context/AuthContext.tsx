@@ -36,6 +36,10 @@ type AuthContextValue = AuthState & {
   isAdmin: boolean;
   /** 세부 기능 단위 권한 확인이 필요할 때 씁니다. owner 계정은 항상 true입니다. */
   hasPermission: (key: string) => boolean;
+  /** 서버에서 최신 사용자 정보(구독 등급 포함)를 다시 받아옵니다. 광고주 계정은
+   * 관리자가 구독 등급을 바꾸면 재로그인 없이 반영되어야 하는데, 로그인 시점에
+   * 받은 값이 화면엔 그대로 남아있을 수 있어 화면 이동 시 이걸로 다시 확인합니다. */
+  refreshUser: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -108,10 +112,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ user: null, token: null, loading: false });
   }, []);
 
+  const refreshUser = useCallback(async () => {
+    const token = storedToken();
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return; // 조용히 무시 - 이건 배경 새로고침이라 실패해도 기존 화면을 그대로 둡니다.
+      const data = await r.json().catch(() => null) as { user?: AuthUser } | AuthUser | null;
+      const verifiedUser = data && 'user' in data ? data.user : data;
+      if (!verifiedUser || typeof verifiedUser !== 'object' || !('role' in verifiedUser)) return;
+      localStorage.setItem(USER_KEY, JSON.stringify(verifiedUser));
+      setState(s => ({ ...s, user: verifiedUser as AuthUser }));
+    } catch { /* 네트워크 오류는 조용히 무시 */ }
+  }, []);
+
   const hasPermission = useCallback((key: string) => Boolean(state.user?.isOwner || state.user?.permissionKeys?.includes(key)), [state.user]);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, logout, hasPermission, isAdmin: Boolean(state.user?.isOwner || state.user?.permissionKeys?.includes('admin.system.manage')) }}>
+    <AuthContext.Provider value={{ ...state, login, logout, hasPermission, refreshUser, isAdmin: Boolean(state.user?.isOwner || state.user?.permissionKeys?.includes('admin.system.manage')) }}>
       {children}
     </AuthContext.Provider>
   );

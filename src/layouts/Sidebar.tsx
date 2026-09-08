@@ -55,8 +55,13 @@ function SidebarFooter({ collapsed }: { collapsed: boolean }) {
 
 export function Sidebar() {
   const { pathname } = useLocation();
-  const { isAdmin, user } = useAuth();
+  const { isAdmin, user, refreshUser } = useAuth();
   const currentGroup = activeUniverseGroup(pathname);
+  // 광고주 계정은 로그인 시점의 구독 등급이 화면에 그대로 남아있을 수 있습니다
+  // (관리자가 그 사이에 등급을 바꿨을 수 있음) - 화면을 이동할 때마다 최신 등급을
+  // 다시 확인해서 메뉴가 항상 지금 등급을 반영하도록 합니다.
+  useEffect(() => { if (user?.isAdvertiserAccount) void refreshUser(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
   // 모바일(좁은 화면)에서는 사이드바 전체를 화면 밖에 숨겨두고, 상단 햄버거 버튼을 눌렀을 때만
   // 오프캔버스 드로어로 슬라이드해 들어오게 합니다. 데스크톱 사이드바를 그냥 축소한 아이콘
   // 레일만으로는(72px) 실제 스마트폰 화면에서 여전히 콘텐츠 폭을 크게 잡아먹기 때문입니다.
