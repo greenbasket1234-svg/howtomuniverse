@@ -85,6 +85,7 @@ function UsersAdmin(){
     }catch(e){ setFormError(e instanceof Error?e.message:'추가에 실패했습니다.'); }
   };
   const toggleStatus=async(u:TeamUserRow)=>{ await teamApi.patchUser(u.id,{status:u.status==='disabled'?'active':'disabled'}); refresh(); };
+  const removeUser=async(u:TeamUserRow)=>{ if(!confirm(`${u.name}(${u.email}) 계정을 완전히 삭제할까요? 되돌릴 수 없습니다.`))return; await teamApi.deleteUser(u.id); refresh(); };
   const toggleRole=async(u:TeamUserRow,roleId:string)=>{
     const has=(u.role_ids||[]).includes(roleId);
     const next=has?(u.role_ids||[]).filter(r=>r!==roleId):[...(u.role_ids||[]),roleId];
@@ -106,8 +107,8 @@ function UsersAdmin(){
       <button className="btn primary" onClick={addUser}><Plus size={14}/> 추가</button>
     </div>
     {formError&&<div className="ctrl-form-error">{formError}</div>}
-    <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>사용자</th><th>이메일</th><th>역할</th><th>광고주 범위</th><th>상태</th><th>계정 제어</th></tr></thead><tbody>
-      {loading?<tr><td colSpan={6}>불러오는 중...</td></tr>:users.map(u=>{
+    <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>사용자</th><th>이메일</th><th>역할</th><th>광고주 범위</th><th>광고주명</th><th>상태</th><th>계정 제어</th></tr></thead><tbody>
+      {loading?<tr><td colSpan={7}>불러오는 중...</td></tr>:users.map(u=>{
         const isEditing=editingUserId===u.id;
         return <>
           <tr key={u.id}>
@@ -115,13 +116,15 @@ function UsersAdmin(){
             <td>{u.email}</td>
             <td>{roles.filter(r=>(u.role_ids||[]).includes(r.id)).map(r=>r.name).join(', ')||'-'}</td>
             <td>{!u.advertiser_ids?.length?'전체':`${u.advertiser_ids.length}곳`}</td>
+            <td>{!u.advertiser_ids?.length?'-':u.advertiser_ids.map(id=>advertisers.find(a=>a.id===id)?.name||'삭제된 광고주').join(', ')}</td>
             <td><ControlStatus tone={u.status==='active'?'success':'warning'}>{u.status==='active'?'활성':u.status==='invited'?'초대됨':'중지됨'}</ControlStatus></td>
             <td>
               {!u.is_owner&&<><button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.id)}>{isEditing?'닫기':'역할 범위 편집'}</button>
-              <button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button></>}
+              <button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button>
+              <button className="btn secondary sm" onClick={()=>void removeUser(u)}><Trash2 size={13}/> 삭제</button></>}
             </td>
           </tr>
-          {isEditing&&<tr className="ctrl-user-edit-row"><td colSpan={6}>
+          {isEditing&&<tr className="ctrl-user-edit-row"><td colSpan={7}>
             <div className="ctrl-user-edit-panel">
               <div><b>역할 (클릭해서 배정/해제)</b><div className="ctrl-chip-row">{roles.map(r=>{const has=(u.role_ids||[]).includes(r.id);return <button key={r.id} type="button" className={`ctrl-chip${has?' active':''}`} onClick={()=>toggleRole(u,r.id)}>{r.name}</button>})}</div></div>
               <div><b>담당 광고주 범위</b>
@@ -135,7 +138,7 @@ function UsersAdmin(){
           </td></tr>}
         </>;
       })}
-      {!loading&&!users.length&&<tr><td colSpan={6}>등록된 팀원이 없습니다.</td></tr>}
+      {!loading&&!users.length&&<tr><td colSpan={7}>등록된 팀원이 없습니다.</td></tr>}
     </tbody></table></div>
   </ControlPanel>;
 }
