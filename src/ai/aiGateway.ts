@@ -25,8 +25,13 @@ export async function requestAIDeepDive(context: AIRecommendationContext): Promi
     if (!parsed) throw new Error('AI 응답 형식이 올바르지 않습니다.');
     return parsed;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('ANTHROPIC_API_KEY')) throw new AIGatewayNotImplementedError(message);
+    // 서버는 "아직 API 키가 설정 안 됨"이면 항상 400을, 키는 있지만 실제 호출이 실패하면
+    // 502를 돌려줍니다. 예전엔 에러 메시지에 "ANTHROPIC_API_KEY"라는 문자열이 들어있는지로
+    // 판정했는데, ChatGPT(OpenAI)로 전환하면 메시지가 "AI_INSIGHTS_API_KEY"로 바뀌어서
+    // 이 판정이 깨지는 버그가 있었습니다 - 상태 코드 기준으로 판정해 어떤 프로바이더를
+    // 쓰든 정확히 동작하도록 고쳤습니다.
+    const status = (error as { status?: number })?.status;
+    if (status === 400) throw new AIGatewayNotImplementedError(error instanceof Error ? error.message : undefined);
     throw error;
   }
 }

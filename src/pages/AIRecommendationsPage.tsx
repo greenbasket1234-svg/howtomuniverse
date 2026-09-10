@@ -39,7 +39,7 @@ export function AIRecommendationsPage(){
   const error=campaign.error||creative.error||keyword.error;
   const loading=campaign.loading||creative.loading||keyword.loading;
   function updateParam(key:string,value:string){const next=new URLSearchParams(params);if(value)next.set(key,value);else next.delete(key);setParams(next,{replace:true})}
-  async function handleDeepDive(){if(!recommendations.length)return;setAiStatus('loading');setAiError('');try{const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',recommendations.slice(0,10));const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')}catch(error){if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');return}setAiStatus('error');setAiError(error instanceof Error?error.message:'AI 분석 요청에 실패했습니다.')}}
+  async function handleDeepDive(){if(!recommendations.length)return;setAiStatus('loading');setAiError('');try{const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',recommendations.slice(0,10));const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')}catch(error){if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');setAiError(error.message);return}setAiStatus('error');setAiError(error instanceof Error?error.message:'AI 분석 요청에 실패했습니다.')}}
   return <div>
     <PageHeader title="AI 추천" description="캠페인·소재·키워드의 실제 Metrics API 성과만 사용해 운영 점검 후보를 만듭니다."/>
     <MetricsDateBar/>
@@ -51,7 +51,7 @@ export function AIRecommendationsPage(){
       <button type="button" className="btn btn-primary" onClick={handleDeepDive} disabled={aiStatus==='loading'} style={{marginLeft:'auto'}}><Sparkles size={14}/> {aiStatus==='loading'?'분석 중...':'AI 심층 분석'}</button>
     </div>
     {error&&<div className="card" style={{borderColor:'#fecaca',color:'#b91c1c'}}>{error}</div>}
-    {aiStatus==='not_ready'&&<div className="card" style={{borderColor:'var(--warning,#d97706)'}}>AI 심층 분석 외부 API가 아직 연결되지 않았습니다(서버에 ANTHROPIC_API_KEY 설정 필요). 아래 추천 자체는 Mock이 아니라 실제 HOWTOM Metrics 데이터 기반 규칙 분석입니다.</div>}
+    {aiStatus==='not_ready'&&<div className="card" style={{borderColor:'var(--warning,#d97706)'}}>AI 심층 분석 외부 API가 아직 연결되지 않았습니다{aiError?`(${aiError})`:''}. 아래 추천 자체는 Mock이 아니라 실제 HOWTOM Metrics 데이터 기반 규칙 분석입니다.</div>}
     {aiStatus==='error'&&<div className="card" style={{borderColor:'#fecaca',color:'#b91c1c'}}>AI 분석 요청에 실패했습니다: {aiError}</div>}
     {aiResult&&<div className="card" style={{borderColor:'#c7d7fe',background:'linear-gradient(120deg,#f7f9ff,#fff)'}}>
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><Sparkles size={16}/><b>AI 심층 분석 결과</b><button type="button" className="btn" style={{marginLeft:'auto'}} onClick={()=>setAiResult(null)}>닫기</button></div>
