@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, ExternalLink, Eye, FilePlus2, Plus, Search, Sparkles, Trash2, TrendingDown, TrendingUp, Wand2, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
+import { CONTENT_STUDIO_URL } from '../data/universeMenu';
 import { useSortableRows } from '../hooks/useSortableRows';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertisers } from '../hooks/useAdvertisers';
@@ -389,7 +390,7 @@ export function HookCtaAnalysisPage() {
     const source = rows.filter(r => p.creativeIds.includes(r.creative.id)).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
     if (!source) return;
     saveCreativeBrief({ sourceCreativeId: source.creative.id, advertiserName: source.creative.brand, campaignId: source.creative.campaignId, campaignName: source.campaignName, creativeType: source.creative.type, winningElements: [p.label, `표본 ${p.count}개`, `신뢰도 ${p.confidence.label}`], weakElements: [], recommendedHook: p.hook || source.hookTypes[0], recommendedCta: p.cta || source.cta, objectiveMetric: source.kpiLabel, createdAt: new Date().toISOString() });
-    navigate(`/content/ad-creation?sourceCreative=${encodeURIComponent(source.creative.id)}`);
+    window.open(`${CONTENT_STUDIO_URL}production/ad`, '_blank');
   }
   function sendAiSignal(p: HookCtaAggregate) {
     sessionStorage.setItem('howtom-hook-cta-signal-v1', JSON.stringify({ label: p.label, kind: p.kind, advertiser, media, count: p.count, avgScore: p.avgScore, validDbRate: p.validDbRate, cpa: p.cpa, confidence: p.confidence.label, createdAt: new Date().toISOString() }));

@@ -1,5 +1,6 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { CONTENT_STUDIO_URL } from '../data/universeMenu';
 import {
   AlertTriangle, ArrowDownRight, ArrowLeft, ArrowUpRight, BarChart3, ChevronRight,
   CircleDollarSign, Clapperboard, CopyPlus, Database, FileText, Gauge, Image as ImageIcon,
@@ -72,7 +73,7 @@ export function CreativeAnalysisPage(){
     if(row.hasDb&&row.peerValidRate&&row.validDbRate<row.peerValidRate)weak.push('유효 DB 품질 개선');
     if(row.peerCtr&&row.ctr<row.peerCtr)weak.push('첫 화면/후킹 클릭 반응 개선');
     saveCreativeBrief({sourceCreativeId:row.creative.id,advertiserName:row.creative.brand,campaignId:row.creative.campaignId,campaignName:row.campaignName,creativeType:row.creative.type,winningElements:[...row.hookTypes.filter(x=>x!=='미분류'),...(row.cta!=='미분류'?[`CTA: ${row.cta}`]:[]),...row.creative.tags.slice(0,3)],weakElements:weak,recommendedHook:row.hookTypes.find(x=>x!=='미분류'),recommendedCta:row.cta!=='미분류'?row.cta:undefined,recommendedLength:row.creative.type==='영상'?'기존 우수 패턴 길이 유지 후 짧은 변형 테스트':undefined,objectiveMetric:row.kpiLabel,createdAt:new Date().toISOString()});
-    navigate(`/content/ad-creation?sourceCreative=${encodeURIComponent(row.creative.id)}`);
+    window.open(`${CONTENT_STUDIO_URL}production/ad`, '_blank');
   };
 
   if(selected){
@@ -117,7 +118,7 @@ export function CreativeAnalysisPage(){
 
     <section className="card creative-analysis-panel creative-winning-pattern"><div className="creative-panel-head"><div><h3>성과 우수 패턴</h3><p>표본이 충분한 패턴만 제작 참고 신호로 사용합니다.</p></div><span>분석 표본 {usable.length}개</span></div>{patterns.winning.length?<div className="creative-winning-grid">{patterns.winning.slice(0,6).map(p=><article key={p.key}><Sparkles size={18}/><b>{p.label}</b><small>{p.kind} · {p.count}개</small><span>성과점수 평균 <strong>{p.avgScore.toFixed(0)}</strong></span><em className={confidenceTone[p.confidence]}>신뢰도 {p.confidence}</em></article>)}</div>:<div className="creative-analysis-empty">현재는 우수 패턴을 확정할 표본이 부족합니다. 소재 성과/API와 creativeId 단위 DB가 쌓이면 자동으로 활성화됩니다.</div>}</section>
 
-    <section className="card creative-analysis-panel creative-production-panel"><div><Wand2 size={24}/><div><h3>다음 소재 제작 제안</h3><p>{patterns.winning[0]?`${patterns.winning[0].label} 패턴을 기준으로 한 요소만 바꾼 파생 소재를 제작해 원본과 비교하세요.`:'현재 우수 소재의 후킹·CTA·형식을 유지하고 한 요소씩 분리해 테스트하는 제작 흐름을 권장합니다.'}</p></div></div>{best[0]?<div className="content-header-actions"><button className="btn primary" onClick={()=>createBrief(best[0])}><CopyPlus size={16}/> 이 패턴으로 새 광고 만들기</button><Link className="btn secondary" to={`/content/templates?sourceCreative=${encodeURIComponent(best[0].creative.id)}`}><FileText size={16}/> 템플릿으로 저장</Link></div>:<Link className="btn secondary" to="/content/ad-creation">광고 제작 열기</Link>}</section>
+    <section className="card creative-analysis-panel creative-production-panel"><div><Wand2 size={24}/><div><h3>다음 소재 제작 제안</h3><p>{patterns.winning[0]?`${patterns.winning[0].label} 패턴을 기준으로 한 요소만 바꾼 파생 소재를 제작해 원본과 비교하세요.`:'현재 우수 소재의 후킹·CTA·형식을 유지하고 한 요소씩 분리해 테스트하는 제작 흐름을 권장합니다.'}</p></div></div>{best[0]?<div className="content-header-actions"><button className="btn primary" onClick={()=>createBrief(best[0])}><CopyPlus size={16}/> 이 패턴으로 새 광고 만들기</button><Link className="btn secondary" to={`/content/templates?sourceCreative=${encodeURIComponent(best[0].creative.id)}`}><FileText size={16}/> 템플릿으로 저장</Link></div>:<a className="btn secondary" href={`${CONTENT_STUDIO_URL}production/ad`} target="_blank" rel="noreferrer">광고 제작 열기 ↗</a>}</section>
 
     <div className="creative-data-note"><AlertTriangle size={16}/><span>Google Sheets에서 소재 단위 DB를 연결하려면 creativeId 또는 소재명 컬럼을 추가하세요. 식별값이 없으면 캠페인/매체 DB를 소재에 임의 분배하지 않습니다.</span></div>
   </div>;
