@@ -10,8 +10,14 @@ export type UniverseMenuItem = {
   external?: boolean;
 };
 
-/** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로 재지정할 수 있습니다. */
-export const CONTENT_STUDIO_URL = import.meta.env?.VITE_CONTENT_STUDIO_URL || 'https://howtom-content-studio-production.up.railway.app/';
+/** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로
+ * 재지정할 수 있습니다. 끝에 슬래시가 있든 없든 항상 슬래시 없는 형태로 정규화합니다 - 안
+ * 하면 하위 경로를 붙일 때 "...railway.applibrary" 처럼 슬래시가 빠진 채 붙어버립니다. */
+export const CONTENT_STUDIO_URL = (import.meta.env?.VITE_CONTENT_STUDIO_URL || 'https://howtom-content-studio-production.up.railway.app/').replace(/\/+$/, '');
+/** CONTENT_STUDIO_URL에 하위 경로를 안전하게 붙입니다. */
+export function contentStudioPath(path: string) {
+  return `${CONTENT_STUDIO_URL}/${path.replace(/^\/+/, '')}`;
+}
 
 export type UniverseMenuGroup = {
   key: 'home' | 'operations' | 'insights' | 'content' | 'automation' | 'assets' | 'advertisers' | 'settings' | 'admin';
@@ -74,12 +80,12 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
     key: 'content', label: '콘텐츠', path: '/content', planet: 'saturn',
     items: [
       { key: 'content-home', label: '콘텐츠 홈', path: '/content', icon: 'dashboard' },
-      { key: 'content-ad-creation', label: '광고 제작 ↗', path: `${CONTENT_STUDIO_URL}production/ad`, icon: 'creative-library', external: true },
+      { key: 'content-ad-creation', label: '광고 제작 ↗', path: contentStudioPath('production/ad'), icon: 'creative-library', external: true },
       { key: 'content-image-creation', label: '이미지 제작', path: '/content/image-creation', icon: 'palette' },
-      { key: 'content-video-scripts', label: '영상 대본 ↗', path: `${CONTENT_STUDIO_URL}production/video-script`, icon: 'creative-library', external: true },
-      { key: 'content-documents', label: '문서 작성 ↗', path: `${CONTENT_STUDIO_URL}production/document`, icon: 'reports', external: true },
+      { key: 'content-video-scripts', label: '영상 대본 ↗', path: contentStudioPath('production/video-script'), icon: 'creative-library', external: true },
+      { key: 'content-documents', label: '문서 작성 ↗', path: contentStudioPath('production/document'), icon: 'reports', external: true },
       { key: 'content-references', label: '레퍼런스', path: '/content/references', icon: 'link' },
-      { key: 'content-productions', label: '제작물 보관함 ↗', path: `${CONTENT_STUDIO_URL}library`, icon: 'folder', external: true },
+      { key: 'content-productions', label: '제작물 보관함 ↗', path: contentStudioPath('library'), icon: 'folder', external: true },
       { key: 'content-templates', label: '템플릿', path: '/content/templates', icon: 'settings' },
       { key: 'content-studio', label: '콘텐츠 제작소(블로그) ↗', path: CONTENT_STUDIO_URL, icon: 'palette', external: true },
     ],
