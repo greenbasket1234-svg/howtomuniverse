@@ -4148,6 +4148,85 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
+    // ── 콘텐츠 제작(광고 제작/영상 대본/문서) AI 생성 - ChatGPT/Claude 공용 디스패처 재사용 ──
+    // 예전엔 이 3개 화면이 완전히 수동 편집기였습니다(AI 호출 코드 자체가 없었음).
+    // AI_INSIGHTS_PROVIDER/AI_INSIGHTS_API_KEY를 그대로 재사용하므로 별도 키 설정이
+    // 필요 없습니다 - 이미 등록하신 ChatGPT 키로 바로 작동합니다.
+    async function callContentAiJson(systemPrompt, userPrompt) {
+      const raw = await callAiInsights(systemPrompt, userPrompt);
+      const cleaned = raw.trim().replace(/^```json\s*|```$/g, '').replace(/^```\s*|```$/g, '');
+      return JSON.parse(cleaned);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/ad/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 광고 제작이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), channel: cleanText(body.channel || '', 60), objective: cleanText(body.objective || '', 60),
+        target: cleanText(body.target || '', 200), keyBenefit: cleanText(body.keyBenefit || '', 300), hookType: cleanText(body.hookType || '', 60),
+      };
+      const systemPrompt = [
+        '당신은 광고 소재 기획을 돕는 카피라이터입니다.',
+        '1) 제공된 브리프 정보만 근거로 쓰고, 없는 제품 정보를 지어내지 않는다.',
+        '2) 과장·의료광고성 표현, 확정적 효과 보장 문구는 쓰지 않는다.',
+        '3) 반드시 JSON으로만 응답한다. 형식: {"hooks":["...","...","..."],"copyVariants":[{"label":"","angle":"","headline":"","description":"","body":"","cta":""}]}',
+        '4) hooks는 3개, copyVariants는 3개 작성한다.',
+      ].join('\n');
+      const userPrompt = `아래 브리프로 광고 후킹 문구와 카피 시안을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        return sendJson(res, 200, { hooks: parsed.hooks || [], copyVariants: parsed.copyVariants || [] });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 광고 제작에 실패했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/video-script/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 영상 대본 생성이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), videoType: cleanText(body.videoType || '', 60), targetSeconds: Number(body.targetSeconds) || 30,
+        targetAudience: cleanText(body.targetAudience || '', 200), keyMessage: cleanText(body.keyMessage || '', 300), cta: cleanText(body.cta || '', 60),
+      };
+      const systemPrompt = [
+        '당신은 짧은 영상 광고 대본을 쓰는 카피라이터입니다.',
+        '1) 제공된 브리프만 근거로 쓰고, 없는 제품 정보를 지어내지 않는다.',
+        '2) 장면은 0초부터 targetSeconds까지 순서대로 이어지게 나누고, 장면 간 시간이 겹치지 않게 한다.',
+        '3) 반드시 JSON 배열로만 응답한다. 각 항목 형식: {"startSecond":0,"endSecond":3,"purpose":"hook|problem|solution|benefit|proof|cta|other","narration":"","caption":"","visual":""}',
+        '4) 4~6개 장면으로 나눈다. 마지막 장면의 purpose는 반드시 "cta"이고 narration에 제공된 cta 문구를 반영한다.',
+      ].join('\n');
+      const userPrompt = `아래 브리프로 영상 대본 장면을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        const scenes = Array.isArray(parsed) ? parsed : [];
+        return sendJson(res, 200, { scenes });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 영상 대본 생성에 실패했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/document/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 문서 생성이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), documentType: cleanText(body.documentType || '기획서', 60), topic: cleanText(body.topic || '', 300),
+      };
+      const systemPrompt = [
+        '당신은 마케팅 업무 문서 초안을 쓰는 보조 작성자입니다.',
+        '1) 제공된 정보만 근거로 쓰고, 없는 실적 수치를 지어내지 않는다 - 수치가 필요한 부분은 "(실제 데이터 확인 필요)"라고 표시한다.',
+        '2) 반드시 JSON 배열로만 응답한다. 각 항목 형식: {"type":"h1|h2|paragraph|checklist|callout","title":"","text":""}',
+        '3) 5~8개 블록으로 구성한다. 첫 블록은 type h1으로 문서 제목을 담는다.',
+      ].join('\n');
+      const userPrompt = `아래 정보로 "${brief.documentType}" 문서 초안을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        const blocks = Array.isArray(parsed) ? parsed : [];
+        return sendJson(res, 200, { blocks });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 문서 생성에 실패했습니다.' });
+      }
+    }
+
     if (pathname.startsWith('/api/references') || pathname.startsWith('/api/reference-')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const tenantId = await getCurrentTenantId();
