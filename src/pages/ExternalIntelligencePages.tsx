@@ -390,7 +390,13 @@ export function HookCtaAnalysisPage() {
     const source = rows.filter(r => p.creativeIds.includes(r.creative.id)).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
     if (!source) return;
     saveCreativeBrief({ sourceCreativeId: source.creative.id, advertiserName: source.creative.brand, campaignId: source.creative.campaignId, campaignName: source.campaignName, creativeType: source.creative.type, winningElements: [p.label, `표본 ${p.count}개`, `신뢰도 ${p.confidence.label}`], weakElements: [], recommendedHook: p.hook || source.hookTypes[0], recommendedCta: p.cta || source.cta, objectiveMetric: source.kpiLabel, createdAt: new Date().toISOString() });
-    window.open(contentStudioPath('production/ad'), '_blank');
+    const hook = p.hook || source.hookTypes[0]; const cta = p.cta || source.cta;
+    const qs = new URLSearchParams();
+    qs.set('patternAdvertiser', source.creative.brand);
+    qs.set('patternTitle', `${source.creative.brand} · ${p.label} 패턴 파생 광고`);
+    if (hook) qs.set('patternHook', hook);
+    if (cta) qs.set('patternBenefit', `추천 CTA: ${cta}`);
+    window.open(`${contentStudioPath('production/ad')}?${qs.toString()}`, '_blank');
   }
   function sendAiSignal(p: HookCtaAggregate) {
     sessionStorage.setItem('howtom-hook-cta-signal-v1', JSON.stringify({ label: p.label, kind: p.kind, advertiser, media, count: p.count, avgScore: p.avgScore, validDbRate: p.validDbRate, cpa: p.cpa, confidence: p.confidence.label, createdAt: new Date().toISOString() }));

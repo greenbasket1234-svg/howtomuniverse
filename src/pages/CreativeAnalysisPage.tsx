@@ -73,7 +73,13 @@ export function CreativeAnalysisPage(){
     if(row.hasDb&&row.peerValidRate&&row.validDbRate<row.peerValidRate)weak.push('유효 DB 품질 개선');
     if(row.peerCtr&&row.ctr<row.peerCtr)weak.push('첫 화면/후킹 클릭 반응 개선');
     saveCreativeBrief({sourceCreativeId:row.creative.id,advertiserName:row.creative.brand,campaignId:row.creative.campaignId,campaignName:row.campaignName,creativeType:row.creative.type,winningElements:[...row.hookTypes.filter(x=>x!=='미분류'),...(row.cta!=='미분류'?[`CTA: ${row.cta}`]:[]),...row.creative.tags.slice(0,3)],weakElements:weak,recommendedHook:row.hookTypes.find(x=>x!=='미분류'),recommendedCta:row.cta!=='미분류'?row.cta:undefined,recommendedLength:row.creative.type==='영상'?'기존 우수 패턴 길이 유지 후 짧은 변형 테스트':undefined,objectiveMetric:row.kpiLabel,createdAt:new Date().toISOString()});
-    window.open(contentStudioPath('production/ad'), '_blank');
+    const hook=row.hookTypes.find(x=>x!=='미분류'); const cta=row.cta!=='미분류'?row.cta:undefined;
+    const qs=new URLSearchParams();
+    qs.set('patternAdvertiser',row.creative.brand);
+    qs.set('patternTitle',`${row.creative.brand} · ${row.campaignName||'우수 패턴'} 파생 광고`);
+    if(hook)qs.set('patternHook',hook);
+    if(cta)qs.set('patternBenefit',`추천 CTA: ${cta}`);
+    window.open(`${contentStudioPath('production/ad')}?${qs.toString()}`, '_blank');
   };
 
   if(selected){
