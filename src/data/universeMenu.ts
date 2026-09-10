@@ -73,7 +73,15 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
   {
     key: 'content', label: '콘텐츠', path: '/content', planet: 'saturn',
     items: [
-      { key: 'content-studio', label: '콘텐츠 제작소 ↗', path: CONTENT_STUDIO_URL, icon: 'palette', external: true },
+      { key: 'content-home', label: '콘텐츠 홈', path: '/content', icon: 'dashboard' },
+      { key: 'content-ad-creation', label: '광고 제작', path: '/content/ad-creation', icon: 'creative-library' },
+      { key: 'content-image-creation', label: '이미지 제작', path: '/content/image-creation', icon: 'palette' },
+      { key: 'content-video-scripts', label: '영상 대본', path: '/content/video-scripts', icon: 'creative-library' },
+      { key: 'content-documents', label: '문서 작성', path: '/content/documents', icon: 'reports' },
+      { key: 'content-references', label: '레퍼런스', path: '/content/references', icon: 'link' },
+      { key: 'content-productions', label: '제작물 보관함', path: '/content/productions', icon: 'folder' },
+      { key: 'content-templates', label: '템플릿', path: '/content/templates', icon: 'settings' },
+      { key: 'content-studio', label: '콘텐츠 제작소(블로그) ↗', path: CONTENT_STUDIO_URL, icon: 'palette', external: true },
     ],
   },
   {
