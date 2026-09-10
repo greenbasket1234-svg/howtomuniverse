@@ -665,6 +665,42 @@ CREATE TABLE IF NOT EXISTS advertiser_contacts (
 );
 CREATE INDEX IF NOT EXISTS idx_advertiser_contacts_advertiser ON advertiser_contacts(advertiser_id);
 
+-- ============================================================
+-- 날씨 시즌 광고 캘린더 - 시즌 일정 + 날씨별 소재 추천 룰
+-- ------------------------------------------------------------
+-- 시즌 일정은 예전에 화면에서 새로고침하면 사라지는 임시 상태(React state)로만
+-- 있었습니다. 서버에 저장해서 팀 전체가 공유하고 유지되도록 합니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS season_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  date DATE NOT NULL,
+  title TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'season', -- 'weather' | 'holiday' | 'season' | 'brand'
+  region TEXT,
+  severity TEXT, -- 'info' | 'warning' | 'critical'
+  recommendation TEXT,
+  label TEXT, tone TEXT, subtitle TEXT, status TEXT DEFAULT '예정', -- 화면 카드 표시용
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_season_events_tenant ON season_events(tenant_id);
+
+-- 날씨 조건(비/눈/더위/추위/맑음/흐림)에 따라 어떤 소재를 추천할지 관리자가 등록하는
+-- 규칙입니다. 업종별로 다르게 등록할 수 있습니다(예: 렌트카=더운 날 에어컨 강조,
+-- 이사업체=비 오는 날 실내 이사 서비스 강조).
+CREATE TABLE IF NOT EXISTS weather_creative_rules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  condition TEXT NOT NULL, -- 'rain' | 'snow' | 'hot' | 'cold' | 'clear' | 'clouds'
+  temp_min NUMERIC, temp_max NUMERIC, -- hot/cold 조건일 때만 의미 있음(섭씨)
+  industry TEXT, -- NULL이면 모든 업종에 적용
+  recommended_message TEXT NOT NULL,
+  recommended_tags TEXT[] DEFAULT '{}',
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_weather_rules_tenant ON weather_creative_rules(tenant_id);
+
 -- ------------------------------------------------------------
 -- 예전엔 브라우저 localStorage에만 저장되어 팀원끼리 공유가 안 되고 기기를 바꾸면
 -- 사라졌습니다. 경쟁사 등록·관찰 소재를 references_store와 동일한 Postgres에 저장해

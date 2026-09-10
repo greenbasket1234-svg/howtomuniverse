@@ -1715,6 +1715,43 @@ const IMAGE_AI_API_KEY = process.env.IMAGE_AI_API_KEY || '';
 const IMAGE_AI_API_URL = process.env.IMAGE_AI_API_URL || '';
 const IMAGE_AI_MODEL = process.env.IMAGE_AI_MODEL || '';
 
+// ── 날씨 API (OpenWeatherMap) ────────────────────────────────────────────
+const WEATHER_API_KEY = process.env.WEATHER_API_KEY || '';
+function weatherApiConfigured() { return Boolean(WEATHER_API_KEY); }
+// OpenWeatherMap의 condition id를 우리 규칙에서 쓰는 대분류로 단순화합니다.
+// https://openweathermap.org/weather-conditions 참고
+function classifyWeatherCondition(weatherId, tempC) {
+  if (weatherId >= 200 && weatherId < 600) return 'rain'; // 뇌우~비
+  if (weatherId >= 600 && weatherId < 700) return 'snow';
+  if (tempC >= 28) return 'hot';
+  if (tempC <= 5) return 'cold';
+  if (weatherId === 800) return 'clear';
+  return 'clouds';
+}
+async function fetchWeather(region) {
+  if (!WEATHER_API_KEY) { const e = new Error('WEATHER_API_KEY가 설정되지 않았습니다.'); e.status = 400; throw e; }
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(region)},KR&appid=${WEATHER_API_KEY}&units=metric&lang=kr`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.message || '날씨 정보를 가져오지 못했습니다.'); e.status = res.status === 404 ? 404 : 502; throw e; }
+  const tempC = data.main?.temp ?? null;
+  const weatherId = data.weather?.[0]?.id ?? 800;
+  return {
+    region, tempC, description: data.weather?.[0]?.description || '', icon: data.weather?.[0]?.icon || '',
+    humidity: data.main?.humidity ?? null, condition: classifyWeatherCondition(weatherId, tempC ?? 20),
+  };
+}
+function matchWeatherRules(weather, rules, industry) {
+  return rules.filter(r => {
+    if (!r.enabled) return false;
+    if (r.condition !== weather.condition) return false;
+    if (r.industry && r.industry !== industry) return false;
+    if (r.condition === 'hot' && r.temp_min != null && weather.tempC < Number(r.temp_min)) return false;
+    if (r.condition === 'cold' && r.temp_max != null && weather.tempC > Number(r.temp_max)) return false;
+    return true;
+  });
+}
+
 function imageAiConfigured() {
   if (IMAGE_AI_PROVIDER === 'openai') return Boolean(IMAGE_AI_API_KEY);
   if (IMAGE_AI_PROVIDER === 'custom') return Boolean(IMAGE_AI_API_URL);
@@ -3915,6 +3952,90 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── AI 이미지 생성 (콘텐츠 > 이미지 제작) ────────────────────────────
     // callExternalImageAi/imageAiStatus는 이미 구현되어 있었지만, 실제로 호출하는
     // API 라우트가 없어서 IMAGE_AI_API_KEY를 설정해도 항상 404가 나던 상태였습니다.
+    // ── 날씨 시즌 광고 캘린더 ──────────────────────────────────────────
+    if (req.method === 'GET' && pathname === '/api/weather/status') {
+      return sendJson(res, 200, { configured: weatherApiConfigured() });
+    }
+    if (req.method === 'GET' && pathname === '/api/weather/suggestions') {
+      if (!weatherApiConfigured()) return sendJson(res, 400, { error: '날씨 API가 아직 연결되지 않았습니다(WEATHER_API_KEY 미설정).', configured: false });
+      const q = new URL(req.url, 'http://x').searchParams;
+      const region = cleanText(q.get('region') || '서울', 60);
+      const industry = q.get('industry') || null;
+      try {
+        const weather = await fetchWeather(region);
+        const tenantId = await getCurrentTenantId();
+        const rulesRes = await pgPool.query('SELECT * FROM weather_creative_rules WHERE tenant_id=$1', [tenantId]);
+        const matched = matchWeatherRules(weather, rulesRes.rows, industry);
+        return sendJson(res, 200, { weather, matched });
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '날씨 정보를 가져오지 못했습니다.' });
+      }
+    }
+    if (pathname.startsWith('/api/weather-rules')) {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (req.method === 'GET' && pathname === '/api/weather-rules') {
+        const rows = await pgPool.query('SELECT * FROM weather_creative_rules WHERE tenant_id=$1 ORDER BY created_at DESC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/weather-rules') {
+        const body = await readJson(req);
+        const condition = cleanText(body.condition || '', 20);
+        if (!['rain', 'snow', 'hot', 'cold', 'clear', 'clouds'].includes(condition)) return sendJson(res, 400, { error: '올바른 날씨 조건을 선택하세요.' });
+        const recommendedMessage = cleanText(body.recommendedMessage || '', 300);
+        if (!recommendedMessage) return sendJson(res, 400, { error: '추천 메시지를 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO weather_creative_rules (tenant_id, condition, temp_min, temp_max, industry, recommended_message, recommended_tags, enabled)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,true) RETURNING *`,
+          [tenantId, condition, body.tempMin ?? null, body.tempMax ?? null, cleanText(body.industry || '', 60) || null, recommendedMessage, Array.isArray(body.tags) ? body.tags : []]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const ruleMatch = pathname.match(/^\/api\/weather-rules\/([^/]+)$/);
+      if (req.method === 'DELETE' && ruleMatch) {
+        await pgPool.query('DELETE FROM weather_creative_rules WHERE id=$1 AND tenant_id=$2', [ruleMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'PATCH' && ruleMatch) {
+        const body = await readJson(req);
+        await pgPool.query('UPDATE weather_creative_rules SET enabled=$3 WHERE id=$1 AND tenant_id=$2', [ruleMatch[1], tenantId, Boolean(body.enabled)]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+    if (pathname.startsWith('/api/season-events')) {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (req.method === 'GET' && pathname === '/api/season-events') {
+        const rows = await pgPool.query('SELECT * FROM season_events WHERE tenant_id=$1 ORDER BY date ASC', [tenantId]);
+        return sendJson(res, 200, rows.rows);
+      }
+      if (req.method === 'POST' && pathname === '/api/season-events') {
+        const body = await readJson(req);
+        const title = cleanText(body.title || '', 120);
+        if (!title) return sendJson(res, 400, { error: '일정명을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO season_events (tenant_id, date, title, type, region, severity, recommendation, label, tone, subtitle, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'예정') RETURNING *`,
+          [tenantId, body.date || new Date().toISOString().slice(0, 10), title, cleanText(body.type || 'season', 20),
+           cleanText(body.region || '', 60) || null, cleanText(body.severity || '', 20) || null, cleanText(body.recommendation || '', 300) || null,
+           cleanText(body.label || '', 20), cleanText(body.tone || '#2563eb', 20), cleanText(body.subtitle || '', 200)]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const eventMatch = pathname.match(/^\/api\/season-events\/([^/]+)$/);
+      if (req.method === 'PATCH' && eventMatch) {
+        const body = await readJson(req);
+        await pgPool.query('UPDATE season_events SET status=$3 WHERE id=$1 AND tenant_id=$2', [eventMatch[1], tenantId, body.status || '예정']);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && eventMatch) {
+        await pgPool.query('DELETE FROM season_events WHERE id=$1 AND tenant_id=$2', [eventMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
     if (req.method === 'GET' && pathname === '/api/images/ai-status') {
       return sendJson(res, 200, imageAiStatus());
     }
