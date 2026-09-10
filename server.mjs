@@ -3966,6 +3966,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         '2) 근거 없는 원인을 확정하지 않는다 - 가능성으로만 표현한다.',
         '3) 추정은 반드시 추정이라고 표시한다.',
         '4) 광고비 조정은 검토안으로만 제시하고, 즉시 실행 가능한 것처럼 말하지 않는다.',
+        '5) 사용자 메시지에 제공된 광고주명·캠페인/소재/키워드 이름·매체명·수치가 있으면 반드시 findings와 actions에 그대로 인용한다. "여러 캠페인", "일부 소재"처럼 뭉뚱그리지 말고 실제 이름을 명시한다.',
         '',
         '반드시 아래 JSON 형식으로만 응답하세요. 코드블록이나 설명 텍스트 없이 순수 JSON만 출력합니다.',
         '{"executiveSummary":"전체 요약(2~3문장)","findings":[{"title":"","description":"","evidenceIds":[],"confidence":"low|medium|high"}],"actions":[{"priority":1,"action":"","reason":"","targetType":""}],"cautions":["..."]}',
