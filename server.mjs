@@ -1,40 +1,1956 @@
-// ============================================================
-// HOWTOM 콘텐츠 제작소 서버
-// ------------------------------------------------------------
-// 현재 실제 기능:
-//   1) 관리자 로그인 (Universe와 같은 계정, 세션은 별도)
-//   2) 공통 PostgreSQL 광고주 조회
-//   3) 제작: 광고/블로그/영상대본/문서/템플릿/자산 CRUD (전부 PostgreSQL)
-//   4) 레퍼런스: Meta 광고 라이브러리 / YouTube / Instagram 검색·저장·보드·경쟁사
-//   5) 레퍼런스 자동 수집 Worker (매일 KST 8·20시)
-//   6) 공용 AI Gateway (레퍼런스 AI 분석 등 - 블로그 원고 생성과는 별개)
-//   7) dist/ 정적 파일 + SPA 라우팅
-//
-// 미구현: 이미지 제작, TikTok/Threads 커넥터, AI 의미 기반 검색
-// 상세 상태·우선순위는 저장소 루트 PRD.md 참고.
-// ============================================================
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { buildReferenceConnectors } from './lib/referenceConnectors.mjs';
+import { classifyNaverConversionType } from './lib/naverConversionTypes.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT || 4100);
-const DIST_DIR = path.join(__dirname, 'dist');
+// 요청 처리 중 예상하지 못한 예외가 있어도 서버 프로세스 전체가 죽지 않도록 최상위
+// 안전장치를 둡니다. 개별 요청 핸들러에서 이미 잡히지 않은 예외만 여기서 잡습니다.
+process.on('uncaughtException', (error) => {
+  console.error('[안내] 처리되지 않은 오류가 있었지만 서버는 계속 실행됩니다:', error?.message || error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[안내] 처리되지 않은 Promise 오류가 있었지만 서버는 계속 실행됩니다:', reason);
+});
 
+const baseDir = path.dirname(fileURLToPath(import.meta.url));
+
+// 로컬 개발 편의를 위해 .env 파일이 있으면 읽어서 process.env에 채워 넣습니다. 이미 실제
+// 환경(Railway Variables 등)에 설정된 값은 덮어쓰지 않습니다 - 배포 환경에는 보통 .env
+// 파일 자체가 없으므로 이 블록은 아무 영향이 없고, 로컬에서만 의미가 있습니다.
+try {
+  const envPath = path.join(baseDir, '.env');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
+      if (key && !(key in process.env)) process.env[key] = value;
+    }
+  }
+} catch (error) {
+  console.error('[안내] .env 파일을 읽는 중 문제가 있었지만 서버는 계속 실행됩니다:', error?.message || error);
+}
+
+const root = path.join(baseDir, 'dist');
+const port = Number(process.env.PORT || 5173);
+const isPublicRuntime = process.env.NODE_ENV === 'production'
+  || Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID);
+const types = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.json':'application/json; charset=utf-8' };
+
+
+/* ========================================================================
+   HOWTOM 최소 백엔드 저장소
+   -----------------------------------------------------------------------
+   - 초기값은 완전한 Zero State입니다. 샘플/시드 데이터는 넣지 않습니다.
+   - Railway에서는 Volume을 /data 등에 마운트하고 HOWTOM_DATA_DIR=/data 로
+     지정하면 재배포/재시작 후에도 데이터가 유지됩니다.
+   - Volume이 없으면 프로젝트의 .data/howtom-db.json에 저장됩니다.
+   ======================================================================== */
+const DATA_DIR = process.env.HOWTOM_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(baseDir, '.data');
+const DB_FILE = path.join(DATA_DIR, 'howtom-db.json');
+const EMPTY_DB = Object.freeze({ advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], campaignMetrics: [], creativeMetrics: [], creativeDailyMetrics: [], keywordMetrics: [], keywordDailyMetrics: [], syncValidationLogs: [], scheduleSlots: [] });
+
+function ensureDbFile() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify(EMPTY_DB, null, 2), 'utf8');
+}
+function readDb() {
+  ensureDbFile();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    return {
+      advertisers: Array.isArray(parsed.advertisers) ? parsed.advertisers : [],
+      blogProjects: Array.isArray(parsed.blogProjects) ? parsed.blogProjects : [],
+      blogStyles: Array.isArray(parsed.blogStyles) ? parsed.blogStyles : [],
+      blogAssets: Array.isArray(parsed.blogAssets) ? parsed.blogAssets : [],
+      logs: Array.isArray(parsed.logs) ? parsed.logs : [],
+      dailyMetrics: Array.isArray(parsed.dailyMetrics) ? parsed.dailyMetrics : [],
+      campaignMetrics: Array.isArray(parsed.campaignMetrics) ? parsed.campaignMetrics : [],
+      creativeMetrics: Array.isArray(parsed.creativeMetrics) ? parsed.creativeMetrics : [],
+      creativeDailyMetrics: Array.isArray(parsed.creativeDailyMetrics) ? parsed.creativeDailyMetrics : [],
+      keywordMetrics: Array.isArray(parsed.keywordMetrics) ? parsed.keywordMetrics : [],
+      keywordDailyMetrics: Array.isArray(parsed.keywordDailyMetrics) ? parsed.keywordDailyMetrics : [],
+      syncValidationLogs: Array.isArray(parsed.syncValidationLogs) ? parsed.syncValidationLogs : [],
+      scheduleSlots: Array.isArray(parsed.scheduleSlots) ? parsed.scheduleSlots : [],
+    };
+  } catch {
+    return { advertisers: [], blogProjects: [], blogStyles: [], blogAssets: [], logs: [], dailyMetrics: [], campaignMetrics: [], creativeMetrics: [], creativeDailyMetrics: [], keywordMetrics: [], keywordDailyMetrics: [], syncValidationLogs: [], scheduleSlots: [] };
+  }
+}
+function writeDb(next) {
+  ensureDbFile();
+  const temp = `${DB_FILE}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(next, null, 2), 'utf8');
+  fs.renameSync(temp, DB_FILE);
+}
+function mutateDb(mutator) {
+  const db = readDb();
+  const result = mutator(db);
+  writeDb(db);
+  return result;
+}
+function makeId(prefix) {
+  return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+}
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return String(forwarded).split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+/** 접속/보안 기록(로그인 성공·실패 등)을 DB에 남깁니다. 최근 500건만 보관합니다. */
+function cleanText(value, max = 5000) {
+  return String(value ?? '').trim().slice(0, max);
+}
+function isAuthorizedRequest(req) {
+  return Boolean(verifyToken(bearerToken(req)));
+}
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(payload));
+}
+
+/* ========================================================================
+   인증 백엔드 (JWT, 외부 패키지 없이 node:crypto만 사용)
+   -----------------------------------------------------------------------
+   - 관리자 1계정 로그인용 최소 구현입니다. 광고주별 다중 계정·DB 연동이
+     필요해지면 이 부분을 실제 사용자 테이블(Postgres 등)로 교체하세요.
+   - 비밀번호는 코드에 넣지 않고 Railway 환경변수로만 주입합니다.
+     HOWTOM_ADMIN_EMAIL, HOWTOM_ADMIN_PASSWORD, JWT_SECRET 3개가 필요합니다.
+   ======================================================================== */
 const JWT_SECRET = process.env.JWT_SECRET || '';
+
+/* ========================================================================
+   PostgreSQL (멀티테넌트 SaaS 전환용) — 이 단계에서는 "그림자 저장소"입니다.
+   실제 서비스는 여전히 JSON 파일로 동작하고, Postgres에는 관리자가 마이그레이션을
+   실행했을 때만 데이터가 채워집니다. 다음 단계에서 실제 읽기/쓰기를 Postgres로 옮깁니다.
+   ======================================================================== */
+const DATABASE_URL = process.env.DATABASE_URL || '';
+let pgPool = null;
+if (DATABASE_URL) {
+  try {
+    const pgModule = await import('pg');
+    const pg = pgModule.default || pgModule;
+    // pg 드라이버는 기본적으로 NUMERIC(소수 가능한 숫자) 컬럼을 문자열로 돌려줍니다.
+    // 이걸 그대로 두면 "1000" + "2000" 같은 덧셈이 3000이 아니라 "10002000"(문자열 이어붙이기)이 되어버려서,
+    // 반드시 실제 숫자(float)로 파싱하도록 설정해야 합니다.
+    pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val))); // 1700 = NUMERIC OID
+    pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10))); // 20 = BIGINT OID (노출수/클릭수 등)
+    // connectionTimeoutMillis 기본값은 0(무한 대기)입니다. DB 커넥션 슬롯이 부족하거나
+    // 네트워크가 지연되면 pgPool.connect()가 영원히 멈춰서, 그 위에 걸어둔 lock_timeout/
+    // statement_timeout(연결이 맺어진 뒤에만 적용됨)도 무용지물이 되고 서버가 포트를 못 열어
+    // 헬스체크가 5분 내내 실패하는 사고가 있었습니다(실제 발생). 연결 시도 자체에도
+    // 반드시 시간 제한을 둡니다. idleTimeoutMillis는 반복 재시작으로 남을 수 있는 유휴
+    // 커넥션을 빨리 정리해 DB 쪽 커넥션 슬롯 고갈을 줄여줍니다.
+    pgPool = new pg.Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      // 장기 네이버 동기화는 매체 API 호출 사이에 DB를 30초 이상 안 쓰는 구간이 자주 생깁니다.
+      // idleTimeout이 너무 짧으면 매 구간 후반마다 기존 연결이 닫혀 새 연결을 다시 맺어야 하고,
+      // Railway Postgres가 순간적으로 느릴 때 `timeout exceeded when trying to connect`가 발생할 수 있습니다.
+      // 연결 대기시간은 20초로 늘리고, 풀 크기는 작게 고정해 DB connection slot을 과점유하지 않으며,
+      // idle 연결은 2분 동안 유지해 장기 작업 도중 불필요한 재연결을 줄입니다.
+      connectionTimeoutMillis: 20_000,
+      idleTimeoutMillis: 120_000,
+      max: 5,
+    });
+    // 풀에서 커넥션 관련 에러가 나도(예: 유휴 커넥션이 DB 쪽에서 끊김) 서버 전체가 죽지
+    // 않도록 처리합니다. 이 이벤트를 안 받으면 Node가 처리되지 않은 예외로 보고 프로세스를
+    // 종료시킬 수 있습니다.
+    pgPool.on('error', (err) => console.error('[pg pool 오류] 유휴 커넥션에서 오류가 발생했지만 서버는 계속 실행됩니다:', err?.message || err));
+  } catch (error) {
+    console.error('[오류] DATABASE_URL이 설정됐지만 pg 패키지를 불러오지 못했습니다:', error?.message || error);
+    if (isPublicRuntime) process.exit(1);
+  }
+}
+
+
+// Railway/Postgres에서 장시간 작업 중 일시적인 connection 획득 실패가 발생해도
+// 이미 수집한 수개월치 데이터를 통째로 `실패`로 돌리지 않도록 DB 쿼리만 짧게 재시도합니다.
+// statement 오류/SQL 오류는 재시도하지 않고 즉시 throw합니다.
+function isTransientPgConnectionError(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || error || '').toLowerCase();
+  return [
+    '08000', '08003', '08006', '08001', // connection exception 계열
+    '57P01', '57P02', '57P03',          // 서버 재시작/연결 불가
+    '53300',                             // too_many_connections
+  ].includes(code)
+    || msg.includes('timeout exceeded when trying to connect')
+    || msg.includes('connection terminated unexpectedly')
+    || msg.includes('connection terminated due to connection timeout')
+    || msg.includes('too many clients')
+    || msg.includes('remaining connection slots are reserved')
+    || msg.includes('econnreset')
+    || msg.includes('etimedout')
+    || msg.includes('econnrefused')
+    || msg.includes('epipe');
+}
+
+async function pgQueryWithRetry(text, params = [], options = {}) {
+  if (!pgPool) throw new Error('DATABASE_URL이 설정되지 않아 PostgreSQL을 사용할 수 없습니다.');
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 4));
+  const label = options.label || 'DB query';
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await pgPool.query(text, params);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientPgConnectionError(error) || attempt >= maxAttempts) throw error;
+      const delayMs = Math.min(8_000, 1_000 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 250);
+      console.warn(`[pg 재시도] ${label} ${attempt}/${maxAttempts} 실패: ${error?.message || error} → ${delayMs}ms 후 재시도`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
+
+// ── 스키마 자동 적용 ─────────────────────────────────────────────────────
+// 지금까지는 db/schema.sql이 "관리자 > 마이그레이션" 버튼을 누를 때만 실행됐습니다.
+// 그래서 새 컬럼이 추가된 코드를 배포해도 DB에는 그 컬럼이 없어서, 예를 들어
+// sync_validation_logs.account_id가 없으면 '데이터 수집 현황'(/api/integrations/status)이
+// "column does not exist" 500으로 죽고 화면에는 아무 기록도 안 보이는 문제가 있었습니다.
+// schema.sql은 전부 IF NOT EXISTS(테이블/인덱스/컬럼)라 몇 번을 실행해도 안전하므로,
+// 서버가 뜰 때마다 적용해서 코드와 DB 스키마가 항상 같이 움직이게 합니다.
+//
+// (중요) ALTER TABLE은 해당 테이블에 배타적 잠금이 필요합니다. 네이버 동기화처럼
+// 오래 걸리는 백그라운드 작업이 같은 테이블에 계속 쓰기 작업을 하고 있으면, 배포 시
+// 이 잠금 요청이 무한정 대기하면서 서버가 포트를 열지 못해 헬스체크가 타임아웃되고
+// 배포 자체가 실패하는 사고가 있었습니다(실제 발생). 그래서 잠금/전체 대기시간에
+// 짧은 제한을 걸어, 잠금 경합이 있어도 몇 초 안에 포기하고 서버 시작을 계속합니다.
+// (스키마 적용을 못 해도 기존 컬럼이 이미 있다면 서비스에는 지장이 없고, 다음 배포
+// 때 경합이 없으면 정상적으로 적용됩니다.)
+if (pgPool) {
+  try {
+    const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
+    const client = await pgPool.connect();
+    try {
+      // lock_timeout: 잠금을 5초 내 못 얻으면 Postgres가 즉시 에러로 실패시킵니다(무한 대기 방지).
+      // statement_timeout: 잠금을 얻은 뒤에도 실행이 20초를 넘으면 중단시킵니다(대용량 테이블 대비 안전망).
+      await client.query(`SET lock_timeout = '5s'`);
+      await client.query(`SET statement_timeout = '20s'`);
+      await client.query(schemaSql);
+      console.log('[스키마] db/schema.sql 자동 적용 완료 - 새 테이블/컬럼이 반영됐습니다.');
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('[스키마] db/schema.sql 자동 적용 건너뜀(서버 시작은 계속 진행합니다) -', error?.message || error);
+  }
+}
+
+const ENCRYPTION_KEY_HEX = process.env.SECRET_ENCRYPTION_KEY || '';
+const ENCRYPTION_KEY = ENCRYPTION_KEY_HEX.length === 64 ? Buffer.from(ENCRYPTION_KEY_HEX, 'hex') : null;
+function encryptSecret(plaintext) {
+  if (!plaintext || !ENCRYPTION_KEY) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+function decryptSecret(encoded) {
+  if (!encoded || !ENCRYPTION_KEY) return null;
+  const buf = Buffer.from(encoded, 'base64');
+  const iv = buf.subarray(0, 12), authTag = buf.subarray(12, 28), encrypted = buf.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = await new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => err ? reject(err) : resolve(derived));
+  });
+  return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+// 현재는 테넌트(고객사)가 "howtom" 하나뿐입니다. 실제 회원가입/다중 테넌트 로그인이
+// 만들어지기 전까지는, 로그인한 관리자를 항상 이 테넌트로 취급합니다. 매 요청마다
+// DB를 조회하지 않도록 한 번 조회한 뒤 캐시합니다.
+let cachedTenantId = null;
+async function getCurrentTenantId() {
+  if (cachedTenantId) return cachedTenantId;
+  if (!pgPool) return null;
+  const res = await pgPool.query(`SELECT id FROM tenants WHERE slug = 'howtom' LIMIT 1`);
+  cachedTenantId = res.rows[0]?.id || null;
+  return cachedTenantId;
+}
+
+/** 접속/보안/연동 로그를 남깁니다 - '접속·보안 기록' 화면이 이 값을 읽습니다. */
+async function addLog(entry) {
+  if (!pgPool) return; // Postgres 미설정 환경(예: 로컬 개발)에서는 조용히 건너뜁니다.
+  const tenantId = await getCurrentTenantId();
+  await pgPool.query(`INSERT INTO activity_logs (tenant_id, action, data) VALUES ($1,$2,$3)`, [tenantId, entry.action || 'unknown', JSON.stringify(entry)]).catch(err => console.error('[addLog 실패]', err?.message || err));
+}
+
+/**
+ * JSON 시절의 readDb()와 같은 모양(shape)을 PostgreSQL에서 만들어 돌려줍니다. 성과 데이터를
+ * 다루는 여러 화면(전환 퍼널/캠페인·소재·키워드 분석 등)이 기존의 필터링·집계 로직을
+ * 그대로 재사용할 수 있도록, 컬럼명을 JSON 시절과 동일한 camelCase로 맞춰서 반환합니다.
+ */
+/**
+ * tenantId의 데이터를 읽어옵니다. filters(from/to/advertiserId/channels)를 넘기면
+ * SQL 단계에서 미리 걸러서 가져오므로, 데이터가 쌓일수록 전체를 다 읽어와서 자바스크립트로
+ * 거르던 예전 방식보다 훨씬 빠릅니다. filters를 생략하면(관리자 화면 등) 예전처럼 전체를 읽습니다.
+ */
+async function pgReadDb(tenantId, filters = {}) {
+  const { from, to, advertiserId, channels } = filters;
+  // 일별/캠페인별/소재별/키워드별 4개 테이블에 공통으로 적용할 WHERE 조각을 만듭니다.
+  // 파라미터 번호($2, $3...)는 테이블마다 다시 매겨야 하므로, 이 함수가 그 값들을 직접 만들어 돌려줍니다.
+  function dateScopedWhere() {
+    const clauses = ['tenant_id = $1'];
+    const params = [tenantId];
+    if (from) { params.push(from); clauses.push(`date >= $${params.length}`); }
+    if (to) { params.push(to); clauses.push(`date <= $${params.length}`); }
+    if (advertiserId) { params.push(advertiserId); clauses.push(`advertiser_id = $${params.length}`); }
+    if (channels && channels.length) { params.push(channels); clauses.push(`channel = ANY($${params.length}::text[])`); }
+    return { where: clauses.join(' AND '), params };
+  }
+  const dm = dateScopedWhere(), cm = dateScopedWhere(), cdm = dateScopedWhere(), kdm = dateScopedWhere();
+  const [advRes, dmRes, cmRes, cdmRes, kdmRes, svRes, logRes] = await Promise.all([
+    pgPool.query(
+      `SELECT a.id, a.name,
+              COALESCE(json_agg(json_build_object(
+                'channel', m.channel, 'status', m.status, 'account_id', m.account_id,
+                'last_synced_at', m.last_synced_at, 'last_row_count', m.last_row_count, 'last_sync_error', m.last_sync_error
+              )) FILTER (WHERE m.id IS NOT NULL), '[]') as accounts
+       FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
+       WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM daily_metrics WHERE ${dm.where}`, dm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed", thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
+    pgPool.query(`SELECT id, advertiser_id as "advertiserId", channel, account_id as "accountId", to_char(date_from,'YYYY-MM-DD') as since, to_char(date_to,'YYYY-MM-DD') as until, source_label as "sourceLabel", source_totals as source, stored_totals as stored, delta, ok, created_at as "createdAt" FROM sync_validation_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
+    pgPool.query(`SELECT id, action, data, created_at as "createdAt" FROM activity_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 500`, [tenantId]),
+  ]);
+  return {
+    advertisers: advRes.rows.map(r => ({ id: r.id, name: r.name, accounts: r.accounts || [] })),
+    dailyMetrics: dmRes.rows,
+    campaignMetrics: cmRes.rows,
+    creativeDailyMetrics: cdmRes.rows,
+    keywordDailyMetrics: kdmRes.rows,
+    syncValidationLogs: svRes.rows,
+    // activity_logs의 data(JSONB)에 담긴 세부 필드(advertiserName, email, ip 등)를 펼쳐서, 최상위 컬럼과 합칩니다.
+    logs: logRes.rows.map(r => ({ ...(r.data || {}), id: r.id, action: r.action, createdAt: r.createdAt })),
+  };
+}
+
 const ADMIN_EMAIL = process.env.HOWTOM_ADMIN_EMAIL || '';
 const ADMIN_PASSWORD = process.env.HOWTOM_ADMIN_PASSWORD || '';
-const ADMIN_NAME = process.env.HOWTOM_ADMIN_NAME || '관리자';
-const DATABASE_URL = process.env.DATABASE_URL || '';
+const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7일
+
+/* ========================================================================
+   Meta(Facebook/Instagram) 광고 API 연동
+   -----------------------------------------------------------------------
+   - META_ACCESS_TOKEN 은 Business Manager의 System User Access Token입니다.
+   - 이 토큰은 반드시 Railway Variables로만 주입하고, 코드/깃 저장소에는 절대
+     직접 적지 않습니다.
+   ======================================================================== */
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_API_VERSION = process.env.META_API_VERSION || 'v21.0';
+const META_GRAPH_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
+
+function metaConfigured() {
+  return Boolean(META_ACCESS_TOKEN);
+}
+
+/* ========================================================================
+   AI 심층 분석 (인사이트 > AI 추천) - Anthropic Claude API 연동
+   -----------------------------------------------------------------------
+   - HOWTOM 추천 엔진이 이미 규칙 기반으로 계산해 둔 추천 목록을 요약·해석하는
+     용도로만 씁니다. 숫자 자체는 절대 AI가 새로 만들지 않고, 서버가 시스템
+     프롬프트로 "제공되지 않은 수치를 만들지 않는다" 등 안전 규칙을 강제합니다.
+   - ANTHROPIC_API_KEY는 반드시 Railway Variables로만 주입하고, 코드/깃
+     저장소에는 절대 직접 적지 않습니다.
+   ======================================================================== */
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+
+function anthropicConfigured() {
+  return Boolean(ANTHROPIC_API_KEY);
+}
+
+/** Claude에게 시스템 규칙 + 사용자 프롬프트를 보내고, 응답 텍스트를 그대로 돌려줍니다. */
+async function callAnthropic(systemPrompt, userPrompt) {
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY가 설정되지 않았습니다.');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL, max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `Anthropic API HTTP ${res.status}`);
+  return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+}
+
+// ── AI 추천(인사이트) 전용 provider 스위치 - 광고 문구 자동 생성과 같은 방식입니다.
+// 기존에 ANTHROPIC_API_KEY만 설정해 쓰시던 분들과 호환되도록, AI_INSIGHTS_PROVIDER를
+// 따로 지정 안 하면 기본값은 'anthropic'이고 ANTHROPIC_API_KEY를 그대로 씁니다.
+// ChatGPT만 우선 쓰고 싶으면 AI_INSIGHTS_PROVIDER=openai + AI_INSIGHTS_API_KEY만 넣으면 됩니다.
+const AI_INSIGHTS_PROVIDER = process.env.AI_INSIGHTS_PROVIDER || 'anthropic';
+const AI_INSIGHTS_API_KEY = process.env.AI_INSIGHTS_API_KEY || '';
+const AI_INSIGHTS_MODEL = process.env.AI_INSIGHTS_MODEL || 'gpt-4o-mini';
+function aiInsightsConfigured() {
+  if (AI_INSIGHTS_PROVIDER === 'anthropic') return anthropicConfigured();
+  if (AI_INSIGHTS_PROVIDER === 'openai') return Boolean(AI_INSIGHTS_API_KEY);
+  return false;
+}
+async function callAiInsights(systemPrompt, userPrompt) {
+  if (AI_INSIGHTS_PROVIDER === 'openai') {
+    if (!AI_INSIGHTS_API_KEY) throw new Error('AI_INSIGHTS_API_KEY가 설정되지 않았습니다.');
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${AI_INSIGHTS_API_KEY}` },
+      body: JSON.stringify({
+        model: AI_INSIGHTS_MODEL,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        max_tokens: 2000,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    return data.choices?.[0]?.message?.content || '';
+  }
+  return callAnthropic(systemPrompt, userPrompt);
+}
+
+
+/**
+ * Meta 그래프 API 호출. 에러코드 2("Service temporarily unavailable")나 4(rate limit) 같은
+ * Meta 쪽의 일시적인 문제는 몇 초 대기 후 최대 3번까지 자동으로 재시도합니다.
+ */
+/**
+ * Meta 그래프 API 쓰기(POST) 호출. 캠페인/광고 ON-OFF처럼 실제 계정에 변경을 가하는
+ * 작업에 씁니다. 이 토큰에 ads_management 권한이 없으면 Meta가 오류를 반환하는데,
+ * 그 오류를 그대로 사용자에게 보여줍니다(가짜로 성공 처리하지 않습니다).
+ */
+async function metaGraphPost(path, params = {}, attempt = 1) {
+  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
+  const url = new URL(`${META_GRAPH_BASE}${path}`);
+  const body = new URLSearchParams({ ...params, access_token: META_ACCESS_TOKEN });
+  const res = await fetch(url.toString(), { method: 'POST', body });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const code = data?.error?.code;
+    const retryable = code === 1 || code === 2 || code === 4 || code === 17 || res.status >= 500;
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+      return metaGraphPost(path, params, attempt + 1);
+    }
+    const message = data?.error?.message || `Meta API HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+
+async function metaGraphGet(path, params = {}, attempt = 1) {
+  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN이 설정되지 않았습니다.');
+  const url = new URL(`${META_GRAPH_BASE}${path}`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  url.searchParams.set('access_token', META_ACCESS_TOKEN);
+  const res = await fetch(url.toString());
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const code = data?.error?.code;
+    const retryable = code === 1 || code === 2 || code === 4 || code === 17 || res.status >= 500;
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+      return metaGraphGet(path, params, attempt + 1);
+    }
+    const message = data?.error?.message || `Meta API HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+/** System User Access Token에 연결된(자산 할당된) 광고 계정 목록을 가져옵니다. */
+async function metaListAdAccounts() {
+  const data = await metaGraphGet('/me/adaccounts', {
+    fields: 'id,account_id,name,account_status,currency,timezone_name',
+    limit: '200',
+  });
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+/**
+ * 광고 계정의 특정 기간 인사이트(노출/클릭/광고비/전환)를 가져옵니다.
+ * accountId는 'act_XXXXXXXXX' 형식이어야 합니다.
+ */
+/** 광고 계정의 캠페인 목록(이름/상태/예산)을 가져옵니다. */
+async function metaListCampaigns(accountId) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const data = await metaGraphGet(`/${id}/campaigns`, {
+    fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time',
+    limit: '200',
+  });
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+function metaCampaignStatus(effectiveStatus) {
+  if (effectiveStatus === 'ACTIVE') return 'on';
+  if (effectiveStatus === 'PAUSED') return 'off';
+  if (effectiveStatus === 'IN_PROCESS' || effectiveStatus === 'PENDING_REVIEW') return 'review';
+  if (effectiveStatus === 'CAMPAIGN_PAUSED' || effectiveStatus === 'ADSET_PAUSED') return 'off';
+  return 'scheduled';
+}
+
+// Meta는 구매/리드 하나를 omni_purchase, purchase, offsite_conversion.fb_pixel_purchase 등
+// 여러 action_type으로 "중복"해서 돌려줍니다. 전부 더하면 실제보다 부풀려집니다(광고 관리자
+// 화면 값과 안 맞음). 반드시 우선순위상 "하나만" 골라 씁니다 — 절대 합산하지 않습니다.
+const PURCHASE_ACTION_PRIORITY = ['omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase'];
+const LEAD_ACTION_PRIORITY = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead'];
+// 장바구니 담기/회원가입/결제시작은 서로 다른 이커머스 퍼널 단계라 하나로 합치지 않고 각각 따로 집계합니다.
+// 리드/구매와 마찬가지로 같은 이벤트를 여러 action_type으로 중복 보고하므로, 종류별로 "우선순위상 하나만" 고릅니다.
+const ADD_TO_CART_ACTION_PRIORITY = ['omni_add_to_cart', 'add_to_cart', 'offsite_conversion.fb_pixel_add_to_cart'];
+const COMPLETE_REGISTRATION_ACTION_PRIORITY = ['omni_complete_registration', 'complete_registration', 'offsite_conversion.fb_pixel_complete_registration'];
+const INITIATE_CHECKOUT_ACTION_PRIORITY = ['omni_initiated_checkout', 'initiate_checkout', 'offsite_conversion.fb_pixel_initiate_checkout'];
+function pickAction(list, priorityTypes) {
+  for (const type of priorityTypes) {
+    const match = (list || []).find(a => a.action_type === type);
+    if (match) return Number(match.value || 0);
+  }
+  return 0;
+}
+/** 장바구니 담기/회원가입/결제시작 3개를 한 번에 계산해서 객체로 돌려줍니다. */
+function pickFunnelActions(list) {
+  return {
+    addToCart: pickAction(list, ADD_TO_CART_ACTION_PRIORITY),
+    completeRegistration: pickAction(list, COMPLETE_REGISTRATION_ACTION_PRIORITY),
+    initiateCheckout: pickAction(list, INITIATE_CHECKOUT_ACTION_PRIORITY),
+  };
+}
+
+async function metaFetchInsights(accountId, since, until) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  // 기간이 길면(예: 90일) Meta가 결과를 여러 페이지로 나눠서 줍니다.
+  // limit을 넉넉히 주고, 그래도 다음 페이지(paging.next)가 있으면 끝까지 따라가서 다 가져옵니다.
+  let rows = [];
+  let after;
+  for (let page = 0; page < 20; page++) { // 최대 20페이지(=대략 2000일치)까지 안전장치
+    const data = await metaGraphGet(`/${id}/insights`, {
+      time_range: JSON.stringify({ since, until }),
+      fields: 'impressions,clicks,spend,actions,action_values,date_start,date_stop',
+      time_increment: '1', // 날짜별로 쪼개서 반환
+      level: 'account',
+      limit: '100',
+      ...(after ? { after } : {}),
+    });
+    rows = rows.concat(Array.isArray(data.data) ? data.data : []);
+    after = data.paging?.cursors?.after;
+    if (!after || !data.paging?.next) break;
+  }
+  return rows.map(row => ({
+    date: row.date_start,
+    impressions: Number(row.impressions || 0),
+    clicks: Number(row.clicks || 0),
+    spend: Number(row.spend || 0),
+    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY),
+    // 구매 건수는 actions(횟수), 구매 전환값(매출)은 action_values(금액)에서 가져옵니다.
+    purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
+    revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
+    ...pickFunnelActions(row.actions),
+  }));
+}
+
+/** Meta 레벨별 일별 인사이트. campaign/ad 모두 time_increment=1을 강제합니다. */
+async function metaFetchLevelInsights(accountId, since, until, level) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const identityFields = level === 'campaign'
+    ? 'campaign_id,campaign_name'
+    : 'campaign_id,campaign_name,ad_id,ad_name';
+  const allRows = [];
+  // 캠페인/소재가 많은 계정은 90일치를 한 번에 요청하면 응답이 너무 커져서 Meta가
+  // "Service temporarily unavailable"로 거부하는 경우가 있어, 30일 단위로 나눠서 요청합니다.
+  for (const range of splitIntoChunks(since, until, 30)) {
+    let rows = [];
+    let after;
+    for (let page = 0; page < 40; page++) {
+      const data = await metaGraphGet(`/${id}/insights`, {
+        time_range: JSON.stringify({ since: range.since, until: range.until }),
+        fields: `${identityFields},impressions,clicks,spend,actions,action_values,date_start,date_stop`,
+        time_increment: '1',
+        level,
+        limit: '500',
+        ...(after ? { after } : {}),
+      });
+      rows = rows.concat(Array.isArray(data.data) ? data.data : []);
+      after = data.paging?.cursors?.after;
+      if (!after || !data.paging?.next) break;
+    }
+    allRows.push(...rows);
+  }
+  return allRows.map(row => ({
+    date: row.date_start,
+    campaignId: row.campaign_id || '',
+    campaignName: row.campaign_name || '(이름 없음)',
+    ...(level === 'ad' ? { adId: row.ad_id || '', adName: row.ad_name || '(이름 없음)' } : {}),
+    impressions: Number(row.impressions || 0),
+    clicks: Number(row.clicks || 0),
+    spend: Number(row.spend || 0),
+    dbCount: pickAction(row.actions, LEAD_ACTION_PRIORITY),
+    purchases: pickAction(row.actions, PURCHASE_ACTION_PRIORITY),
+    revenue: pickAction(row.action_values, PURCHASE_ACTION_PRIORITY),
+    ...pickFunnelActions(row.actions),
+  }));
+}
+
+async function metaFetchCampaignInsights(accountId, since, until) {
+  return metaFetchLevelInsights(accountId, since, until, 'campaign');
+}
+
+async function metaFetchAdInsights(accountId, since, until) {
+  return metaFetchLevelInsights(accountId, since, until, 'ad');
+}
+
+/** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
+// Meta의 call_to_action_type은 영어 enum이라, 화면에는 한국어로 번역해서 보여줍니다.
+const CTA_LABEL_KO = {
+  LEARN_MORE: '더 알아보기', SHOP_NOW: '지금 구매하기', SIGN_UP: '가입하기', BOOK_TRAVEL: '예약하기',
+  CONTACT_US: '문의하기', DOWNLOAD: '다운로드', GET_QUOTE: '견적 받기', SUBSCRIBE: '구독하기',
+  WATCH_MORE: '더 보기', APPLY_NOW: '지금 신청하기', CALL_NOW: '전화하기', GET_DIRECTIONS: '길찾기',
+  MESSAGE_PAGE: '메시지 보내기', SEND_MESSAGE: '메시지 보내기', GET_OFFER: '혜택 받기', ORDER_NOW: '지금 주문하기',
+  BOOK_NOW: '지금 예약하기', LISTEN_NOW: '듣기', PLAY_GAME: '게임 플레이', INSTALL_MOBILE_APP: '앱 설치',
+  USE_APP: '앱 사용하기', OPEN_LINK: '링크 열기', GET_STARTED: '시작하기', REQUEST_TIME: '상담 예약',
+  SEE_MENU: '메뉴 보기', DONATE_NOW: '기부하기', RECORD_NOW: '녹화하기', VISIT_PROFILE: '프로필 방문',
+  FOLLOW_PAGE: '팔로우하기', SAVE: '저장하기', WHATSAPP_MESSAGE: '왓츠앱 메시지', NO_BUTTON: '버튼 없음',
+};
+function ctaLabelKo(raw) {
+  if (!raw) return '';
+  return CTA_LABEL_KO[raw] || raw;
+}
+
+/**
+ * 광고의 실제 원본 영상 파일(source)은 더 높은 권한이 필요해 (#10) 에러로 막히는 계정이 많습니다.
+ * 대신 Meta의 "광고 미리보기" 기능(광고관리자에서 보이는 것과 동일한 재생 가능한 미리보기)을 쓰면
+ * 지금 갖고 있는 권한(ads_read) 그대로 동작합니다. iframe 태그 하나만 돌려줍니다.
+ */
+async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
+  const data = await metaGraphGet(`/${adId}/previews`, { ad_format: adFormat });
+  const body = data?.data?.[0]?.body || '';
+  const srcMatch = body.match(/src="([^"]+)"/);
+  return srcMatch ? srcMatch[1].replace(/&amp;/g, '&') : null;
+}
+
+// 레퍼런스 수집(콘텐츠 → 레퍼런스 수집 메뉴)에서 쓰는 플랫폼별 Connector 레지스트리입니다.
+// 이 시점엔 metaGraphGet/metaConfigured/ctaLabelKo가 이미 함수 호이스팅으로 사용 가능합니다.
+const REFERENCE_CONNECTORS = buildReferenceConnectors({ metaGraphGet, metaConfigured, ctaLabelKo });
+
+async function metaFetchAdCreativeThumbnails(adIds, accountId) {
+  const result = {};
+  const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
+  const videoIds = [];
+  const allImageHashes = new Set();
+  const existingPostAdIds = []; // { adId, postId } - "기존 게시물 활용" 방식 광고들
+  for (let i = 0; i < adIds.length; i += chunkSize) {
+    const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
+    if (!chunk.length) continue;
+    try {
+      // image_url/thumbnail_url은 계정·소재 유형에 따라 저화질 캐시본을 돌려주는 경우가 있어,
+      // Meta가 공식적으로 권장하는 방식대로 image_hash를 받아서 별도의 /adimages 조회로
+      // "항상 원본 그대로"인 URL을 다시 받아옵니다.
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,effective_object_story_id,object_story_id,effective_instagram_media_id,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
+      for (const id of chunk) {
+        const creative = data?.[id]?.creative;
+        if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
+        const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
+        // 캐러셀(슬라이드) 광고는 child_attachments에 카드가 여러 장 들어있습니다. 각 카드의
+        // 해시를 모아서, 아래에서 한 번에 원본 이미지로 바꿉니다(기존엔 첫 장만 쓰고 나머지는 버렸습니다).
+        const carouselCards = Array.isArray(linkData.child_attachments) ? linkData.child_attachments : [];
+        const isCarousel = carouselCards.length > 0;
+        const mainImageHash = creative.image_hash || linkData.image_hash || null;
+        if (mainImageHash) allImageHashes.add(mainImageHash);
+        for (const c of carouselCards) if (c.image_hash) allImageHashes.add(c.image_hash);
+        // "새 소재"가 아니라 "기존 게시물(인스타그램/페이스북 포스트)을 그대로 광고로 돌리는" 방식이면
+        // object_story_spec 안에 이미지/영상 정보가 아예 없고, 게시물 ID로 그 게시물을 가리키기만
+        // 합니다. 이 경우 게시물 자체를 별도로 조회해야 미리보기를 가져올 수 있습니다.
+        // 페이스북 게시물은 effective_object_story_id(또는 object_story_id), 인스타그램 게시물은
+        // effective_instagram_media_id를 쓰는 경우가 있어 둘 다 확인합니다.
+        const postId = creative.effective_object_story_id || creative.object_story_id || null;
+        const igMediaId = creative.effective_instagram_media_id || null;
+        const hasOwnMedia = !!(mainImageHash || isCarousel || creative.image_url || linkData.picture);
+        if (!hasOwnMedia && (postId || igMediaId)) {
+          console.log(`[meta-existing-post] 소재 ${id}: 자체 이미지 없음, postId=${postId || '-'} igMediaId=${igMediaId || '-'}`);
+          existingPostAdIds.push({ adId: id, postId, igMediaId });
+        } else if (!hasOwnMedia) {
+          console.log(`[meta-existing-post] 소재 ${id}: 자체 이미지도 없고 게시물 ID도 없음 (object_type=${creative.object_type || '-'})`);
+        }
+        result[id] = {
+          mainImageHash,
+          carouselHashes: isCarousel ? carouselCards.map(c => c.image_hash || null) : null,
+          // 해시로 원본을 못 찾을 때를 대비한 대체값들 (아래 해시 조회 후에도 비어있으면 이걸 씁니다).
+          // 캐러셀(슬라이드)의 link_data.picture는 "이 캐러셀을 지원하지 않는 구형 지면"에 보여줄
+          // 대표 이미지일 뿐 실제 카드 내용과 무관해서 쓰지 않지만, creative.thumbnail_url은
+          // 소재(ad) 하나하나마다 따로 생성되는 값이라 안전하게 최종 대비책으로 둡니다
+          // (이게 없으면 카드 이미지 조회가 전부 실패했을 때 완전히 까맣게 뜹니다).
+          thumbnailUrlFallback: isCarousel ? (creative.thumbnail_url || null) : (creative.image_url || linkData.picture || creative.thumbnail_url || null),
+          carouselFallback: isCarousel ? carouselCards.map(c => c.picture || null) : null,
+          mediaType: creative.video_id ? 'video' : (isCarousel ? 'carousel' : 'image'),
+          videoId: creative.video_id || null,
+          videoUrl: null, // 아래에서 비디오 소스를 한 번 더 조회해 채웁니다.
+          title: creative.title || linkData.name || '',
+          body: creative.body || linkData.message || '', // 설명란(인스타그램 캡션에 해당하는 본문 텍스트)
+          description: linkData.description || '', // 링크 하단 보조 설명
+          cta: ctaLabelKo(creative.call_to_action_type || linkData.call_to_action?.type || ''),
+        };
+        if (creative.video_id) videoIds.push(creative.video_id);
+      }
+    } catch (err) { console.error('[meta-creative 조회 실패]', chunk.length, '개 ID,', err?.message || err); }
+  }
+
+  // "기존 게시물 활용" 광고는 게시물/미디어 자체를 별도로 조회해서 미리보기를 채웁니다.
+  if (existingPostAdIds.length) {
+    console.log(`[meta-existing-post] 기존 게시물 활용 광고 ${existingPostAdIds.length}개 발견, 조회 시작`);
+    const postIds = [...new Set(existingPostAdIds.map(x => x.postId).filter(Boolean))];
+    const igMediaIds = [...new Set(existingPostAdIds.map(x => x.igMediaId).filter(Boolean))];
+    const postInfo = {};
+    const igMediaInfo = {};
+    for (let i = 0; i < postIds.length; i += chunkSize) {
+      const chunk = postIds.slice(i, i + chunkSize);
+      try {
+        // full_picture: 게시물의 대표 이미지(고화질). attachments: 캐러셀이면 subattachments에 카드별
+        // 이미지가, 영상이면 target.id에 실제 영상 오브젝트 ID가 들어있어 재생 정보를 더 가져올 수 있습니다.
+        const data = await metaGraphGet('/', {
+          ids: chunk.join(','),
+          fields: 'full_picture,message,attachments{media_type,media,url,target,subattachments{media,target}}',
+        });
+        for (const postId of chunk) {
+          if (data?.[postId]) postInfo[postId] = data[postId];
+          else console.error('[meta-existing-post] 페이스북 게시물 정보 없음(삭제되었거나 접근 권한 없음)', postId);
+        }
+      } catch (err) { console.error('[meta-existing-post 조회 실패]', chunk.length, '개, ', err?.message || err); }
+    }
+    for (let i = 0; i < igMediaIds.length; i += chunkSize) {
+      const chunk = igMediaIds.slice(i, i + chunkSize);
+      try {
+        // 인스타그램 미디어 오브젝트는 페이스북 게시물과 필드 체계가 달라 따로 조회합니다.
+        const data = await metaGraphGet('/', {
+          ids: chunk.join(','),
+          fields: 'media_url,thumbnail_url,permalink,caption,media_type,children{media_url,media_type}',
+        });
+        for (const mid of chunk) {
+          if (data?.[mid]) igMediaInfo[mid] = data[mid];
+          else console.error('[meta-existing-post] 인스타그램 미디어 정보 없음(삭제되었거나 접근 권한 없음)', mid);
+        }
+      } catch (err) { console.error('[meta-ig-media 조회 실패]', chunk.length, '개, ', err?.message || err); }
+    }
+    for (const { adId, postId, igMediaId } of existingPostAdIds) {
+      const row = result[adId];
+      const post = postId ? postInfo[postId] : null;
+      const igMedia = igMediaId ? igMediaInfo[igMediaId] : null;
+      if (igMedia) {
+        const children = igMedia.children?.data || [];
+        if (igMedia.media_type === 'CAROUSEL_ALBUM' && children.length > 1) {
+          row.mediaType = 'carousel';
+          row.carouselFallback = children.map(c => c.media_url || null);
+          row.thumbnailUrlFallback = row.carouselFallback[0] || row.thumbnailUrlFallback;
+        } else if (igMedia.media_type === 'VIDEO') {
+          row.mediaType = 'video';
+          row.videoUrl = igMedia.media_url || null; // IG 미디어는 media_url 자체가 재생 가능한 영상 파일입니다.
+          row.thumbnailUrlFallback = igMedia.thumbnail_url || row.thumbnailUrlFallback;
+        } else {
+          row.thumbnailUrlFallback = igMedia.media_url || row.thumbnailUrlFallback;
+        }
+        if (!row.body && igMedia.caption) row.body = igMedia.caption;
+      } else if (post) {
+        const attachment = post.attachments?.data?.[0];
+        const subAttachments = attachment?.subattachments?.data || [];
+        if (subAttachments.length > 1) {
+          // 캐러셀 게시물: 카드별 이미지를 모두 모읍니다.
+          row.mediaType = 'carousel';
+          row.carouselFallback = subAttachments.map(s => s.media?.image?.src || null);
+          row.thumbnailUrlFallback = row.carouselFallback[0] || post.full_picture || row.thumbnailUrlFallback;
+        } else if (attachment?.media_type === 'video_inline' || attachment?.media_type === 'video_autoplay') {
+          // 영상 게시물: 실제 영상 오브젝트 ID를 알아내서, 기존 영상 처리 로직(고화질 썸네일·재생)에 그대로 태웁니다.
+          const videoObjectId = attachment.target?.id;
+          if (videoObjectId) { row.videoId = videoObjectId; videoIds.push(videoObjectId); row.mediaType = 'video'; }
+          row.thumbnailUrlFallback = attachment.media?.image?.src || post.full_picture || row.thumbnailUrlFallback;
+        } else {
+          row.thumbnailUrlFallback = post.full_picture || attachment?.media?.image?.src || row.thumbnailUrlFallback;
+        }
+        if (!row.body && post.message) row.body = post.message;
+      }
+    }
+    const resolvedCount = existingPostAdIds.filter(({ adId }) => result[adId]?.thumbnailUrlFallback || result[adId]?.videoUrl).length;
+    console.log(`[meta-existing-post] ${existingPostAdIds.length}개 중 ${resolvedCount}개 미리보기 확보`);
+  }
+  // image_hash를 실제 "항상 원본 해상도"인 URL로 바꿉니다. 이게 Meta가 공식적으로 권장하는,
+  // 화질이 들쭉날쭉하지 않는 유일한 방법입니다.
+  const hashUrlMap = {};
+  if (accountId && allImageHashes.size) {
+    const hashList = [...allImageHashes];
+    const acctId = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+    for (let i = 0; i < hashList.length; i += chunkSize) {
+      const chunk = hashList.slice(i, i + chunkSize);
+      try {
+        const data = await metaGraphGet(`/${acctId}/adimages`, { hashes: JSON.stringify(chunk) });
+        for (const img of data?.data || []) if (img.hash && img.url) hashUrlMap[img.hash] = img.url;
+      } catch (err) { console.error('[meta-adimages 조회 실패]', chunk.length, '개 해시,', err?.message || err); }
+    }
+    console.log(`[meta-adimages] 해시 ${hashList.length}개 중 ${Object.keys(hashUrlMap).length}개 원본 URL 확보`);
+  }
+  let carouselCardsTotal = 0, carouselCardsResolved = 0;
+  for (const id of Object.keys(result)) {
+    const row = result[id];
+    row.thumbnailUrl = (row.mainImageHash && hashUrlMap[row.mainImageHash])
+      || (row.carouselHashes?.[0] && hashUrlMap[row.carouselHashes[0]])
+      || row.carouselFallback?.[0]
+      || row.thumbnailUrlFallback
+      || null;
+    if (row.carouselHashes) {
+      carouselCardsTotal += row.carouselHashes.length;
+      carouselCardsResolved += row.carouselHashes.filter(h => h && hashUrlMap[h]).length;
+    }
+    row.carouselImages = row.carouselHashes
+      ? row.carouselHashes.map((h, idx) => (h && hashUrlMap[h]) || row.carouselFallback?.[idx] || null).filter(Boolean)
+      : (row.carouselFallback ? row.carouselFallback.filter(Boolean) : null);
+    delete row.mainImageHash; delete row.carouselHashes; delete row.thumbnailUrlFallback; delete row.carouselFallback;
+  }
+  if (carouselCardsTotal) console.log(`[meta-carousel] 카드 ${carouselCardsTotal}개 중 해시로 원본 확보 ${carouselCardsResolved}개, 나머지는 카드 자체 picture(600px)로 대체`);
+  console.log(`[meta-creative] 요청 ${adIds.length}개 중 ${Object.keys(result).length}개 소재 정보 확보, 영상 ${videoIds.length}개`);
+  // 영상 소재는 실제 재생 가능한 원본 URL과 고화질 포스터 이미지를 별도로 조회합니다.
+  if (videoIds.length) {
+    const videoInfo = {};
+    const uniqueVideoIds = [...new Set(videoIds)];
+    // 배치(ids) 방식으로 여러 영상을 한 번에 조회하면 thumbnails 같은 중첩된 목록이 제대로
+    // 안 올 때가 있어, 영상 하나하나에 직접 /{video_id}/thumbnails로 개별 요청합니다.
+    await mapWithConcurrency(uniqueVideoIds, 4, async vid => {
+      try {
+        const [videoData, thumbData] = await Promise.all([
+          metaGraphGet(`/${vid}`, { fields: 'source,picture' }),
+          metaGraphGet(`/${vid}/thumbnails`, { limit: '10' }).catch(err => { console.error('[meta-video-thumbnails 실패]', vid, err?.message || err); return null; }),
+        ]);
+        const thumbs = thumbData?.data || [];
+        const best = thumbs.length ? thumbs.reduce((a, b) => (Number(b.width) || 0) > (Number(a.width) || 0) ? b : a) : null;
+        console.log(`[meta-video] ${vid}: thumbnails ${thumbs.length}개 중 최대 ${best?.width || 0}px 선택`);
+        videoInfo[vid] = { source: videoData?.source || null, picture: best?.uri || videoData?.picture || null };
+      } catch (err) { console.error('[meta-video 조회 실패]', vid, err?.message || err); }
+    });
+    let videoUrlFilled = 0;
+    for (const id of Object.keys(result)) {
+      const row = result[id];
+      if (row.videoId && videoInfo[row.videoId]) {
+        row.videoUrl = videoInfo[row.videoId].source;
+        row.thumbnailUrl = videoInfo[row.videoId].picture || row.thumbnailUrl; // 영상 포스터가 더 고화질입니다.
+        if (row.videoUrl) videoUrlFilled++;
+      }
+    }
+    console.log(`[meta-video] videoUrl 채워짐: ${videoUrlFilled}/${videoIds.length}`);
+  }
+  return result;
+}
+
+/** 네이버 광고그룹/소재 마스터를 수집합니다. */
+async function naverFetchAdMasters(credentials, maxAds = Infinity) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
+  const adgroups = [];
+  await mapWithConcurrency(campaigns, 6, async c => {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error(`[naver-adgroups 실패] 캠페인="${c.name}"(${naverCampaignTypeKo(c.campaignTp)}):`, err?.message || err); return []; });
+    if (Array.isArray(rows)) adgroups.push(...rows.map(a => ({ ...a, campaignName: campaignNameMap.get(c.nccCampaignId) || '', campaignType: campaignTypeMap.get(c.nccCampaignId) || '' })));
+  });
+  const adgroupNameMap = new Map(adgroups.map(ag => [ag.nccAdgroupId, ag.name || '']));
+  // 대형 커머스 계정은 소재 목록 자체가 수만 건까지 커질 수 있습니다. 예전에는 전부 메모리에
+  // 담은 뒤 naverFetchCreativeDailyMetrics()에서 slice()했기 때문에, 실제 통계 조회를 시작하기도
+  // 전에 불필요한 소재 객체가 힙에 계속 남았습니다. 여기서부터 필요한 개수만 보관합니다.
+  const ads = [];
+  let totalAds = 0;
+  await mapWithConcurrency(adgroups, 6, async ag => {
+    const rows = await naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(err => { console.error(`[naver-ads 실패] 캠페인="${ag.campaignName}"(${ag.campaignType}) 광고그룹="${ag.name}":`, err?.message || err); return []; });
+    if (!Array.isArray(rows)) return;
+    totalAds += rows.length;
+    const remaining = Math.max(0, maxAds - ads.length);
+    if (!remaining) return;
+    for (const a of rows.slice(0, remaining)) {
+      ads.push({ ...a, campaignId: ag.nccCampaignId, campaignName: ag.campaignName, campaignType: ag.campaignType, adgroupId: ag.nccAdgroupId, adgroupName: ag.name || '' });
+    }
+  });
+  console.log(`[naver-ad-masters] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 소재 전체 ${totalAds}개${Number.isFinite(maxAds) && totalAds > ads.length ? ` / 메모리 보관 ${ads.length}개` : ''}. 유형별 캠페인 수: ${JSON.stringify(campaigns.reduce((a, c) => { const t = naverCampaignTypeKo(c.campaignTp); a[t] = (a[t] || 0) + 1; return a; }, {}))}`);
+  return { ads, totalAds, adgroupNameMap };
+}
+
+/**
+ * 네이버 '장바구니 담기'/'회원가입'/'신청·예약' 등 세부 전환 유형 시도
+ * ------------------------------------------------------------
+ * purchaseCcnt/purchaseConvAmt와 달리, 이 필드들은 네이버 공식 문서에 명시되어 있지
+ * 않아 계정마다 지원 여부가 다를 수 있습니다. 그래서 구매/DB 동기화(위 함수)와는
+ * 완전히 분리된 별도 요청으로 "조용히" 시도하고, 실패하면 그냥 0으로 두며 절대
+ * 기존 구매/DB 동기화를 중단시키지 않습니다. 계정별로 한 번만 확인해서 캐싱합니다.
+ */
+const NAVER_FUNNEL_FIELD_CANDIDATES = {
+  addToCart: ['cartCcnt', 'cartConvAmt'],
+  completeRegistration: ['signUpCcnt', 'signUpConvAmt'],
+  initiateCheckout: ['paymentCcnt', 'paymentConvAmt'],
+};
+const naverFunnelSupportCache = new Map(); // customerId -> { result: {addToCart,completeRegistration,initiateCheckout,definitive}, expiresAt: number(ms) }
+
+/**
+ * 메모리 안전장치 - 대량의 개별 API 호출이 쌓이는 계정(예: 벌크 조회가 날짜별로 안 쪼개져
+ * 캠페인/키워드 하나하나를 하루씩 순차 조회하게 되는 계정)에서 실제로 서버 전체가
+ * OOM으로 죽는 사고가 있었습니다. V8 힙 한계에 도달하기 전에 미리 감지해서,
+ * "서버 전체가 죽는 것"이 아니라 "이 동기화 하나만 정상적으로 실패하는 것"으로 바꿉니다.
+ * 이러면 다른 광고주/다른 요청은 영향을 받지 않고, 원인도 로그로 명확히 남습니다.
+ *
+ * (2026-08-31) Railway 컨테이너가 8GB RAM으로 확인되어, railway.toml에서 Node 힙 한계를
+ * --max-old-space-size=6144(6GB)로 올렸습니다. 이 안전장치도 그에 맞춰 같이 올립니다.
+ * 6GB 힙 한계보다 충분히 낮은 3.5GB에서 먼저 차단해, 실제 V8 OOM(로그도 못 남기고 프로세스가 죽음)에
+ * 부딪히기 전에 우리 코드가 먼저 정상적으로 에러를 던질 여유를 남겨둡니다.
+ */
+const MEMORY_SAFETY_LIMIT_MB = 3500;
+function assertMemorySafe(context) {
+  const heapUsedMb = process.memoryUsage().heapUsed / 1048576;
+  if (heapUsedMb > MEMORY_SAFETY_LIMIT_MB) {
+    throw new Error(`메모리 사용량이 안전 한계(${MEMORY_SAFETY_LIMIT_MB}MB)를 넘어 동기화를 중단합니다(heapUsed=${heapUsedMb.toFixed(0)}MB, 지점: ${context}). 서버 전체 다운을 막기 위한 안전장치입니다 - 기간을 줄여서 다시 시도해 주세요.`);
+  }
+}
+
+const naverFunnelSupportInFlight = new Map(); // customerId -> Promise (동시 호출 중복 방지용, 응답 오면 바로 제거)
+
+/**
+ * 어떤 계정은 캠페인/키워드 등을 하루 단위로 나눠서 재조회해야 합니다(벌크 조회가 날짜별로
+ * 안 쪼개져서 응답하는 계정). 이런 계정에서 키워드를 2,000개까지 처리하면 2,000개 × 최대
+ * 30일 = 최대 6만 번의 개별 API 호출이 발생해 메모리·시간이 감당 안 되는 사고가 있었습니다
+ * (실제 발생 - heapUsed 급증). 이 플래그가 켜진 계정만 키워드 처리 개수를 크게 줄이고,
+ * 정상적으로 벌크 조회가 되는 계정은 그대로 2,000개를 유지합니다.
+ */
+const naverNeedsDayByDayFallback = new Set(); // customerId 목록
+
+// 긴 기간 백필(backfill)에서 소재/키워드까지 전체 기간을 다시 긁으면 커머스 계정처럼
+// 소재·키워드가 수백~수천 개인 계정은 API 호출 수가 폭증합니다. 계정/캠페인 일별 성과는
+// 요청한 전체 기간을 보존하되, 세부(소재/키워드) 성과는 최근 구간만 백필합니다.
+// 이미 매일 자동 동기화되는 세부 데이터는 DB에 계속 누적되므로 기존 행을 지우지 않습니다.
+const NAVER_DETAIL_HISTORY_DAYS = 90;
+const NAVER_FALLBACK_DETAIL_HISTORY_DAYS = 30;
+
+/**
+ * 긴 동기화를 쪼개기 전에 이 계정이 timeIncrement=1을 실제로 지원하는지 가볍게 확인합니다.
+ * 예전 코드는 segmentSize를 먼저 30일로 확정한 뒤 첫 구간 안에서 fallback 여부를 발견해서,
+ * 막상 문제가 있는 계정도 첫 실행/서버 재시작 직후에는 끝까지 30일 구간으로 처리되는 버그가
+ * 있었습니다. 커머스 대형 계정에서 6개월 이상 백필이 반복 실패하던 핵심 원인 중 하나입니다.
+ */
+async function naverPreflightDailyGranularity(credentials, until) {
+  if (naverNeedsDayByDayFallback.has(credentials.customerId)) return true;
+  const campaigns = await naverFetchCampaigns(credentials);
+  const sampleIds = campaigns.map(c => c.nccCampaignId).filter(Boolean).slice(0, 5);
+  if (!sampleIds.length) return false;
+  const end = new Date(`${until}T00:00:00`);
+  const start = new Date(end); start.setDate(start.getDate() - 6);
+  const since = start.toISOString().slice(0, 10);
+  const basicFields = ['impCnt', 'clkCnt', 'salesAmt'];
+
+  for (const id of sampleIds) {
+    try {
+      const data = await naverApiRequest('GET', '/stats', {
+        id,
+        fields: JSON.stringify(basicFields),
+        timeRange: JSON.stringify({ since, until }),
+        timeIncrement: '1',
+      }, credentials);
+      const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      if (!rows.length) continue;
+      const hasDates = rows.some(row => row.dateStart || row.date);
+      if (!hasDates && since !== until) {
+        naverNeedsDayByDayFallback.add(credentials.customerId);
+        console.log(`[naver-preflight] customerId=${credentials.customerId} timeIncrement=1 미지원 확인 → 긴 동기화 10일 구간/세부 30일 모드 사용`);
+        return true;
+      }
+      console.log(`[naver-preflight] customerId=${credentials.customerId} timeIncrement=1 일별 응답 정상`);
+      return false;
+    } catch (error) {
+      // preflight 자체가 실패해도 본 수집을 막지는 않습니다. 본 수집에서 기존 fallback 로직이
+      // 다시 판단합니다. 다만 실패 원인은 로그로 남겨 다음 진단이 가능하게 합니다.
+      console.log(`[naver-preflight] id=${id} 확인 실패, 다음 캠페인으로 진행: ${error?.message || error}`);
+    }
+  }
+  return false;
+}
+
+async function naverProbeFunnelFieldSupport(credentials, sampleId) {
+  const cacheKey = credentials.customerId;
+  const cached = naverFunnelSupportCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  // 캠페인/소재/키워드 여러 개가 동시에(concurrency=6) 이 함수를 호출할 때, 캐시가 없으면
+  // 전부 캐시를 놓치고 동시에 같은 요청을 중복 발사합니다. '진행 중인 프로미스'를 따로 캐시해서
+  // 나중에 온 호출은 새 요청 없이 먼저 시작된 요청의 결과를 같이 기다리게 합니다.
+  if (naverFunnelSupportInFlight.has(cacheKey)) return naverFunnelSupportInFlight.get(cacheKey);
+
+  const probePromise = naverProbeFunnelFieldSupportUncached(credentials, sampleId).then(outcome => {
+    // (중요) 11001은 보통 일시적 오류지만, 실제로는 특정 계정에서 이 필드 조합에 대해
+    // '항상' 실패하는 경우도 있었습니다(실제 발생 - 재시도해도 매번 실패). 이런 계정에서
+    // 실패를 아예 캐시하지 않으면 캠페인/소재/키워드 하나하나마다 매번 새로 확인을 시도하게 되어
+    // API 호출이 폭증하고 메모리 사용량이 급증하는 사고로 이어졌습니다(heapUsed 급증 확인됨).
+    // 그래서 확정된(definitive) 성공 결과는 길게(24시간), 실패/불확정 결과는 짧게(3분)만
+    // 캐시합니다 - 정말 일시적인 오류는 3분 뒤 자연 회복되고, 계속 실패하는 계정은 3분에 한
+    // 번만 재확인해서 API 호출 폭증을 막습니다.
+    const ttlMs = outcome.definitive ? 24 * 60 * 60 * 1000 : 3 * 60 * 1000;
+    naverFunnelSupportCache.set(cacheKey, { result: outcome, expiresAt: Date.now() + ttlMs });
+    naverFunnelSupportInFlight.delete(cacheKey);
+    return outcome;
+  });
+  naverFunnelSupportInFlight.set(cacheKey, probePromise);
+  return probePromise;
+}
+
+async function naverProbeFunnelFieldSupportUncached(credentials, sampleId) {
+  // 최근 30일 범위로 한 번 확인합니다. 이 프로브는 '지원 여부 확인' 용도이므로,
+  // 11001(BAD_REQUEST)은 일시 장애로 계속 재시도할 대상이 아니라 해당 필드 조합을 이 계정에서
+  // 사용할 수 없다는 신호로 처리합니다. 이 프로브만은 naverApiRequestOnce를 사용해 동일한 잘못된
+  // 필드 조합을 여러 번 반복 호출하지 않습니다. 필수 /stats 조회는 기존 재시도 정책을 그대로 씁니다.
+  const until = new Date().toISOString().slice(0, 10);
+  const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 29);
+  const since = sinceDate.toISOString().slice(0, 10);
+  const allCandidateFields = Object.values(NAVER_FUNNEL_FIELD_CANDIDATES).flat();
+  let result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: false };
+  try {
+    const data = await naverApiRequestOnce('GET', '/stats', {
+      id: sampleId, fields: JSON.stringify(allCandidateFields),
+      timeRange: JSON.stringify({ since, until }),
+    }, credentials);
+    const rows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    const sample = rows[0];
+    if (sample) {
+      for (const [key, [countField]] of Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES)) {
+        result[key] = Object.prototype.hasOwnProperty.call(sample, countField);
+      }
+      result.definitive = true;
+      console.log(`[네이버 퍼널 전환 지원 확인] 장바구니담기=${result.addToCart}, 회원가입=${result.completeRegistration}, 결제시작=${result.initiateCheckout}`);
+    } else {
+      // 데이터가 없어서 필드 존재 여부를 판단할 수 없으므로 세부 필드를 임의로 켜지 않습니다.
+      // '낙관적으로 지원'으로 간주하면 실제 미지원 계정에서 이후 모든 /stats 요청이 11001로
+      // 실패할 수 있습니다. 정확한 전환 분리는 AD_CONVERSION_DETAIL 리포트가 담당합니다.
+      result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: true };
+      console.log('[네이버 퍼널 전환 지원 확인] 최근 30일 표본 데이터 없음 → 세부 /stats 필드는 사용하지 않고 전환 상세 리포트로 보정합니다.');
+    }
+  } catch (error) {
+    if (error?.naverCode === 11001 || error?.httpStatus === 400) {
+      // 이 계정/필드 조합에서는 구조적으로 지원되지 않는 것으로 확정하고 24시간 캐시합니다.
+      // 같은 동기화에서 소재/키워드마다 다시 probe하지 않게 하는 것이 중요합니다.
+      result = { addToCart: false, completeRegistration: false, initiateCheckout: false, definitive: true };
+      console.log(`[네이버 퍼널 전환 지원 확인] 세부 /stats 필드 미지원으로 확정(code=${error?.naverCode || '-'}, status=${error?.httpStatus || '-'}) → 반복 재시도 없이 전환 상세 리포트 사용`);
+    } else {
+      console.log(`[네이버 퍼널 전환 지원 확인 실패] 일시 장애로 판단해 짧게 캐시합니다: ${error?.message || error}`);
+    }
+  }
+  return result;
+}
+
+/** 네이버 /stats의 ID 묶음을 일별 행으로 정규화합니다. timeIncrement=1이 무시되는 계정은 일자별 재요청합니다. */
+async function naverStatsForIdsDaily(credentials, ids, since, until) {
+  if (!ids.length) return [];
+  // 2026-03부터 네이버 STATS API가 구매완료 전환을 별도 필드로 제공합니다.
+  // ccnt는 구매/가입/장바구니/신청·예약/기타를 모두 합친 '전체 전환수'라서
+  // ccnt 자체를 DB 전환으로 저장하면 구매완료도 DB 전환에 섞이는 문제가 생깁니다.
+  const PURCHASE_SPLIT_FIELDS = ['impCnt', 'clkCnt', 'salesAmt', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
+  // 장바구니 담기 등은 이 계정이 실제로 지원하는 것으로 확인된 필드만 추가로 요청합니다.
+  // (미지원 필드를 섞어서 보내면 계정에 따라 요청 전체가 거부될 수 있어, 기존 구매/DB 조회와
+  // 분리해 별도로 확인한 뒤에만 추가합니다.)
+  const funnelSupport = await naverProbeFunnelFieldSupport(credentials, ids[0]);
+  const funnelFields = Object.entries(NAVER_FUNNEL_FIELD_CANDIDATES).filter(([key]) => funnelSupport[key]).flatMap(([, fields]) => fields);
+  const requestFields = [...PURCHASE_SPLIT_FIELDS, ...funnelFields];
+  // 네이버 /stats는 ids(복수, 배열)로 요청하면 계정에 따라 형식 오류(11001)를 자주 일으켜서,
+  // id가 하나뿐일 때는 단수 파라미터(id)로 보냅니다 - 이 형식이 훨씬 안정적으로 동작합니다.
+  const idParams = ids.length === 1 ? { id: ids[0] } : { ids };
+  // 진단용 집계: '전환필드 대조' 로그를 행마다 찍으면(예: 키워드 2,000개 × 최대 90일)
+  // 대형 계정에서 수만 줄이 한 번의 동기화 구간 안에서 쏟아질 수 있습니다. 대량의 동기
+  // console.log는 그 자체로 메모리/IO 압박 요인이 될 수 있어(실제 OOM 사고와 시점이 겹침),
+  // 요약 카운트만 모아뒀다가 함수 끝에서 한 줄로만 출력합니다.
+  const diag = { total: 0, same: 0, diff: 0, samples: [] };
+  const fetchRange = async (rangeSince, rangeUntil) => {
+    const fetchWithFields = (fields) => naverApiRequest('GET', '/stats', {
+      ...idParams,
+      fields: JSON.stringify(fields),
+      timeRange: JSON.stringify({ since: rangeSince, until: rangeUntil }),
+      timeIncrement: '1',
+    }, credentials).catch(() => null);
+
+    // 구매 전환 KPI는 purchaseCcnt/purchaseConvAmt가 실제로 내려온 응답에서만 저장합니다.
+    // ccnt는 여러 전환유형의 합계라, 신규 구매 필드 요청이 실패했을 때 ccnt를 구매나 DB로
+    // fallback하면 다시 같은 오분류가 발생합니다. 따라서 정확성을 우선해 동기화를 실패시키고
+    // 기존 DB 값을 보존합니다. naverApiRequest 자체가 11001/5xx는 이미 최대 3회 재시도합니다.
+    let data = await fetchWithFields(requestFields);
+    if (!data && funnelFields.length) {
+      // 혹시 퍼널 필드가 섞여서 요청 전체가 실패했을 가능성에 대비해, 필수 필드만으로 한 번 더 시도합니다.
+      data = await fetchWithFields(PURCHASE_SPLIT_FIELDS);
+    }
+    if (!data) {
+      throw new Error('네이버 구매완료 전환 필드(purchaseCcnt/purchaseConvAmt)를 조회하지 못해 정확한 전환 분류를 보장할 수 없습니다. ccnt 전체 전환값으로 대체하지 않고 동기화를 중단합니다.');
+    }
+    const resultRows = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    // 진단용: ccnt(전체 전환)와 purchaseCcnt(구매 전용이라고 알려진 필드)가 항상 같은 값이면,
+    // purchaseCcnt가 실제로는 '구매 전용'이 아니라 그냥 ccnt를 그대로 복사한 필드일 가능성이 있습니다.
+    // (예: 브랜드검색처럼 conversionType 구분이 없는 캠페인 유형에서 이런 현상이 있을 수 있습니다)
+    for (const r of resultRows) {
+      if (r.ccnt !== undefined && r.purchaseCcnt !== undefined && Number(r.ccnt) > 0) {
+        const same = Number(r.ccnt) === Number(r.purchaseCcnt);
+        diag.total++;
+        if (same) diag.same++; else diag.diff++;
+        if (diag.samples.length < 3) {
+          diag.samples.push(`id=${r.id || ids[0]} date=${r.dateStart || r.date} ccnt=${r.ccnt} purchaseCcnt=${r.purchaseCcnt} cartCcnt=${r.cartCcnt ?? '(미요청)'} signUpCcnt=${r.signUpCcnt ?? '(미요청)'} paymentCcnt=${r.paymentCcnt ?? '(미요청)'}`);
+        }
+      }
+    }
+    return resultRows;
+  };
+
+  const output = [];
+  for (const range of splitIntoChunks(since, until, 90)) {
+    const rows = await fetchRange(range.since, range.until);
+    // rows가 진짜 빈 배열이면(네이버가 "이 기간엔 데이터가 없습니다"라고 정상 응답한 것) 그대로
+    // 빈 결과로 처리합니다. 빈 배열에 대한 .some()은 항상 false라서, 이 케이스를 "날짜 필드가
+    // 안 나뉜 것"으로 잘못 판단하면 아래 else 분기(일별 재조회, 90일마다 최대 90번의 API 호출)를
+    // 데이터가 없는 기간마다 반복하게 되어 13개월 같은 긴 동기화가 시간 초과로 끊기는 원인이 됩니다.
+    if (rows.length === 0) continue;
+    const hasDates = rows.some(row => row.dateStart || row.date);
+    if (hasDates || range.since === range.until) {
+      for (const row of rows) output.push({ ...row, date: row.dateStart || row.date || range.since });
+    } else {
+      // 일부 계정은 timeIncrement를 무시하고 기간 합계를 돌려주므로, 정확한 기간 필터를 위해 일자별로 재조회합니다.
+      naverNeedsDayByDayFallback.add(credentials.customerId);
+      let d = new Date(`${range.since}T00:00:00`);
+      const end = new Date(`${range.until}T00:00:00`);
+      let dayIndex = 0;
+      while (d <= end) {
+        assertMemorySafe(`일자별 재조회 (id=${ids[0]})`);
+        dayIndex++;
+        // 캠페인 630행 처리만으로 힙이 2.7GB까지 튄 사고의 정확한 지점을 다음번엔 바로
+        // 찾을 수 있도록, 이 하나의 id를 30일 재조회하는 동안에도 10일마다 힙을 찍습니다.
+        if (dayIndex % 10 === 0) {
+          const m = process.memoryUsage();
+          console.log(`[메모리 세부] id=${ids[0]} 일자별 재조회 ${dayIndex}일째 - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB`);
+        }
+        const day = d.toISOString().slice(0, 10);
+        const dailyRows = await fetchRange(day, day);
+        for (const row of dailyRows) output.push({ ...row, date: row.dateStart || row.date || day });
+        d.setDate(d.getDate() + 1);
+        await new Promise(r => setTimeout(r, 120));
+      }
+    }
+  }
+  if (diag.total > 0) {
+    console.log(`[네이버 전환필드 대조 요약] id=${ids[0]}${ids.length > 1 ? ` 외 ${ids.length - 1}개` : ''} 총 ${diag.total}행 중 ccnt=purchaseCcnt 동일 ${diag.same}건, 다름(정상 분리) ${diag.diff}건. 예시: ${diag.samples.join(' | ') || '없음'}`);
+  }
+  return output;
+}
+
+/**
+ * 네이버 /stats 전환을 HOWTOM의 DB 전환/구매 전환으로 분리합니다.
+ *
+ * 중요:
+ * - purchaseCcnt = 구매완료(Purchase) 전환 건수
+ * - purchaseConvAmt = 구매완료 전환값
+ * - ccnt = 구매/가입/장바구니/신청·예약 등 여러 conversionType이 섞인 "전체 전환"
+ *
+ * 따라서 ccnt 또는 (ccnt - purchaseCcnt)를 DB(Lead)로 추정하면 안 됩니다.
+ * /stats 응답에는 Lead 전용 필드가 없으므로, Lead는 AD_CONVERSION/DETAIL의
+ * conversionType=lead를 명시적으로 수집하기 전까지 0으로 둡니다.
+ * Purchase 필드가 없는 구형 응답에서도 ccnt로 구매를 추정하지 않습니다.
+ */
+function splitNaverConversions(row) {
+  const hasField = (name) => row != null && Object.prototype.hasOwnProperty.call(row, name) && row[name] !== null && row[name] !== undefined && row[name] !== '';
+  const numOrZero = (name) => hasField(name) ? Math.max(0, Number(row[name] || 0) || 0) : 0;
+
+  const totalConversions = numOrZero('ccnt');
+  const purchases = numOrZero('purchaseCcnt');
+  const revenue = numOrZero('purchaseConvAmt');
+  // 장바구니 담기/회원가입/결제시작은 계정마다 지원 여부가 달라, 필드가 실제로 응답에
+  // 있을 때만 값을 채웁니다(naverProbeFunnelFieldSupport에서 미지원으로 확인되면
+  // 애초에 요청 필드에 안 들어가 있어서 항상 0으로 정직하게 남습니다).
+  const addToCart = numOrZero('cartCcnt');
+  const completeRegistration = numOrZero('signUpCcnt');
+  const initiateCheckout = numOrZero('paymentCcnt');
+  // 구매/장바구니/회원가입/결제시작을 뺀 나머지("남은 전환")가 있습니다. 이 나머지를
+  // 무조건 DB(리드)로 단정하면 안 됩니다 - 특히 이 계정에서 세부 전환 필드(cartCcnt 등)
+  // 자체를 확인할 수 없는 시점(대표적으로 "오늘": 확정 리포트가 아직 없고 /stats 세부
+  // 필드도 이 계정이 지원 안 함)에는 그 나머지가 진짜 리드인지, 아직 분류 못 한 장바구니/
+  // 회원가입인지 알 수 없습니다. 그래서 세부 필드가 응답에 하나라도 실제로 있었을 때만
+  // (=이 계정에서 최소한 일부 세부 분류가 확인된 상태) 나머지를 DB로 인정하고, 세부 필드가
+  // 전혀 없었다면(이 계정은 확인 불가) 그 나머지는 '미확인' 전환으로 따로 집계합니다.
+  const funnelFieldsConfirmed = hasField('cartCcnt') || hasField('signUpCcnt') || hasField('paymentCcnt');
+  const remainder = Math.max(0, totalConversions - purchases - addToCart - completeRegistration - initiateCheckout);
+  const dbCount = funnelFieldsConfirmed ? remainder : 0;
+  const unconfirmed = funnelFieldsConfirmed ? 0 : remainder;
+  return { dbCount, purchases, revenue, addToCart, completeRegistration, initiateCheckout, unconfirmed };
+}
+
+async function naverFetchCreativeDailyMetrics(credentials, since, until) {
+  // 예전엔 상위 300개로 제한했지만, 이 캠페인·소재가 많은 계정에서 순서상 300번째 밖으로
+  // 밀려난 캠페인의 소재가 통째로 누락되는 문제가 있었습니다. 키워드(수만 개 단위)와 달리
+  // 소재는 보통 수백~수천 개 수준이라 2000개까지 수집합니다. 다만 목록 전체를 먼저 메모리에
+  // 올리지 않고 naverFetchAdMasters 단계에서부터 이 cap만 보관합니다.
+  const creativeCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
+  const { ads, totalAds } = await naverFetchAdMasters(credentials, creativeCap);
+  if (totalAds > creativeCap) console.log(`[naver-ad-masters 경고] 소재가 ${totalAds}개라 ${creativeCap}개까지만 수집합니다${creativeCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
+  const master = new Map(ads.map(a => [a.nccAdId, a]));
+  const rows = [];
+  await mapWithConcurrency(ads, 6, async ad => {
+    const stats = await naverStatsForIdsDaily(credentials, [ad.nccAdId], since, until);
+    for (const row of stats) {
+      const adId = row.id || row.nccAdId || ad.nccAdId;
+      if (!master.has(adId)) continue;
+      const conversions = splitNaverConversions(row);
+      rows.push({
+        date: row.date,
+        campaignId: ad.campaignId || '',
+        campaignName: ad.campaignName || '',
+        campaignType: ad.campaignType || '',
+        adgroupId: ad.adgroupId || '',
+        adgroupName: ad.adgroupName || '',
+        adId,
+        adName: ad.ad?.headline || ad.ad?.description || adId,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
+        unconfirmed: conversions.unconfirmed,
+        thumbnailUrl: null,
+        mediaType: 'text', // 네이버 파워링크는 이미지/영상 없이 제목+설명 텍스트로만 구성된 키워드 기반 소재입니다.
+        title: ad.ad?.headline || '',
+        body: ad.ad?.description || '',
+        description: '',
+        cta: '',
+      });
+    }
+  });
+  return rows;
+}
+
+/** 네이버 캠페인 유형(campaignTp)을 한글로 바꿔줍니다. */
+function naverCampaignTypeKo(tp) {
+  const map = { WEB_SITE: '파워링크', SHOPPING: '쇼핑검색', POWER_CONTENTS: '파워컨텐츠', BRAND_SEARCH: '브랜드검색', PLACE: '플레이스' };
+  return map[tp] || tp || '';
+}
+
+async function naverFetchKeywordDailyMetrics(credentials, since, until) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
+  const adgroups = [];
+  await mapWithConcurrency(campaigns, 6, async c => {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(err => { console.error('[naver-adgroups 실패]', c.nccCampaignId, err?.message || err); return []; });
+    if (Array.isArray(rows)) adgroups.push(...rows);
+  });
+  const adgroupCampaignMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.nccCampaignId]));
+  const adgroupNameMap = new Map(adgroups.map(a => [a.nccAdgroupId, a.name || '']));
+
+  // 핵심 메모리 수정: 예전 코드는 모든 광고그룹의 모든 키워드 객체를 keywords[]에 먼저 담고
+  // 마지막에 slice(0, 2000)했습니다. 커머스 계정은 키워드 원본 목록만 수만~수십만 건이 될 수
+  // 있어 실제로 쓰지도 않을 객체가 장기 동기화 내내 힙을 점유했습니다. 이제 필요한 cap만 보관하고,
+  // 전체 개수/광고그룹 보유 여부/캠페인별 개수는 숫자와 Set으로만 집계합니다.
+  const keywordCap = naverNeedsDayByDayFallback.has(credentials.customerId) ? 150 : 2000;
+  const selected = [];
+  let totalKeywordCount = 0;
+  const adgroupsWithKeyword = new Set();
+  const keywordCountByCampaign = new Map();
+  await mapWithConcurrency(adgroups.map(a => a.nccAdgroupId).filter(Boolean), 6, async agid => {
+    const rows = await naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: agid }, credentials).catch(err => { console.error('[naver-keywords 목록 실패]', agid, err?.message || err); return []; });
+    if (!Array.isArray(rows)) return;
+    if (rows.length) adgroupsWithKeyword.add(agid);
+    totalKeywordCount += rows.length;
+    const campaignId = adgroupCampaignMap.get(agid) || '';
+    keywordCountByCampaign.set(campaignId, (keywordCountByCampaign.get(campaignId) || 0) + rows.length);
+    const remaining = Math.max(0, keywordCap - selected.length);
+    if (remaining) selected.push(...rows.slice(0, remaining));
+  });
+  console.log(`[naver-keywords] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 키워드 전체 ${totalKeywordCount}개 / 통계 수집 ${selected.length}개`);
+
+  const byType = new Map();
+  const adgroupCountByCampaign = new Map();
+  for (const a of adgroups) adgroupCountByCampaign.set(a.nccCampaignId, (adgroupCountByCampaign.get(a.nccCampaignId) || 0) + 1);
+  for (const c of campaigns) {
+    const tp = naverCampaignTypeKo(c.campaignTp) || c.campaignTp || '(알수없음)';
+    const cur = byType.get(tp) || { campaigns: 0, adgroups: 0, keywords: 0 };
+    cur.campaigns++;
+    cur.adgroups += adgroupCountByCampaign.get(c.nccCampaignId) || 0;
+    cur.keywords += keywordCountByCampaign.get(c.nccCampaignId) || 0;
+    byType.set(tp, cur);
+  }
+  for (const [tp, v] of byType) console.log(`[naver-keywords] 유형=${tp} 캠페인${v.campaigns}개 광고그룹${v.adgroups}개 키워드${v.keywords}개`);
+  if (totalKeywordCount > keywordCap) console.log(`[naver-keywords 경고] 키워드가 ${totalKeywordCount}개라 ${keywordCap}개까지만 통계를 수집합니다${keywordCap < 2000 ? '(이 계정은 일자별 재조회가 필요해 안전을 위해 더 적게 제한)' : ''}. 초과분은 누락될 수 있습니다.`);
+
+  const result = [];
+  await mapWithConcurrency(selected, 6, async kw => {
+    const adgroupId = kw.nccAdgroupId || '';
+    const campaignId = adgroupCampaignMap.get(adgroupId) || '';
+    const stats = await naverStatsForIdsDaily(credentials, [kw.nccKeywordId], since, until);
+    for (const row of stats) {
+      const keywordId = row.id || row.nccKeywordId || kw.nccKeywordId;
+      const conversions = splitNaverConversions(row);
+      result.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || '',
+        campaignType: campaignTypeMap.get(campaignId) || '',
+        adgroupId,
+        adgroupName: adgroupNameMap.get(adgroupId) || '',
+        keywordId,
+        keyword: kw.keyword || keywordId,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
+        unconfirmed: conversions.unconfirmed,
+      });
+    }
+  });
+
+  // 쇼핑검색·브랜드검색 등 키워드 자체가 없는 광고그룹은 광고그룹 전체를 대체 항목으로 표시합니다.
+  const adgroupsWithoutKeyword = adgroups.filter(a => a.nccAdgroupId && !adgroupsWithKeyword.has(a.nccAdgroupId)).slice(0, 150);
+  await mapWithConcurrency(adgroupsWithoutKeyword, 6, async ag => {
+    const campaignId = ag.nccCampaignId || '';
+    const stats = await naverStatsForIdsDaily(credentials, [ag.nccAdgroupId], since, until);
+    for (const row of stats) {
+      const conversions = splitNaverConversions(row);
+      result.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || '',
+        campaignType: campaignTypeMap.get(campaignId) || '',
+        adgroupId: ag.nccAdgroupId,
+        adgroupName: ag.name || '',
+        keywordId: ag.nccAdgroupId,
+        keyword: `${ag.name || '광고그룹'} (광고그룹 전체)`,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
+        unconfirmed: conversions.unconfirmed,
+      });
+    }
+  });
+  return result;
+}
+
+/** 구글/카카오 등 미구현 커넥터는 데이터를 0으로 가장하지 않고 명시적으로 미구현 상태를 반환합니다. */
+const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao'];
+const IMPLEMENTED_METRIC_CHANNELS = new Set(['meta', 'naver']);
+
+/* ========================================================================
+   네이버 검색광고 API 연동
+   -----------------------------------------------------------------------
+   Meta와 달리, 네이버는 광고주마다 CUSTOMER_ID/API Key/Secret Key가 전부 다릅니다
+   (대행사 계정 하나로 여러 광고주를 조회하는 구조가 아님). 그래서 이 값들은
+   Railway 환경변수가 아니라 광고주별로 DB(advertisers[].accounts[])에 저장합니다.
+   인증은 OAuth 토큰이 아니라 매 요청마다 HMAC-SHA256 서명을 직접 만들어 보냅니다.
+   ======================================================================== */
+const NAVER_API_BASE = 'https://api.searchad.naver.com';
+
+function naverSignature(timestamp, method, uri, secretKey) {
+  const message = `${timestamp}.${method}.${uri}`;
+  return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
+}
+
+async function naverApiRequestOnce(method, uri, params, credentials, body) {
+  const { customerId, apiKey, secretKey } = credentials;
+  const timestamp = String(Date.now());
+  const signature = naverSignature(timestamp, method, uri, secretKey);
+  const url = new URL(`${NAVER_API_BASE}${uri}`);
+  if (method === 'GET') {
+    for (const [key, value] of Object.entries(params || {})) {
+      // ids처럼 배열 값은 JSON 문자열 하나가 아니라, 같은 이름의 파라미터를 여러 개
+      // 반복해서 보내야 합니다 (예: ?ids=A&ids=B). fields/timeRange 같은 JSON 문자열은 그대로 둡니다.
+      if (Array.isArray(value)) {
+        for (const v of value) url.searchParams.append(key, v);
+      } else {
+        url.searchParams.set(key, value);
+      }
+    }
+  }
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      'X-Timestamp': timestamp,
+      'X-API-KEY': apiKey,
+      'X-Customer': String(customerId),
+      'X-Signature': signature,
+      'Content-Type': 'application/json; charset=UTF-8',
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    // 비밀키는 로그에 남기지 않고, 진단에 필요한 나머지 정보만 서버 콘솔에 남깁니다.
+    console.error('[naver-api-error]', {
+      uri, status: res.status, serverTime: timestamp, customerId,
+      apiKeyPrefix: apiKey ? apiKey.slice(0, 8) : null,
+      naverResponse: data,
+    });
+    const err = new Error(`${data?.title || data?.message || `Naver API HTTP ${res.status}`}${data?.code ? ` (code: ${data.code})` : ''} · status ${res.status}`);
+    err.naverCode = data?.code;
+    err.httpStatus = res.status;
+    throw err;
+  }
+  return data;
+}
+
+/**
+ * 네이버 stats API는 파라미터가 정확해도 간헐적으로(네이버 측에서도 인지하고 있는 불안정 이슈)
+ * code 11001("잘못된 파라미터 형식입니다")을 랜덤하게 반환하는 경우가 있습니다.
+ * (naver/searchad-apidoc GitHub 이슈 #1295, #1300 등에서 동일 증상 다수 보고됨)
+ * 그래서 이 코드가 뜨면 잠깐 대기 후 최대 3번까지 자동으로 재시도합니다.
+ */
+async function naverApiRequest(method, uri, params, credentials, body, attempt = 1) {
+  try {
+    return await naverApiRequestOnce(method, uri, params, credentials, body);
+  } catch (error) {
+    const retryable = error.naverCode === 11001 || (error.httpStatus >= 500);
+    if (retryable && attempt < 3) {
+      await new Promise(r => setTimeout(r, 800 * attempt));
+      return naverApiRequest(method, uri, params, credentials, body, attempt + 1);
+    }
+    throw error;
+  }
+}
+
+async function naverFetchCampaigns(credentials) {
+  const data = await naverApiRequest('GET', '/ncc/campaigns', {}, credentials);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * items를 하나씩(one-by-one) 처리하되, 최대 concurrency개까지는 동시에 실행합니다.
+ * 네이버 /stats는 "여러 id를 한 요청에 묶으면" 형식 오류가 나서 개별 요청이 필수인데,
+ * 이 함수로 "개별 요청 여러 개를 동시에" 보내 순수 순차 처리보다 훨씬 빠르게 만듭니다.
+ */
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function runNext() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runNext));
+  return results;
+}
+
+/** 92일 제한이 있어 기간을 나눠서 요청합니다. */
+function splitIntoChunks(since, until, maxDays) {
+  const chunks = [];
+  let start = new Date(`${since}T00:00:00`);
+  const end = new Date(`${until}T00:00:00`);
+  while (start <= end) {
+    const chunkEnd = new Date(start);
+    chunkEnd.setDate(chunkEnd.getDate() + maxDays - 1);
+    const actualEnd = chunkEnd > end ? end : chunkEnd;
+    chunks.push({ since: start.toISOString().slice(0, 10), until: actualEnd.toISOString().slice(0, 10) });
+    start = new Date(actualEnd); start.setDate(start.getDate() + 1);
+  }
+  return chunks;
+}
+
+/** 계정(고객) 전체의 일별 성과를 캠페인 단위로 조회해 날짜별로 합산합니다. */
+/**
+ * StatReport(대용량 보고서) API — /stats(빠른 조회용)가 계정별로 형식 오류를 자주 일으켜서,
+ * 정기 자동 수집에는 이 방식을 대신 사용합니다: 보고서 생성 요청 → 완료될 때까지 상태 확인 →
+ * 완성되면 받은 다운로드 URL에서 탭 구분 파일을 받아 직접 파싱합니다.
+ */
+async function naverCreateStatReport(credentials, reportTp, statDt) {
+  return naverApiRequest('POST', '/stat-reports', {}, credentials, { reportTp, statDt });
+}
+async function naverGetStatReport(credentials, reportJobId) {
+  return naverApiRequest('GET', `/stat-reports/${reportJobId}`, {}, credentials);
+}
+/** 보고서가 완성될 때까지 몇 초 간격으로 최대 20회(약 1분) 상태를 확인합니다. */
+async function naverWaitForStatReport(credentials, reportJobId) {
+  for (let i = 0; i < 20; i++) {
+    const report = await naverGetStatReport(credentials, reportJobId);
+    const status = report?.status;
+    if (status === 'BUILT' || report?.downloadUrl) return report;
+    if (status === 'REG_ERROR' || status === 'ERROR') throw new Error(`네이버 보고서 생성 실패 (status: ${status})`);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error('네이버 보고서 생성이 시간 내에 끝나지 않았습니다.');
+}
+/** 완성된 보고서 파일(탭 구분, 헤더 없음)을 다운로드해 배열의 배열로 파싱합니다. */
+async function naverDownloadStatReportRows(downloadUrl, credentials) {
+  const { customerId, apiKey, secretKey } = credentials;
+  const timestamp = String(Date.now());
+  const urlObj = new URL(downloadUrl.startsWith('http') ? downloadUrl : `${NAVER_API_BASE}${downloadUrl}`);
+  const signature = naverSignature(timestamp, 'GET', urlObj.pathname, secretKey);
+  const res = await fetch(urlObj.toString(), {
+    headers: { 'X-Timestamp': timestamp, 'X-API-KEY': apiKey, 'X-Customer': String(customerId), 'X-Signature': signature },
+  });
+  if (!res.ok) throw new Error(`네이버 보고서 파일 다운로드 실패 (status ${res.status})`);
+  let text = await res.text();
+  // gzip으로 압축되어 오는 경우를 대비합니다.
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('gzip') || urlObj.pathname.endsWith('.gz')) {
+    const buf = Buffer.from(text, 'binary');
+    text = zlib.gunzipSync(buf).toString('utf8');
+  }
+  return text.split('\n').filter(Boolean).map(line => line.split('\t'));
+}
+
+/**
+ * StatReport(대용량 보고서) 방식으로 일별 계정 성과를 가져옵니다. /stats가 계정마다
+ * 형식 오류를 일으키는 문제를 피하기 위한 대안입니다. 정확한 컬럼 순서는 공식 문서에서
+ * 확인이 어려워, 처음 몇 줄을 서버 로그에 남겨 실제 값을 보고 빠르게 맞출 수 있게 합니다.
+ */
+/** 진단(probe)용: 리포트 원본 행을 컬럼 번호와 함께 로그로 출력합니다. */
+function naverProbePrintReportSample(rows) {
+  const columns = rows.length ? Object.keys(rows[0]) : [];
+  console.log(`[naver-report-sample] AD_CONVERSION_DETAIL 컬럼 개수: ${columns.length}, 전체 ${rows.length}행`);
+  // 행 하나를 한 줄로 출력해야 여러 행이 뒤섞여 보이지 않습니다.
+  rows.slice(0, 8).forEach((r, i) => {
+    const values = columns.map(c => r[c]);
+    console.log(`[naver-report-sample] ROW${i} | ${values.map((v, idx) => `[${idx}]${v}`).join(' | ')}`);
+  });
+  // 'purchase', 'add_to_cart' 같은 전환 유형 문자열이 들어있는 컬럼 번호를 자동으로 찾습니다.
+  const KNOWN_TYPES = ['purchase', 'add_to_cart', 'sign_up', 'lead', 'application', 'reservation', 'schedule', 'other'];
+  for (const c of columns) {
+    const values = rows.map(r => String(r[c] ?? ''));
+    if (values.some(v => KNOWN_TYPES.includes(v))) {
+      const dist = {};
+      for (const v of values) dist[v] = (dist[v] || 0) + 1;
+      console.log(`[naver-report-sample] ★ 전환유형 컬럼 발견: 인덱스 [${c}] · 값 분포 ${JSON.stringify(dist)}`);
+    }
+  }
+  return rows;
+}
+
+async function naverFetchDailyMetricsViaReport(credentials, since, until, options = {}) {
+  if (options.probeOnly) {
+    const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${since}T00:00:00Z`);
+    const reportJobId = created?.reportJobId || created?.id;
+    if (!reportJobId) throw new Error(`네이버 보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
+    const finished = await naverWaitForStatReport(credentials, reportJobId);
+    if (!finished?.downloadUrl) throw new Error('네이버 보고서가 완료됐지만 다운로드 URL이 없습니다.');
+    const rows = await naverDownloadStatReportRows(finished.downloadUrl, credentials);
+    return naverProbePrintReportSample(rows);
+  }
+
+  // AD_CONVERSION_DETAIL은 하루짜리 보고서입니다. 예전 구현은 최대 31일 원본 TSV를 모두 rows[]에
+  // 누적하고, 광고/키워드 전체 ID 조합까지 Map으로 만든 뒤에야 필요한 캠페인/소재/키워드 값만
+  // 뽑았습니다. 커머스 대형 계정에서는 이 불필요한 원본+세부 Map이 수 GB로 커져 V8 OOM이
+  // 발생했습니다. 이제 하루씩 즉시 읽고, 현재 동기화가 실제로 필요로 하는 ID만 레벨별로 집계합니다.
+  const REPORT_MAX_DAYS = 31;
+  const endDate = new Date(`${until}T00:00:00`);
+  const startDate = new Date(`${since}T00:00:00`);
+  const dayList = [];
+  for (let d = new Date(endDate); d >= startDate && dayList.length < REPORT_MAX_DAYS; d.setDate(d.getDate() - 1)) {
+    dayList.push(d.toISOString().slice(0, 10));
+  }
+  dayList.reverse();
+
+  const campaignIds = options.campaignIds instanceof Set ? options.campaignIds : new Set(options.campaignIds || []);
+  const adIds = options.adIds instanceof Set ? options.adIds : new Set(options.adIds || []);
+  const keywordIds = options.keywordIds instanceof Set ? options.keywordIds : new Set(options.keywordIds || []);
+  const COL = { date: 0, campaignId: 2, adgroupId: 3, keywordId: 4, adId: 5, convType: 12, convCount: 13, convAmount: 14 };
+  const campaignMap = new Map();
+  const creativeMap = new Map();
+  const keywordMap = new Map();
+  const unknownTypes = new Set();
+  const engagementTypes = new Set();
+  const typeDistribution = {};
+  let rawRowCount = 0;
+
+  const addToMap = (map, key, base, field, count, amount) => {
+    const cur = map.get(key) || { ...base, dbCount: 0, purchases: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, revenue: 0, unconfirmed: 0 };
+    cur[field] += count;
+    if (field === 'purchases') cur.revenue += amount;
+    map.set(key, cur);
+  };
+
+  const absorbRows = (dayRows) => {
+    rawRowCount += dayRows.length;
+    for (const r of dayRows) {
+      const raw = String(r[COL.date] ?? '');
+      if (raw.length !== 8) continue;
+      const date = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+      if (date < since || date > until) continue;
+      const campaignId = String(r[COL.campaignId] || '');
+      const adgroupId = String(r[COL.adgroupId] || '');
+      const keywordId = String(r[COL.keywordId] || '');
+      const adId = String(r[COL.adId] || '');
+      const convType = String(r[COL.convType] ?? '').trim();
+      const count = Number(r[COL.convCount] || 0) || 0;
+      const amount = Number(r[COL.convAmount] || 0) || 0;
+      if (convType) typeDistribution[convType] = (typeDistribution[convType] || 0) + count;
+      const { field, known, engagement } = classifyNaverConversionType(convType);
+      if (!known && convType) unknownTypes.add(convType);
+      if (engagement) { engagementTypes.add(convType); continue; }
+
+      // 캠페인은 모든 기간의 정확한 합계를 보존해야 하므로 항상 집계하되, 현재 /stats에서
+      // 실제로 존재하는 캠페인 ID만 남깁니다. 소재/키워드는 장기 백필 정책상 최근 일부만 수집하므로
+      // 현재 target rows에 있는 ID만 집계해 리포트 전체 계정의 불필요한 세부 전환을 메모리에 두지 않습니다.
+      if (!campaignIds.size || campaignIds.has(campaignId)) {
+        addToMap(campaignMap, `${date}|${campaignId}`, { date, campaignId }, field, count, amount);
+      }
+      if (adId && adIds.has(adId)) {
+        addToMap(creativeMap, `${date}|${adId}`, { date, campaignId, adgroupId, adId }, field, count, amount);
+      }
+      if (keywordId && keywordIds.has(keywordId)) {
+        addToMap(keywordMap, `${date}|${keywordId}`, { date, campaignId, adgroupId, keywordId }, field, count, amount);
+      }
+    }
+  };
+
+  for (let i = 0; i < dayList.length; i++) {
+    const day = dayList[i];
+    assertMemorySafe(`전환 상세 리포트 ${day} 다운로드 전`);
+    try {
+      const created = await naverCreateStatReport(credentials, 'AD_CONVERSION_DETAIL', `${day}T00:00:00Z`);
+      const reportJobId = created?.reportJobId || created?.id;
+      if (!reportJobId) throw new Error(`보고서 생성 응답에 reportJobId가 없습니다: ${JSON.stringify(created)}`);
+      const finished = await naverWaitForStatReport(credentials, reportJobId);
+      if (!finished?.downloadUrl) throw new Error('보고서가 완료됐지만 다운로드 URL이 없습니다.');
+      const dayRows = await naverDownloadStatReportRows(finished.downloadUrl, credentials);
+      absorbRows(dayRows);
+      const heapMb = process.memoryUsage().heapUsed / 1048576;
+      console.log(`[naver-conversion-detail] ${day} 원본 ${dayRows.length}행 즉시 집계 · 캠페인 ${campaignMap.size} / 소재 ${creativeMap.size} / 키워드 ${keywordMap.size}건 · heapUsed=${heapMb.toFixed(0)}MB`);
+      if (global.gc && (i % 3 === 2 || heapMb > 2000)) global.gc();
+    } catch (error) {
+      if (error?.naverCode === 10004) {
+        console.log(`[naver-conversion-detail] ${day} 리포트에 지표 없음(그날 전환 0건, 정상)`);
+      } else {
+        console.error(`[naver-conversion-detail] ${day} 리포트 실패 - 이 날짜는 /stats 값을 유지합니다:`, error?.message || error);
+      }
+    }
+  }
+
+  if (unknownTypes.size) console.log(`[naver-conversion-detail] ⚠️ 처음 보는 전환유형을 DB(리드)로 분류했습니다(확인 필요): ${JSON.stringify([...unknownTypes])}`);
+  if (engagementTypes.size) console.log(`[naver-conversion-detail] 참여성 전환유형은 집계에서 제외했습니다: ${JSON.stringify([...engagementTypes])}`);
+  console.log(`[naver-conversion-detail] 전환유형 값 분포(원본값→전환수): ${JSON.stringify(typeDistribution)}`);
+  const result = {
+    campaignRows: [...campaignMap.values()],
+    creativeRows: [...creativeMap.values()],
+    keywordRows: [...keywordMap.values()],
+    rawRowCount,
+  };
+  console.log(`[naver-conversion-detail] ${since}~${until} 원본 ${rawRowCount}행 → 캠페인 ${result.campaignRows.length}, 소재 ${result.creativeRows.length}, 키워드 ${result.keywordRows.length}건으로 필요한 레벨만 집계`);
+  return result;
+}
+
+async function naverFetchCampaignDailyMetrics(credentials, since, until) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const campaignIds = campaigns.map(c => c.nccCampaignId).filter(Boolean);
+  if (!campaignIds.length) return [];
+  const campaignNameMap = new Map(campaigns.map(c => [c.nccCampaignId, c.name]));
+  const campaignTypeMap = new Map(campaigns.map(c => [c.nccCampaignId, naverCampaignTypeKo(c.campaignTp)]));
+  const rowsOut = [];
+  const typeDiag = new Map(); // 유형별로 /stats가 실제로 데이터를 돌려주는지 진단합니다.
+  let completedCount = 0;
+  await mapWithConcurrency(campaignIds, 6, async campaignId => {
+    const rows = await naverStatsForIdsDaily(credentials, [campaignId], since, until);
+    completedCount++;
+    // (2026-08-31) 캠페인 630행(21개×30일) 처리만으로 힙이 140MB→2,767MB로 치솟는 사고가
+    // 있었는데, 그때 로그엔 "구간 시작"과 "캠페인 수집 후" 딱 두 지점만 있어서 21개 캠페인 중
+    // 정확히 어디서 튀는지 알 수 없었습니다. 이제 캠페인 3개마다 힙을 찍어서, 다음에 또
+    // 발생하면 어느 캠페인(몇 번째 API 호출) 직후에 메모리가 급증하는지 바로 보이게 합니다.
+    if (completedCount % 3 === 0 || completedCount === campaignIds.length) {
+      const m = process.memoryUsage();
+      console.log(`[메모리 세부] 캠페인 ${completedCount}/${campaignIds.length}개 처리 후 (campaignId=${campaignId}) - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
+    }
+    const tp = campaignTypeMap.get(campaignId) || '(알수없음)';
+    const cur = typeDiag.get(tp) || { campaigns: 0, rowsWithData: 0, totalRows: 0 };
+    cur.campaigns++; cur.totalRows += rows.length;
+    if (rows.some(r => Number(r.salesAmt || 0) > 0 || Number(r.impCnt || 0) > 0)) cur.rowsWithData++;
+    typeDiag.set(tp, cur);
+    for (const row of rows) {
+      const conversions = splitNaverConversions(row);
+      rowsOut.push({
+        date: row.date,
+        campaignId,
+        campaignName: campaignNameMap.get(campaignId) || campaignId,
+        campaignType: tp,
+        impressions: Number(row.impCnt || 0),
+        clicks: Number(row.clkCnt || 0),
+        spend: Number(row.salesAmt || 0),
+        dbCount: conversions.dbCount,
+        purchases: conversions.purchases,
+        revenue: conversions.revenue,
+        addToCart: conversions.addToCart,
+        completeRegistration: conversions.completeRegistration,
+        initiateCheckout: conversions.initiateCheckout,
+        unconfirmed: conversions.unconfirmed,
+      });
+    }
+  });
+  for (const [tp, v] of typeDiag) console.log(`[naver-campaign-stats] 유형=${tp} 캠페인${v.campaigns}개 중 실제 노출/비용 있는 캠페인 ${v.rowsWithData}개 (일별 행 ${v.totalRows}개 수집)`);
+  return rowsOut;
+}
+
+function aggregateDailyFromDetailed(rows) {
+  const byDate = new Map();
+  for (const row of rows || []) {
+    if (!row.date) continue;
+    const cur = byDate.get(row.date) || { date: row.date, impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, revenue: 0, addToCart: 0, completeRegistration: 0, initiateCheckout: 0, unconfirmed: 0 };
+    cur.impressions += Number(row.impressions || 0);
+    cur.clicks += Number(row.clicks || 0);
+    cur.spend += Number(row.spend || 0);
+    cur.dbCount += Number(row.dbCount || 0);
+    cur.purchases += Number(row.purchases || 0);
+    cur.revenue += Number(row.revenue || 0);
+    cur.addToCart += Number(row.addToCart || 0);
+    cur.completeRegistration += Number(row.completeRegistration || 0);
+    cur.initiateCheckout += Number(row.initiateCheckout || 0);
+    cur.unconfirmed += Number(row.unconfirmed || 0);
+    byDate.set(row.date, cur);
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function naverFetchDailyMetrics(credentials, since, until) {
+  return aggregateDailyFromDetailed(await naverFetchCampaignDailyMetrics(credentials, since, until));
+}
+
+/* ========================================================================
+   이미지 소재 제작 — 외부 AI 이미지 생성 API 연동
+   -----------------------------------------------------------------------
+   - IMAGE_AI_PROVIDER 가 설정되어 있지 않으면(기본값) 미구현 상태로, 화면에는
+     "AI 이미지 생성이 아직 연결되지 않았습니다"가 정직하게 표시됩니다.
+   - 'openai' | 'custom' 중 하나로 설정하면 실제 외부 AI가 이미지를 생성합니다.
+   - custom은 IMAGE_AI_API_URL 로 { prompt, size, plan } 을 POST하고
+     { images: [{ url }] } 형태의 JSON을 그대로 돌려주는 사내/외부 엔드포인트를
+     붙일 때 사용합니다. (블로그 원고 생성과 동일한 설계 패턴입니다.)
+   ======================================================================== */
+const IMAGE_AI_PROVIDER = (process.env.IMAGE_AI_PROVIDER || '').trim().toLowerCase();
+const IMAGE_AI_API_KEY = process.env.IMAGE_AI_API_KEY || '';
+const IMAGE_AI_API_URL = process.env.IMAGE_AI_API_URL || '';
+const IMAGE_AI_MODEL = process.env.IMAGE_AI_MODEL || '';
+
+// ── 날씨 API (OpenWeatherMap) ────────────────────────────────────────────
+const WEATHER_API_KEY = process.env.WEATHER_API_KEY || '';
+function weatherApiConfigured() { return Boolean(WEATHER_API_KEY); }
+// OpenWeatherMap의 condition id를 우리 규칙에서 쓰는 대분류로 단순화합니다.
+// https://openweathermap.org/weather-conditions 참고
+function classifyWeatherCondition(weatherId, tempC) {
+  if (weatherId >= 200 && weatherId < 600) return 'rain'; // 뇌우~비
+  if (weatherId >= 600 && weatherId < 700) return 'snow';
+  if (tempC >= 28) return 'hot';
+  if (tempC <= 5) return 'cold';
+  if (weatherId === 800) return 'clear';
+  return 'clouds';
+}
+async function fetchWeather(region) {
+  if (!WEATHER_API_KEY) { const e = new Error('WEATHER_API_KEY가 설정되지 않았습니다.'); e.status = 400; throw e; }
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(region)},KR&appid=${WEATHER_API_KEY}&units=metric&lang=kr`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.message || '날씨 정보를 가져오지 못했습니다.'); e.status = res.status === 404 ? 404 : 502; throw e; }
+  const tempC = data.main?.temp ?? null;
+  const weatherId = data.weather?.[0]?.id ?? 800;
+  return {
+    region, tempC, description: data.weather?.[0]?.description || '', icon: data.weather?.[0]?.icon || '',
+    humidity: data.main?.humidity ?? null, condition: classifyWeatherCondition(weatherId, tempC ?? 20),
+  };
+}
+function matchWeatherRules(weather, rules, industry) {
+  return rules.filter(r => {
+    if (!r.enabled) return false;
+    if (r.condition !== weather.condition) return false;
+    if (r.industry && r.industry !== industry) return false;
+    if (r.condition === 'hot' && r.temp_min != null && weather.tempC < Number(r.temp_min)) return false;
+    if (r.condition === 'cold' && r.temp_max != null && weather.tempC > Number(r.temp_max)) return false;
+    return true;
+  });
+}
+
+function imageAiConfigured() {
+  if (IMAGE_AI_PROVIDER === 'openai') return Boolean(IMAGE_AI_API_KEY);
+  if (IMAGE_AI_PROVIDER === 'custom') return Boolean(IMAGE_AI_API_URL);
+  return false;
+}
+
+function imageAiStatus() {
+  return { configured: imageAiConfigured(), provider: IMAGE_AI_PROVIDER || null };
+}
+
+/** 이미지 기획(표현방식·피사체·배경·문구·비율)을 하나의 생성 프롬프트 문장으로 정리합니다. */
+function buildImageAiPrompt(plan) {
+  const parts = [
+    plan.visualType && `${plan.visualType} 스타일`,
+    plan.subject && `메인 피사체: ${plan.subject}`,
+    plan.background && `배경: ${plan.background}`,
+    plan.mainText && `이미지 안에 강조할 메인 문구(참고용, 실제 텍스트 렌더링은 부정확할 수 있음): "${plan.mainText}"`,
+  ].filter(Boolean);
+  const base = parts.join(', ') || '광고용 제품 이미지';
+  return plan.extraPrompt ? `${base}. 추가 요청: ${plan.extraPrompt}` : base;
+}
+
+const IMAGE_SIZE_BY_RATIO = { '1:1': '1024x1024', '9:16': '1024x1792', '16:9': '1792x1024' };
+
+async function callExternalImageAi(plan) {
+  const prompt = buildImageAiPrompt(plan);
+  const size = IMAGE_SIZE_BY_RATIO[plan.ratio] || '1024x1024';
+
+  if (IMAGE_AI_PROVIDER === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${IMAGE_AI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: IMAGE_AI_MODEL || 'dall-e-3', prompt, size, n: 1 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    const images = (data.data || []).map(d => ({ url: d.url || null, base64: d.b64_json || null, revisedPrompt: d.revised_prompt || prompt }));
+    if (!images.length) throw new Error('AI가 이미지를 반환하지 않았습니다.');
+    return { images, prompt };
+  }
+
+  if (IMAGE_AI_PROVIDER === 'custom') {
+    const res = await fetch(IMAGE_AI_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, size, plan }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `외부 이미지 AI API HTTP ${res.status}`);
+    if (!Array.isArray(data.images) || !data.images.length) throw new Error('AI 응답 형식이 올바르지 않습니다. (images 필요)');
+    return { images: data.images.map(img => ({ url: img.url || null, base64: img.base64 || null, revisedPrompt: img.revisedPrompt || prompt })), prompt };
+  }
+
+  throw new Error('IMAGE_AI_PROVIDER가 설정되지 않았습니다.');
+}
+
+/* ========================================================================
+   광고 문구 자동 생성 — 외부 AI 연동
+   -----------------------------------------------------------------------
+   - AD_COPY_AI_PROVIDER 가 설정되어 있지 않으면(기본값) 프론트의 템플릿/규칙
+     기반 생성만 동작합니다(이건 서버 연결 없이도 이미 정상 작동합니다).
+   - 'anthropic' | 'openai' | 'custom' 중 하나로 설정하면 실제 외부 AI가
+     캠페인 정보를 바탕으로 서로 다른 각도의 문구 안을 생성합니다.
+   ======================================================================== */
+const AD_COPY_AI_PROVIDER = (process.env.AD_COPY_AI_PROVIDER || '').trim().toLowerCase();
+const AD_COPY_AI_API_KEY = process.env.AD_COPY_AI_API_KEY || '';
+const AD_COPY_AI_API_URL = process.env.AD_COPY_AI_API_URL || '';
+const AD_COPY_AI_MODEL = process.env.AD_COPY_AI_MODEL || '';
+
+function adCopyAiConfigured() {
+  if (AD_COPY_AI_PROVIDER === 'anthropic' || AD_COPY_AI_PROVIDER === 'openai') return Boolean(AD_COPY_AI_API_KEY);
+  if (AD_COPY_AI_PROVIDER === 'custom') return Boolean(AD_COPY_AI_API_URL);
+  return false;
+}
+function adCopyAiStatus() {
+  return { configured: adCopyAiConfigured(), provider: AD_COPY_AI_PROVIDER || null };
+}
+
+function buildAdCopyAiPrompts(brief) {
+  const system = [
+    '당신은 성과형 디지털 광고 카피라이터입니다. 아래 규칙을 반드시 지키세요.',
+    '1) 사실이 아닌 효능·효과·수치를 지어내지 않는다.',
+    '2) 근거 없는 최상급 표현(업계 1위, 100% 효과 등)을 쓰지 않는다.',
+    '3) 각 안은 서로 다른 설득 각도(angle)를 가져야 한다.',
+    '',
+    '반드시 아래 JSON 형식으로만 응답하세요. 코드블록이나 설명 텍스트 없이 순수 JSON만 출력합니다.',
+    '{"variants":[{"label":"A안","angle":"","headline":"","body":"","description":"","cta":""}]}',
+  ].join('\n');
+  const user = [
+    `광고주: ${brief.advertiserName}`,
+    `매체: ${brief.channel}`,
+    `상품/서비스: ${brief.productName}`,
+    `캠페인 목적: ${brief.objective}`,
+    brief.targetAudience && `타겟: ${brief.targetAudience}`,
+    brief.keyBenefit && `핵심 혜택: ${brief.keyBenefit}`,
+    brief.hookType && `선호 후킹 유형: ${brief.hookType}`,
+    brief.tone && `톤앤매너: ${brief.tone}`,
+    `CTA: ${brief.cta || '더 알아보기'}`,
+    `${Math.max(1, Math.min(5, brief.variantCount || 3))}개의 서로 다른 광고 문구 안을 만들어주세요.`,
+  ].filter(Boolean).join('\n');
+  return { system, user };
+}
+
+function parseAdCopyAiJson(text) {
+  const cleaned = String(text ?? '').replace(/```json/gi, '').replace(/```/g, '').trim();
+  let parsed;
+  try { parsed = JSON.parse(cleaned); } catch { throw new Error('AI 응답을 JSON으로 해석할 수 없습니다.'); }
+  if (!Array.isArray(parsed.variants) || !parsed.variants.length) throw new Error('AI 응답 형식이 올바르지 않습니다. (variants 필요)');
+  return parsed.variants.slice(0, 5).map((v, i) => ({
+    variantId: makeId('copy'),
+    label: cleanText(String(v?.label || `${String.fromCharCode(65 + i)}안`), 20),
+    angle: cleanText(String(v?.angle || ''), 40),
+    headline: cleanText(String(v?.headline || ''), 200),
+    body: cleanText(String(v?.body || ''), 500),
+    description: cleanText(String(v?.description || ''), 200),
+    cta: cleanText(String(v?.cta || ''), 40),
+  }));
+}
+
+async function callExternalAdCopyAi(brief) {
+  const { system, user } = buildAdCopyAiPrompts(brief);
+
+  if (AD_COPY_AI_PROVIDER === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': AD_COPY_AI_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: AD_COPY_AI_MODEL || 'claude-sonnet-4-6', max_tokens: 1500, system, messages: [{ role: 'user', content: user }] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `Anthropic API HTTP ${res.status}`);
+    const text = Array.isArray(data.content) ? data.content.map(b => b.text || '').join('') : '';
+    return parseAdCopyAiJson(text);
+  }
+
+  if (AD_COPY_AI_PROVIDER === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${AD_COPY_AI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: AD_COPY_AI_MODEL || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.8 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    const text = data?.choices?.[0]?.message?.content || '';
+    return parseAdCopyAiJson(text);
+  }
+
+  if (AD_COPY_AI_PROVIDER === 'custom') {
+    const res = await fetch(AD_COPY_AI_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ systemPrompt: system, userPrompt: user, brief }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `외부 AI API HTTP ${res.status}`);
+    if (Array.isArray(data.variants)) return parseAdCopyAiJson(JSON.stringify(data));
+    throw new Error('AI 응답 형식이 올바르지 않습니다. (variants 필요)');
+  }
+
+  throw new Error('AD_COPY_AI_PROVIDER가 설정되지 않았습니다.');
+}
 
 function base64url(input) {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 function base64urlDecode(input) {
-  return Buffer.from(input.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  const padded = input.replace(/-/g, '+').replace(/_/g, '/').padEnd(input.length + ((4 - (input.length % 4)) % 4), '=');
+  return Buffer.from(padded, 'base64').toString('utf8');
 }
+
 function signToken(payload) {
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const body = base64url(JSON.stringify(payload));
@@ -42,6 +1958,7 @@ function signToken(payload) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return `${header}.${body}.${signature}`;
 }
+
 function verifyToken(token) {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
@@ -52,871 +1969,73 @@ function verifyToken(token) {
   const sigBuf = Buffer.from(signature);
   const expBuf = Buffer.from(expected);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return null;
-  try {
-    const payload = JSON.parse(base64urlDecode(body));
-    if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
-    return payload;
-  } catch {
-    return null;
-  }
+  let payload;
+  try { payload = JSON.parse(base64urlDecode(body)); } catch { return null; }
+  if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
+  return payload;
 }
+
 function timingSafeStringEqual(a, b) {
   const aBuf = Buffer.from(String(a));
   const bBuf = Buffer.from(String(b));
-  if (aBuf.length !== bBuf.length) return false;
+  if (aBuf.length !== bBuf.length) {
+    // 길이가 다르면 항상 false지만, 타이밍 공격 방지를 위해 같은 길이의 더미 비교를 한 번 수행합니다.
+    crypto.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
-function cleanText(value, max = 1000) {
-  return String(value ?? '').trim().slice(0, max);
-}
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-}
 
-const AD_STATUSES = new Set(['draft','in-progress','review','completed','archived']);
-function normalizeAdProject(body = {}, current = null) {
-  const stamp = new Date().toISOString();
-  const base = current || {};
-  const stringList = (value, fallback = []) => Array.isArray(value) ? value.map(x => cleanText(x, 500)).slice(0, 20) : fallback;
-  const variantsSource = Array.isArray(body.copyVariants) ? body.copyVariants : (Array.isArray(base.copyVariants) ? base.copyVariants : []);
-  const copyVariants = variantsSource.slice(0, 3).map((v, index) => ({
-    variantId: cleanText(v?.variantId || `variant-${index + 1}`, 120),
-    label: cleanText(v?.label || `${String.fromCharCode(65 + index)}안`, 40),
-    headline: cleanText(v?.headline || '', 500),
-    description: cleanText(v?.description || '', 1000),
-    body: cleanText(v?.body || '', 12000),
-    cta: cleanText(v?.cta || '더 알아보기', 120),
-  }));
-  while (copyVariants.length < 3) {
-    const index = copyVariants.length;
-    copyVariants.push({ variantId:`variant-${index+1}`, label:`${String.fromCharCode(65+index)}안`, headline:'', description:'', body:'', cta:'더 알아보기' });
-  }
-  const imageSource = body.imagePlan && typeof body.imagePlan === 'object' ? body.imagePlan : (base.imagePlan || {});
-  const videoSource = body.videoPlan && typeof body.videoPlan === 'object' ? body.videoPlan : (base.videoPlan || {});
-  const statusCandidate = cleanText(body.status ?? base.status ?? 'draft', 40);
-  return {
-    ...base,
-    projectId: base.projectId || cleanText(body.projectId || '', 120),
-    title: cleanText(body.title ?? base.title ?? '새 광고 제작', 240),
-    advertiserId: cleanText(body.advertiserId ?? base.advertiserId ?? '', 120),
-    advertiserName: cleanText(body.advertiserName ?? base.advertiserName ?? '', 160),
-    channel: cleanText(body.channel ?? base.channel ?? '메타', 120),
-    objective: cleanText(body.objective ?? base.objective ?? 'DB 수집', 120),
-    creativeType: cleanText(body.creativeType ?? base.creativeType ?? '정사각형 이미지', 120),
-    representativeKpi: cleanText(body.representativeKpi ?? base.representativeKpi ?? 'DB당 비용', 120),
-    target: cleanText(body.target ?? base.target ?? '', 3000),
-    keyBenefit: cleanText(body.keyBenefit ?? base.keyBenefit ?? '', 3000),
-    price: cleanText(body.price ?? base.price ?? '', 1000),
-    mandatoryText: cleanText(body.mandatoryText ?? base.mandatoryText ?? '', 6000),
-    prohibitedText: cleanText(body.prohibitedText ?? base.prohibitedText ?? '', 6000),
-    landingUrl: cleanText(body.landingUrl ?? base.landingUrl ?? '', 2000),
-    format: cleanText(body.format ?? base.format ?? '1:1', 80),
-    hookType: cleanText(body.hookType ?? base.hookType ?? '', 120),
-    hooks: (() => { const values = stringList(body.hooks, Array.isArray(base.hooks) ? base.hooks : ['', '', '']).slice(0, 3); while (values.length < 3) values.push(''); return values; })(),
-    copyVariants,
-    imagePlan: {
-      visualType: cleanText(imageSource.visualType || '', 500), subject: cleanText(imageSource.subject || '', 3000),
-      background: cleanText(imageSource.background || '', 3000), mainText: cleanText(imageSource.mainText || '', 1500),
-      subText: cleanText(imageSource.subText || '', 1500), ratio: cleanText(imageSource.ratio || '1:1', 80), textRatio: cleanText(imageSource.textRatio || '', 120),
-    },
-    videoPlan: {
-      length: cleanText(videoSource.length || '', 120), style: cleanText(videoSource.style || '', 500),
-      hook3s: cleanText(videoSource.hook3s || '', 3000), scenes: cleanText(videoSource.scenes || '', 12000), endingCta: cleanText(videoSource.endingCta || '', 1500),
-    },
-    referenceIds: stringList(body.referenceIds, Array.isArray(base.referenceIds) ? base.referenceIds : []).slice(0, 100),
-    resultAssetIds: stringList(body.resultAssetIds, Array.isArray(base.resultAssetIds) ? base.resultAssetIds : []).slice(0, 100),
-    status: AD_STATUSES.has(statusCandidate) ? statusCandidate : 'draft',
-    createdAt: base.createdAt || cleanText(body.createdAt || stamp, 80),
-    updatedAt: stamp,
-  };
+function bearerToken(req) {
+  const header = req.headers.authorization || '';
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match ? match[1] : null;
 }
 
-let pgPool = null;
-if (DATABASE_URL) {
-  try {
-    const pg = await import('pg');
-    pgPool = new pg.default.Pool({
-      connectionString: DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      max: 3,
-    });
-  } catch (error) {
-    console.error('[오류] PostgreSQL 연결 모듈을 초기화하지 못했습니다:', error?.message || error);
-  }
-} else {
-  console.warn('[안내] DATABASE_URL이 없어 DB 기능은 사용할 수 없습니다.');
-}
-
-let cachedTenantId = null;
-async function getCurrentTenantId() {
-  if (cachedTenantId) return cachedTenantId;
-  if (!pgPool) return null;
-  const result = await pgPool.query(`SELECT id FROM tenants WHERE slug = 'howtom' LIMIT 1`);
-  cachedTenantId = result.rows[0]?.id || null;
-  return cachedTenantId;
-}
-
-async function ensureAdTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS ad_projects (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_ad_projects_tenant ON ad_projects(tenant_id);
-    CREATE INDEX IF NOT EXISTS idx_ad_projects_advertiser ON ad_projects(tenant_id, advertiser_id);
-  `);
-}
-
-function normalizeTemplate(body = {}, current = null) {
-  const base = current || {};
-  const blocksSource = Array.isArray(body.blocks) ? body.blocks : (Array.isArray(base.blocks) ? base.blocks : []);
-  const blocks = blocksSource.slice(0, 20).map((b, i) => ({
-    blockId: cleanText(b?.blockId || `block-${i + 1}`, 60),
-    label: cleanText(b?.label || `블록 ${i + 1}`, 120),
-    blockType: cleanText(b?.blockType || 'textarea', 30),
-    defaultValue: cleanText(b?.defaultValue || '', 4000),
-  }));
-  const rulesSource = Array.isArray(body.rules) ? body.rules : (Array.isArray(base.rules) ? base.rules : []);
-  const rules = rulesSource.slice(0, 10).map(r => ({ field: cleanText(r?.field || '', 60), type: cleanText(r?.type || 'maxLength', 30), value: typeof r?.value === 'number' ? r.value : cleanText(r?.value || '', 200) }));
-  const tags = Array.isArray(body.tags) ? body.tags.map(x => cleanText(x, 60)).filter(Boolean).slice(0, 20) : (base.tags || []);
-  return {
-    ...base,
-    templateId: base.templateId || cleanText(body.templateId || '', 120),
-    name: cleanText(body.name ?? base.name ?? '새 템플릿', 200),
-    templateType: cleanText(body.templateType ?? base.templateType ?? 'ad-copy', 40),
-    advertiserId: cleanText(body.advertiserId ?? base.advertiserId ?? '', 120) || null,
-    advertiserName: cleanText(body.advertiserName ?? base.advertiserName ?? '', 160),
-    channel: cleanText(body.channel ?? base.channel ?? '', 120),
-    description: cleanText(body.description ?? base.description ?? '', 500),
-    blocks, rules, tags,
-    version: Number.isFinite(body.version) ? body.version : (base.version ?? 1),
-    isFavorite: typeof body.isFavorite === 'boolean' ? body.isFavorite : (base.isFavorite ?? false),
-    useCount: Number.isFinite(body.useCount) ? body.useCount : (base.useCount ?? 0),
-    parentTemplateId: cleanText(body.parentTemplateId ?? base.parentTemplateId ?? '', 120) || null,
-  };
-}
-
-async function ensureTemplateTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS content_templates (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      template_type TEXT NOT NULL DEFAULT 'ad-copy',
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_content_templates_tenant ON content_templates(tenant_id);
-  `);
-}
-
-function normalizeDocumentProject(body = {}, current = null) {
-  const base = current || {};
-  const blocksSource = Array.isArray(body.blocks) ? body.blocks : (Array.isArray(base.blocks) ? base.blocks : []);
-  const blocks = blocksSource.slice(0, 60).map((b, i) => ({
-    blockId: cleanText(b?.blockId || `doc-${i + 1}`, 60),
-    type: cleanText(b?.type || 'paragraph', 20),
-    title: cleanText(b?.title || '', 200),
-    text: cleanText(b?.text || '', 8000),
-  }));
-  return {
-    ...base,
-    projectId: base.projectId || cleanText(body.projectId || '', 120),
-    title: cleanText(body.title ?? base.title ?? '새 문서', 240),
-    advertiserId: cleanText(body.advertiserId ?? base.advertiserId ?? '', 120),
-    advertiserName: cleanText(body.advertiserName ?? base.advertiserName ?? '', 160),
-    documentType: cleanText(body.documentType ?? base.documentType ?? '기획서', 60),
-    blocks,
-    status: cleanText(body.status ?? base.status ?? 'draft', 40),
-  };
-}
-
-async function ensureDocumentTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS document_projects (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_document_projects_tenant ON document_projects(tenant_id);
-  `);
-}
-
-function normalizeVideoScriptProject(body = {}, current = null) {
-  const base = current || {};
-  const scenesSource = Array.isArray(body.scenes) ? body.scenes : (Array.isArray(base.scenes) ? base.scenes : []);
-  const scenes = scenesSource.slice(0, 40).map((s, i) => ({
-    sceneId: cleanText(s?.sceneId || `scene-${i + 1}`, 60),
-    order: Number.isFinite(s?.order) ? s.order : i + 1,
-    startSecond: Number.isFinite(s?.startSecond) ? s.startSecond : 0,
-    endSecond: Number.isFinite(s?.endSecond) ? s.endSecond : 0,
-    purpose: cleanText(s?.purpose || 'other', 20),
-    visual: cleanText(s?.visual || '', 500),
-    narration: cleanText(s?.narration || '', 1000),
-    caption: cleanText(s?.caption || '', 500),
-  }));
-  return {
-    ...base,
-    projectId: base.projectId || cleanText(body.projectId || '', 120),
-    title: cleanText(body.title ?? base.title ?? '새 영상 대본', 240),
-    advertiserId: cleanText(body.advertiserId ?? base.advertiserId ?? '', 120),
-    advertiserName: cleanText(body.advertiserName ?? base.advertiserName ?? '', 160),
-    videoType: cleanText(body.videoType ?? base.videoType ?? '숏폼 광고', 60),
-    targetSeconds: Number.isFinite(body.targetSeconds) ? body.targetSeconds : (base.targetSeconds ?? 30),
-    ratio: cleanText(body.ratio ?? base.ratio ?? '9:16', 20),
-    keyMessage: cleanText(body.keyMessage ?? base.keyMessage ?? '', 500),
-    cta: cleanText(body.cta ?? base.cta ?? '', 120),
-    scenes,
-    status: cleanText(body.status ?? base.status ?? 'draft', 40),
-  };
-}
-
-async function ensureVideoScriptTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS video_script_projects (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_video_script_projects_tenant ON video_script_projects(tenant_id);
-  `);
-}
-
-async function ensureAssetTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS content_assets (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      asset_type TEXT NOT NULL,
-      name TEXT NOT NULL,
-      url TEXT,
-      tags TEXT[] NOT NULL DEFAULT '{}',
-      memo TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_content_assets_tenant ON content_assets(tenant_id, asset_type);
-  `);
-}
-
-async function ensureReferenceTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    -- 저장된 레퍼런스(광고). 검색 결과 자체는 저장하지 않고, 사용자가 "저장" 누른 것만 여기 들어옵니다.
-    CREATE TABLE IF NOT EXISTS content_references (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      platform TEXT NOT NULL DEFAULT 'meta',
-      external_id TEXT,
-      page_name TEXT,
-      is_competitor BOOLEAN NOT NULL DEFAULT false,
-      body TEXT,
-      headline TEXT,
-      description TEXT,
-      cta TEXT,
-      landing_url TEXT,
-      thumbnail_url TEXT,
-      media_type TEXT,
-      ad_snapshot_url TEXT,
-      country TEXT,
-      start_date DATE,
-      is_active BOOLEAN,
-      flight_days INTEGER,
-      view_count BIGINT,
-      like_count BIGINT,
-      tags TEXT[] NOT NULL DEFAULT '{}',
-      memo TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_content_references_tenant ON content_references(tenant_id, advertiser_id);
-
-    -- 광고주별로 등록해두는 경쟁 브랜드 목록
-    CREATE TABLE IF NOT EXISTS reference_competitors (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
-      brand_name TEXT NOT NULL,
-      page_name TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_reference_competitors_advertiser ON reference_competitors(advertiser_id);
-
-    -- 레퍼런스 보드(폴더처럼 레퍼런스를 모아두는 단위)
-    CREATE TABLE IF NOT EXISTS reference_boards (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      name TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_reference_boards_tenant ON reference_boards(tenant_id);
-
-    -- 하나의 레퍼런스가 여러 보드에 동시에 들어갈 수 있도록 하는 다대다 연결 테이블
-    CREATE TABLE IF NOT EXISTS reference_board_items (
-      board_id TEXT NOT NULL REFERENCES reference_boards(id) ON DELETE CASCADE,
-      reference_id TEXT NOT NULL REFERENCES content_references(id) ON DELETE CASCADE,
-      added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      PRIMARY KEY (board_id, reference_id)
-    );
-    ALTER TABLE content_references ADD COLUMN IF NOT EXISTS view_count BIGINT;
-    ALTER TABLE content_references ADD COLUMN IF NOT EXISTS like_count BIGINT;
-    ALTER TABLE content_references ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
-    ALTER TABLE content_references ADD COLUMN IF NOT EXISTS ai_analyzed_at TIMESTAMPTZ;
-  `);
-}
-
-/**
- * Meta 광고 라이브러리(Ad Library) 연동
- * ------------------------------------------------------------
- * 중요: 광고 성과 조회용 META_ACCESS_TOKEN과는 완전히 별개입니다. 신원 확인(Identity
- * Confirmation, facebook.com/ID)을 통과한 계정/앱의 토큰이 필요합니다. 이미지·영상 원본
- * 파일은 제공하지 않으며(ad_snapshot_url로 미리보기 페이지만 제공), 상업 광고의 노출·지출
- * 데이터도 기본적으로 제공되지 않습니다 - 지원되지 않는 성과 데이터를 지어내지 않습니다.
- */
-const META_AD_LIBRARY_TOKEN = process.env.META_AD_LIBRARY_ACCESS_TOKEN || '';
-const AD_LIBRARY_FIELDS = [
-  'id', 'page_id', 'page_name', 'ad_creation_time', 'ad_delivery_start_time', 'ad_delivery_stop_time',
-  'ad_creative_bodies', 'ad_creative_link_titles', 'ad_creative_link_descriptions', 'ad_creative_link_captions',
-  'ad_snapshot_url', 'publisher_platforms', 'languages',
-].join(',');
-function adLibraryConfigured() { return Boolean(META_AD_LIBRARY_TOKEN); }
-
-/** 광고 시작일과 종료 여부로 게재일수를 계산합니다(종료됐으면 종료일까지, 운영 중이면 오늘까지). */
-function computeFlightDays(startTime, stopTime) {
-  if (!startTime) return null;
-  const start = new Date(startTime);
-  const end = stopTime ? new Date(stopTime) : new Date();
-  const days = Math.round((end.getTime() - start.getTime()) / 86_400_000);
-  return Number.isFinite(days) && days >= 0 ? days : null;
-}
-function normalizeAdLibraryRow(row) {
-  const flightDays = computeFlightDays(row.ad_delivery_start_time, row.ad_delivery_stop_time);
-  return {
-    externalId: row.id, pageId: row.page_id || null, pageName: row.page_name || '(페이지명 없음)',
-    body: (row.ad_creative_bodies || [])[0] || '', headline: (row.ad_creative_link_titles || [])[0] || '',
-    description: (row.ad_creative_link_descriptions || [])[0] || '', cta: (row.ad_creative_link_captions || [])[0] || '',
-    adSnapshotUrl: row.ad_snapshot_url || null,
-    startDate: row.ad_delivery_start_time ? row.ad_delivery_start_time.slice(0, 10) : null,
-    isActive: !row.ad_delivery_stop_time, flightDays,
-    // 30일 이상 계속 게재 중이면 "장기 게재" 후보로 봅니다. 실제 성과(ROAS 등)를 확인한 게
-    // 아니므로 "성과 우수"라고 단정하지 않고 "장기 게재"라고만 표현합니다.
-    isLongRunning: flightDays !== null && flightDays >= 30 && !row.ad_delivery_stop_time,
-    platforms: row.publisher_platforms || [],
-  };
-}
-/** 키워드 또는 특정 페이지 ID로 Meta 광고 라이브러리를 검색합니다. */
-async function searchMetaAdLibrary({ keyword, pageIds, country = 'KR' }) {
-  if (!adLibraryConfigured()) throw new Error('Meta 광고 라이브러리 API가 연결되지 않았습니다. 관리자가 META_AD_LIBRARY_ACCESS_TOKEN(신원 확인을 마친 토큰)을 설정해야 합니다.');
-  if (!keyword && (!pageIds || !pageIds.length)) throw new Error('검색어 또는 경쟁 브랜드(페이지)를 선택하세요.');
-  const params = new URLSearchParams({ access_token: META_AD_LIBRARY_TOKEN, ad_reached_countries: JSON.stringify([country]), ad_type: 'ALL', fields: AD_LIBRARY_FIELDS, limit: '50' });
-  if (keyword) params.set('search_terms', keyword);
-  if (pageIds && pageIds.length) params.set('search_page_ids', JSON.stringify(pageIds));
-  const res = await fetch(`https://graph.facebook.com/v21.0/ads_archive?${params.toString()}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `Meta 광고 라이브러리 API HTTP ${res.status}`);
-  return (data.data || []).map(normalizeAdLibraryRow);
-}
-
-/**
- * YouTube 커넥터 (PHASE 5)
- * ------------------------------------------------------------
- * Meta 광고 라이브러리와 달리 YouTube는 "광고 라이브러리" 개념이 없어, 일반 공개
- * 영상을 검색합니다(경쟁사 채널 리서치·인기 영상 참고용). 조회수·좋아요 수는 YouTube가
- * 공개적으로 제공하는 값이라 표시해도 되지만, 실제 광고 성과(클릭·전환 등)는 알 수 없으므로
- * 절대 표시하지 않습니다.
- */
-const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
-function youtubeConfigured() { return Boolean(YOUTUBE_API_KEY); }
-
-async function searchYoutubeVideos({ keyword, channelId }) {
-  if (!youtubeConfigured()) throw new Error('YouTube 연동이 설정되지 않았습니다. 관리자가 YOUTUBE_API_KEY(YouTube Data API v3)를 등록해야 합니다.');
-  if (!keyword && !channelId) throw new Error('검색어 또는 경쟁 채널을 선택하세요.');
-  const searchParams = new URLSearchParams({ key: YOUTUBE_API_KEY, part: 'snippet', type: 'video', order: 'date', maxResults: '25', regionCode: 'KR', relevanceLanguage: 'ko' });
-  if (keyword) searchParams.set('q', keyword);
-  if (channelId) searchParams.set('channelId', channelId);
-  const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`);
-  const searchData = await searchRes.json();
-  if (!searchRes.ok) throw new Error(searchData?.error?.message || `YouTube API HTTP ${searchRes.status}`);
-  const videoIds = (searchData.items || []).map(item => item.id?.videoId).filter(Boolean);
-  if (!videoIds.length) return [];
-
-  // 조회수·좋아요 수는 검색 결과에 없어서, videos.list로 한 번 더 조회합니다.
-  const statsParams = new URLSearchParams({ key: YOUTUBE_API_KEY, part: 'statistics,contentDetails', id: videoIds.join(',') });
-  const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?${statsParams.toString()}`);
-  const statsData = await statsRes.json();
-  const statsById = new Map((statsData.items || []).map(item => [item.id, item]));
-
-  return (searchData.items || []).map(item => {
-    const videoId = item.id?.videoId;
-    const stats = statsById.get(videoId);
-    return {
-      externalId: videoId,
-      pageId: item.snippet?.channelId || null,
-      pageName: item.snippet?.channelTitle || '(채널명 없음)',
-      headline: item.snippet?.title || '',
-      description: item.snippet?.description || '',
-      body: '', cta: '',
-      thumbnailUrl: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.default?.url || null,
-      adSnapshotUrl: videoId ? `https://www.youtube.com/watch?v=${videoId}` : null,
-      startDate: item.snippet?.publishedAt ? item.snippet.publishedAt.slice(0, 10) : null,
-      isActive: true, flightDays: null, isLongRunning: false, platforms: ['youtube'],
-      viewCount: stats?.statistics?.viewCount ? Number(stats.statistics.viewCount) : null,
-      likeCount: stats?.statistics?.likeCount ? Number(stats.statistics.likeCount) : null,
-    };
-  });
-}
-
-/**
- * Instagram 일반 콘텐츠 (PHASE 6) — 해시태그 검색
- * ------------------------------------------------------------
- * Instagram Graph API의 공식 해시태그 검색만 사용합니다(비공식 스크래핑 없음).
- * 이 API는 특성상 "내가 연결한 비즈니스 계정을 대신해서" 검색하는 구조라 매번
- * ig_business_account_id가 필요하고, 그 계정 기준으로 주당 30개 해시태그까지만
- * 검색할 수 있습니다(Meta의 API 제약, HOWTOM이 만든 제약이 아닙니다).
- */
-const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-function instagramConfigured() { return Boolean(META_ACCESS_TOKEN); }
-
-async function searchInstagramHashtag({ hashtag, igBusinessAccountId }) {
-  if (!instagramConfigured()) throw new Error('Instagram 연동이 설정되지 않았습니다. 관리자가 META_ACCESS_TOKEN을 등록해야 합니다.');
-  if (!hashtag) throw new Error('검색할 해시태그를 입력하세요.');
-  if (!igBusinessAccountId) throw new Error('Instagram 비즈니스 계정 ID를 입력하세요. (설정 > 매체 계정 연동에서 연결한 Instagram 계정 ID)');
-  const clean = hashtag.replace(/^#/, '');
-
-  const hashtagRes = await fetch(`https://graph.facebook.com/v21.0/ig_hashtag_search?user_id=${igBusinessAccountId}&q=${encodeURIComponent(clean)}&access_token=${META_ACCESS_TOKEN}`);
-  const hashtagData = await hashtagRes.json();
-  if (!hashtagRes.ok) throw new Error(hashtagData?.error?.message || `Instagram 해시태그 검색 API HTTP ${hashtagRes.status}`);
-  const hashtagId = hashtagData?.data?.[0]?.id;
-  if (!hashtagId) return [];
-
-  const fields = 'id,caption,media_type,media_url,permalink,thumbnail_url,like_count,comments_count,timestamp';
-  const mediaRes = await fetch(`https://graph.facebook.com/v21.0/${hashtagId}/top_media?user_id=${igBusinessAccountId}&fields=${fields}&access_token=${META_ACCESS_TOKEN}`);
-  const mediaData = await mediaRes.json();
-  if (!mediaRes.ok) throw new Error(mediaData?.error?.message || `Instagram 미디어 조회 API HTTP ${mediaRes.status}`);
-
-  return (mediaData.data || []).map(item => ({
-    externalId: item.id, pageId: null, pageName: `#${clean}`,
-    headline: '', description: item.caption || '', body: item.caption || '', cta: '',
-    thumbnailUrl: item.media_type === 'VIDEO' ? (item.thumbnail_url || null) : (item.media_url || null),
-    adSnapshotUrl: item.permalink || null,
-    startDate: item.timestamp ? item.timestamp.slice(0, 10) : null,
-    isActive: true, flightDays: null, isLongRunning: false, platforms: ['instagram'],
-    viewCount: null, likeCount: item.like_count ?? null,
-  }));
-}
-
-/**
- * AI Gateway (PHASE 7)
- * ------------------------------------------------------------
- * 콘텐츠 제작소 안의 여러 기능(블로그 초안, 레퍼런스 분석 등)이 전부 이 함수 하나를
- * 공유합니다. 나중에 AI 공급사를 바꾸거나 추가할 때 이 파일의 이 부분만 고치면 됩니다.
- * 각 기능은 "무엇을 물어볼지(system/user 프롬프트)"만 책임지고, "어떻게 호출할지"는
- * 여기서 전부 처리합니다.
- */
-const AI_PROVIDER = (process.env.AI_PROVIDER || '').trim().toLowerCase();
-const AI_API_KEY = process.env.AI_API_KEY || '';
-const AI_API_URL = process.env.AI_API_URL || '';
-const AI_MODEL = process.env.AI_MODEL || '';
-function aiConfigured() {
-  if (AI_PROVIDER === 'anthropic' || AI_PROVIDER === 'openai') return Boolean(AI_API_KEY);
-  if (AI_PROVIDER === 'custom') return Boolean(AI_API_URL);
-  return false;
-}
-/** system/user 프롬프트를 받아 AI의 텍스트 응답(문자열)을 그대로 돌려줍니다. */
-async function callAI({ system, user, maxTokens = 1500 }) {
-  if (!aiConfigured()) throw new Error('AI가 연결되지 않았습니다. 관리자가 AI_PROVIDER/AI_API_KEY(또는 AI_API_URL)를 설정해야 합니다.');
-  if (AI_PROVIDER === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST', headers: { 'x-api-key': AI_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: AI_MODEL || 'claude-sonnet-4-6', max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `Anthropic API HTTP ${res.status}`);
-    return Array.isArray(data.content) ? data.content.map(b => b.text || '').join('') : '';
-  }
-  if (AI_PROVIDER === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST', headers: { Authorization: `Bearer ${AI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: AI_MODEL || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.7 }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
-    return data?.choices?.[0]?.message?.content || '';
-  }
-  // 커스텀: 사내 AI 서버 등 자체 API를 붙일 때 사용합니다.
-  const res = await fetch(AI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system, user }) });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `커스텀 AI API HTTP ${res.status}`);
-  return data.text || data.result || JSON.stringify(data);
-}
-/** AI 응답에서 ```json 코드블록 등을 걷어내고 JSON으로 해석합니다. */
-function parseAiJsonResponse(text) {
-  const cleaned = String(text ?? '').replace(/```json/gi, '').replace(/```/g, '').trim();
-  try { return JSON.parse(cleaned); } catch { throw new Error('AI 응답을 JSON으로 해석할 수 없습니다.'); }
-}
-
-/**
- * BlogGenerationProvider (제휴 업체 API Adapter)
- * ------------------------------------------------------------
- * 블로그 원고 생성은 위의 공용 AI Gateway(callAI)와 의도적으로 분리합니다.
- * 이유: 나중에 블로그 원고 제휴 업체가 바뀌거나 확정되어도, 레퍼런스 분석 등
- * 다른 AI 기능(공용 Gateway 사용)에는 영향이 없도록 하기 위함입니다.
- * 제휴 업체가 확정되기 전까지는 아래 두 환경변수가 비어있고, 이 경우
- * "연동 필요" 상태를 정직하게 반환합니다(가짜 원고를 만들지 않음).
- */
-const BLOG_PARTNER_API_URL = process.env.BLOG_PARTNER_API_URL || '';
-const BLOG_PARTNER_API_KEY = process.env.BLOG_PARTNER_API_KEY || '';
-function blogGenerationConfigured() { return Boolean(AUTOPOST_PRO_API_KEY) || Boolean(BLOG_PARTNER_API_URL); }
-
-/* ========================================================================
-   오토포스트 Pro 연동 (㈜시온랩스 제휴 API, aiblog.zionlabs.org)
-   -----------------------------------------------------------------------
-   HOWTOM Universe에서 먼저 만들어 검증한 연동을 그대로 옮겨왔습니다(같은
-   DATABASE_URL을 공유하므로 advertisers.business_reg_no/autopost_pro_industry,
-   autopost_pro_seats 테이블도 그대로 씁니다). 광고주(사업자등록번호) 기준으로
-   좌석(seat)을 만들고, 그 좌석으로 블로그 초안을 생성합니다. 무료체험 3건 이후
-   유료 전환, 월 한도 초과 시 건당 3,000원 과금 - 실제 돈이 오가는 연동이라
-   서버가 임의로 confirm_overage=true를 보내는 일은 없고, 프론트에서 사용자가
-   명시적으로 동의한 경우에만 전달합니다.
-   ======================================================================== */
-const AUTOPOST_PRO_API_KEY = process.env.AUTOPOST_PRO_API_KEY || '';
-const AUTOPOST_PRO_BASE_URL = process.env.AUTOPOST_PRO_BASE_URL || 'https://aiblog.zionlabs.org';
-function autopostProConfigured() { return Boolean(AUTOPOST_PRO_API_KEY); }
-
-/**
- * 오토포스트 Pro 호출 - Timeout과 재시도 정책을 명시적으로 둡니다.
- * - Timeout: 90초 (60~120초 권장 범위 중간값)
- * - 재시도 대상: 네트워크 오류, Timeout, 503만 - 최대 2회, 1초 → 3초 간격
- * - 재시도 키: 최초 호출과 완전히 동일한 Idempotency-Key를 그대로 재사용합니다
- *   (다른 키를 쓰면 오토포스트 Pro 쪽에서 별개 요청으로 처리해 중복 과금될 수 있습니다).
- * - 재시도 금지: 400(입력 오류)·401(키 오류)·404(seat 없음)·409(한도 초과 동의 필요)는
- *   재시도해도 결과가 달라지지 않거나, 사용자 확인이 먼저 필요한 상태라 그대로 던집니다.
- */
-const AUTOPOST_PRO_TIMEOUT_MS = 90_000;
-const AUTOPOST_PRO_RETRY_DELAYS_MS = [1000, 3000];
-// 재시도 대상은 네트워크 오류·Timeout·503뿐입니다. 400(입력 오류)·401(키 오류)·
-// 404(seat 없음)·409(한도 초과 동의 필요)는 아래에서 503이 아니면 재시도하지 않는
-// 분기로 이미 자연스럽게 제외됩니다 - 재시도해도 결과가 달라지지 않거나 사용자
-// 확인이 먼저 필요한 상태이기 때문입니다.
-
-async function autopostProRequest(method, path, body, extraHeaders, attempt = 0) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), AUTOPOST_PRO_TIMEOUT_MS);
-  let res;
-  try {
-    res = await fetch(`${AUTOPOST_PRO_BASE_URL}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${AUTOPOST_PRO_API_KEY}`, 'Content-Type': 'application/json', ...(extraHeaders || {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-  } catch (networkError) {
-    clearTimeout(timeoutId);
-    // AbortError(Timeout 포함)와 일반 네트워크 오류만 재시도 대상입니다.
-    if (attempt < AUTOPOST_PRO_RETRY_DELAYS_MS.length) {
-      await new Promise(r => setTimeout(r, AUTOPOST_PRO_RETRY_DELAYS_MS[attempt]));
-      return autopostProRequest(method, path, body, extraHeaders, attempt + 1);
-    }
-    const timedOut = networkError?.name === 'AbortError';
-    const err = new Error(timedOut ? '오토포스트 Pro API 응답이 지연되어 시간 초과되었습니다(재시도 2회 모두 실패).' : `오토포스트 Pro API 연결에 실패했습니다: ${networkError?.message || networkError}`);
-    err.code = timedOut ? 'timeout' : 'network_error';
-    throw err;
-  }
-  clearTimeout(timeoutId);
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    if (res.status === 503 && attempt < AUTOPOST_PRO_RETRY_DELAYS_MS.length) {
-      await new Promise(r => setTimeout(r, AUTOPOST_PRO_RETRY_DELAYS_MS[attempt]));
-      return autopostProRequest(method, path, body, extraHeaders, attempt + 1);
-    }
-    const err = new Error(data?.error?.message || `오토포스트 Pro API HTTP ${res.status}`);
-    err.code = data?.error?.code; err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-
-// HOWTOM 자체 업종(한글)을 오토포스트 Pro의 업종 코드(영문)로 매핑합니다. 매핑에 없는
-// 업종은 advertiser.autopost_pro_industry에 제휴사가 안내해준 코드를 직접 입력해 쓰면 됩니다.
-const AUTOPOST_INDUSTRY_MAP = {
-  '병원·의료기관': 'medical', '치과': 'medical', '한의원': 'medical',
-  '동물병원': 'vet', '세무사·세무법인': 'tax', '학원·교육': 'academy',
+const ADMIN_USER = {
+  id: 1,
+  email: ADMIN_EMAIL,
+  name: process.env.HOWTOM_ADMIN_NAME || '관리자',
+  nickname: process.env.HOWTOM_ADMIN_NICKNAME || '',
+  role: 'admin',
+  advertiser_id: null,
+  isOwner: true,
 };
-function mapIndustryToAutopostCode(advertiser) {
-  if (advertiser.autopost_pro_industry) return advertiser.autopost_pro_industry;
-  return AUTOPOST_INDUSTRY_MAP[advertiser.industry || ''] || advertiser.industry || '';
-}
-/** 오토포스트 Pro API가 실제로 받는 길이 값은 이 4개뿐입니다(짧게 700~900 / 보통
- * 1,100~1,500 / 길게 1,800~2,400 / 자동). 그 외 값은 API가 거부하므로, 화면에서
- * 어떤 값이 와도 이 4개 중 하나로 정확히 매핑합니다. */
-const AUTOPOST_LENGTH_VALUES = ['short', 'medium', 'long', 'auto'];
-/**
- * PostgreSQL의 텍스트/JSONB 타입은 두 가지를 담지 못합니다:
- * 1) NUL(\u0000) 바이트
- * 2) 서로 짝이 안 맞는 surrogate 문자(깨진 이모지 등 - AI가 이모지를 생성하다 잘리면 흔히 생김)
- * 이 중 하나라도 있으면 INSERT/UPDATE 자체가 "invalid input syntax" 류 오류로 실패합니다.
- * 예전엔 blog_projects에 저장하기 "직전"에만 개별 필드를 정제했는데, 그보다 먼저 실행되는
- * blog_generation_requests INSERT(외부 API 응답을 그대로 캐싱하는 단계)가 깨진 문자 때문에
- * 이미 실패해버리면 정제 코드까지 도달하지도 못했습니다. 그래서 외부 API 응답을 받은
- * "직후", 첫 DB 저장보다 먼저, 객체 전체(중첩 배열·객체 포함)를 재귀적으로 정제합니다.
- */
-function sanitizeDeep(value) {
-  if (typeof value === 'string') {
-    return value
-      .replace(/\u0000/g, '')
-      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
-      .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
-  }
-  if (Array.isArray(value)) return value.map(sanitizeDeep);
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const k of Object.keys(value)) out[k] = sanitizeDeep(value[k]);
-    return out;
-  }
-  return value;
-}
-function mapLengthToAutopostCode(input) {
-  if (AUTOPOST_LENGTH_VALUES.includes(input)) return input;
-  const n = Number(input);
-  if (Number.isFinite(n)) {
-    if (n <= 900) return 'short';
-    if (n <= 1500) return 'medium';
-    return 'long'; // 1,800~2,400 이상 요청도 API 최대치인 long으로 보냅니다(3,000자 등 초과 요청 포함).
-  }
-  return 'auto';
-}
 
-/** 이 광고주가 오토포스트 Pro를 쓸 수 있는지(업종 지원 여부)만 가볍게 확인합니다 -
- * 실제로 좌석을 만들지는 않아서, 생성 버튼을 누르기 전에 화면에서 안내만 하고 싶을 때 씁니다. */
-function isAutopostSupportedAdvertiser(advertiser) {
-  if (!advertiser) return false;
-  const industryCode = mapIndustryToAutopostCode(advertiser);
-  return ['medical', 'tax', 'academy', 'vet'].includes(industryCode);
-}
+const ALL_INTERNAL_PERMISSIONS = ['dashboard.view','ads.view','campaign.view','campaign.edit','insights.view','insights.ai.use','reports.view','reports.proposal','reports.generate','reports.approve','content.create','content.approve','content.blog','assets.view','assets.upload','automation.view','automation.manage','advertisers.view','advertisers.manage','settings.manage','admin.users.manage','admin.roles.manage','admin.plans.manage','admin.system.manage'];
+const MARKETER_PERMISSIONS = ['dashboard.view','ads.view','campaign.view','campaign.edit','insights.view','insights.ai.use','reports.view','reports.proposal','reports.generate','content.create','content.blog','assets.view','assets.upload','automation.view','advertisers.view'];
+const DESIGNER_PERMISSIONS = ['dashboard.view','insights.view','content.create','assets.view','assets.upload','advertisers.view'];
+const DEFAULT_ROLE_SEED = [
+  { name: '관리자', description: 'HOWTOM 전체 설정과 관리 기능을 사용할 수 있습니다.', scope: 'internal', permission_keys: ALL_INTERNAL_PERMISSIONS, is_system: true },
+  { name: '마케터', description: '광고 운영·분석·보고서·콘텐츠 실무 권한입니다.', scope: 'internal', permission_keys: MARKETER_PERMISSIONS, is_system: true },
+  { name: '디자이너', description: '콘텐츠·자산·소재 인사이트 중심 권한입니다.', scope: 'internal', permission_keys: DESIGNER_PERMISSIONS, is_system: true },
+];
 
-async function ensureAutopostProSeatsTable() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS autopost_pro_seats (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
-      seat_id TEXT NOT NULL,
-      plan TEXT, trial_remaining INTEGER, status TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(advertiser_id)
+async function ensureDefaultRoles(tenantId) {
+  const existing = await pgPool.query('SELECT count(*) FROM app_roles WHERE tenant_id = $1', [tenantId]);
+  if (Number(existing.rows[0].count) > 0) return;
+  for (const role of DEFAULT_ROLE_SEED) {
+    await pgPool.query(
+      'INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys, is_system) VALUES ($1,$2,$3,$4,$5,$6)',
+      [tenantId, role.name, role.description, role.scope, role.permission_keys, role.is_system]
     );
-  `);
-  // 중복 과금 방지: 생성 시도 하나당 Idempotency-Key 하나를 끝까지 재사용합니다.
-  // status: requested(시도 중) → ai_completed(AI 생성 성공, HOWTOM 저장 전) → completed(저장까지 완료).
-  // ai_completed에서 멈춘 경우는 "생성 실패"가 아니라 "이미 과금됐을 수 있으니 저장만
-  // 재시도"로 취급해야 합니다 - 같은 키로 다시 생성 요청이 오면 AI를 다시 부르지 않고
-  // 캐시해둔 결과로 저장만 재시도합니다.
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS blog_generation_requests (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      project_id TEXT,
-      idempotency_key TEXT NOT NULL,
-      provider_draft_id TEXT,
-      status TEXT NOT NULL DEFAULT 'requested',
-      billing JSONB,
-      result JSONB,
-      requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      completed_at TIMESTAMPTZ,
-      UNIQUE(idempotency_key)
-    );
-  `);
-  // 오토포스트 Pro의 업종별 규정검수(/v1/compliance) 결과를 HOWTOM 자체 사전점검과
-  // 구분해서 보관합니다 - 둘은 서로 다른 검수이므로 하나가 다른 하나를 대체하지 않습니다.
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS blog_compliance_checks (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      project_id TEXT,
-      passed BOOLEAN,
-      issues JSONB NOT NULL DEFAULT '[]'::jsonb,
-      checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** 캐시된 좌석만 조회합니다(없으면 null) - GET 요청은 절대 좌석을 새로 만들지 않습니다. */
-async function findAutopostProSeat(advertiserId) {
-  if (!UUID_RE.test(advertiserId || '')) return null; // 형식이 아예 틀린 ID는 DB에 묻지 않고 "없음"으로 처리합니다.
-  const cached = await pgPool.query('SELECT * FROM autopost_pro_seats WHERE advertiser_id = $1', [advertiserId]);
-  return cached.rows[0] || null;
-}
-
-/** 이 광고주의 좌석을 캐시에서 찾고, 없으면 제휴 API에 실제로 새로 만듭니다(POST 전용 -
- * 초안 생성처럼 실제로 좌석이 필요한 시점에만 호출해야 합니다). */
-async function ensureAutopostProSeat(tenantId, advertiser) {
-  const cached = await findAutopostProSeat(advertiser.id);
-  if (cached) return cached;
-  if (!advertiser.business_reg_no) { const e = new Error('이 광고주는 사업자등록번호가 등록되어 있지 않습니다. HOWTOM Universe의 광고주 정보에서 먼저 입력하세요.'); e.status = 400; throw e; }
-  if (!advertiser.industry) { const e = new Error('이 광고주는 업종이 등록되어 있지 않습니다.'); e.status = 400; throw e; }
-  const industryCode = mapIndustryToAutopostCode(advertiser);
-  if (!['medical', 'tax', 'academy', 'vet'].includes(industryCode)) {
-    const e = new Error(`'${advertiser.industry}' 업종은 아직 오토포스트 Pro에 등록되지 않았습니다. 제휴사에 업종 추가를 요청한 뒤, 광고주 정보의 '오토포스트 Pro 업종 코드'에 안내받은 코드를 입력하세요.`);
-    e.status = 400; throw e;
   }
-  const seat = await autopostProRequest('POST', '/v1/seats', {
-    business_reg_no: advertiser.business_reg_no, name: advertiser.name, industry: industryCode, external_id: advertiser.id,
-  });
+}
+
+// 이미 기본 역할이 세팅된(오래된) 테넌트는 ensureDefaultRoles가 통째로 건너뛰므로,
+// "광고주" 역할만 따로 보장합니다 - 광고주 계정을 처음 만들 때 자동으로 생성됩니다.
+// 광고주는 최소 권한(대시보드 열람)만 갖고, 등급별 세부 기능은 각 API가 구독 등급을
+// 직접 확인해서 별도로 제한합니다(역할 권한만으로는 등급을 표현할 수 없기 때문).
+async function ensureAdvertiserRole(tenantId) {
+  const existing = await pgPool.query(`SELECT id FROM app_roles WHERE tenant_id = $1 AND name = '광고주'`, [tenantId]);
+  if (existing.rows.length) return existing.rows[0].id;
   const insert = await pgPool.query(
-    `INSERT INTO autopost_pro_seats (tenant_id, advertiser_id, seat_id, plan, trial_remaining, status)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (advertiser_id) DO UPDATE SET seat_id=EXCLUDED.seat_id, plan=EXCLUDED.plan, trial_remaining=EXCLUDED.trial_remaining, status=EXCLUDED.status, updated_at=now()
-     RETURNING *`,
-    [tenantId, advertiser.id, seat.id, seat.plan || null, seat.trial_remaining ?? null, seat.status || null]
+    `INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys, is_system) VALUES ($1,'광고주','광고주 본인 계정입니다. 본인 광고주 데이터만 열람할 수 있습니다.','advertiser',$2,true) RETURNING id`,
+    [tenantId, ['dashboard.view']]
   );
-  return insert.rows[0];
-}
-/** 좌석을 정지/재개하고 우리 캐시도 같이 갱신합니다 - 계약 종료·서비스 중단 시 씁니다. */
-async function setAutopostProSeatStatus(advertiserId, action) {
-  const seatRow = await findAutopostProSeat(advertiserId);
-  if (!seatRow) { const e = new Error('이 광고주는 아직 오토포스트 Pro 좌석이 없습니다.'); e.status = 404; throw e; }
-  const updated = await autopostProRequest('POST', `/v1/seats/${seatRow.seat_id}/${action}`);
-  await pgPool.query('UPDATE autopost_pro_seats SET status=$2, updated_at=now() WHERE advertiser_id=$1', [advertiserId, updated.status || (action === 'suspend' ? 'suspended' : 'active')]);
-  return updated;
+  return insert.rows[0].id;
 }
 
-/** 제휴 업체 API를 호출합니다. 오토포스트 Pro가 연결되어 있으면 우선 사용하고,
- * 없으면 기존 범용 BLOG_PARTNER_API_URL(다른 업체용)로 대체합니다. */
-async function callBlogGenerationProvider(brief) {
-  if (autopostProConfigured() && brief.advertiserId) {
-    const tenantId = await getCurrentTenantId();
-    const advRes = await pgPool.query('SELECT id, name, industry, business_reg_no, autopost_pro_industry FROM advertisers WHERE tenant_id=$1 AND id::text=$2', [tenantId, brief.advertiserId]);
-    const advertiser = advRes.rows[0];
-    if (!advertiser) throw new Error('광고주를 찾을 수 없습니다.');
-    const seatRow = await ensureAutopostProSeat(tenantId, advertiser);
-    const idempotencyKey = brief.idempotencyKey ? String(brief.idempotencyKey) : undefined;
-    try {
-      const draft = await autopostProRequest('POST', `/v1/seats/${seatRow.seat_id}/drafts`, {
-        keyword: brief.primaryKeyword, length: mapLengthToAutopostCode(brief.length ?? brief.targetLength), num_images: Number.isFinite(Number(brief.numImages)) ? Number(brief.numImages) : 1,
-        confirm_overage: Boolean(brief.confirmOverage),
-      }, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined);
-      // Draft.body는 완성된 HTML이라, 우리 블록 구조 중 'html' 타입 블록 하나로 그대로 담습니다.
-      // title/body 외의 값(id, seat_id, tags, meta_description, billing 전체)도 버리지 않고
-      // 그대로 돌려줘서 호출부가 프로젝트에 저장할 수 있게 합니다.
-      return {
-        generator: 'autopost-pro',
-        titles: [draft.title], blocks: [{ blockId: `html-${Date.now()}`, type: 'html', title: '', text: draft.body }],
-        billing: draft.billing, providerDraftId: draft.id, seatId: draft.seat_id, tags: draft.tags || [], metaDescription: draft.meta_description || '',
-      };
-    } catch (error) {
-      if (error.code === 'overage_confirm_required') { const e = new Error(error.message); e.code = 'overage_confirm_required'; e.status = 409; throw e; }
-      throw error;
-    }
-  }
-  if (!blogGenerationConfigured()) throw new Error('블로그 원고 생성 제휴 업체 API가 아직 연결되지 않았습니다. 관리자가 AUTOPOST_PRO_API_KEY 또는 BLOG_PARTNER_API_URL/BLOG_PARTNER_API_KEY를 설정해야 합니다. 그동안은 직접 작성·편집 기능을 사용하세요.');
-  const res = await fetch(BLOG_PARTNER_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(BLOG_PARTNER_API_KEY ? { Authorization: `Bearer ${BLOG_PARTNER_API_KEY}` } : {}) },
-    body: JSON.stringify(brief),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `제휴 업체 API HTTP ${res.status}`);
-  // 표준 응답 형식: { title/titles, content/blocks, ... }. 업체 응답이 이 형식과 다르면 이 부분만 맞춰 변환합니다.
-  const titles = Array.isArray(data.titles) ? data.titles : (data.title ? [data.title] : []);
-  const blocks = Array.isArray(data.blocks) ? data.blocks : [];
-  return {
-    generator: 'partner',
-    titles: titles.slice(0, 5).map(t => cleanText(String(t), 200)),
-    blocks: blocks.slice(0, 10).map((b, i) => ({ blockId: `block-${Date.now()}-${i}`, type: cleanText(String(b?.type || 'paragraph'), 20), title: cleanText(String(b?.title || ''), 200), text: cleanText(String(b?.text || ''), 4000) })),
-  };
-}
-
-async function ensureBlogTables() {
-  if (!pgPool) return;
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS blog_projects (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_blog_projects_tenant ON blog_projects(tenant_id);
-    -- HOWTOM Universe에 있던 광고 제작·영상 대본·문서 작성을 콘텐츠 제작소로 이관하면서
-    -- 새로 추가합니다. 예전엔 Universe 쪽에서 브라우저 localStorage에만 저장되어 팀
-    -- 전체 공유가 안 되고 기기를 바꾸면 사라졌습니다 - 블로그와 같은 방식(서버 JSONB)으로
-    -- 저장해서 이 문제를 같이 해결합니다.
-    CREATE TABLE IF NOT EXISTS content_projects (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      project_type TEXT NOT NULL, -- 'ad' | 'video-script' | 'document'
-      advertiser_id UUID REFERENCES advertisers(id) ON DELETE SET NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_content_projects_tenant ON content_projects(tenant_id);
-    CREATE INDEX IF NOT EXISTS idx_content_projects_type ON content_projects(project_type);
-    CREATE TABLE IF NOT EXISTS blog_styles (
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      PRIMARY KEY (tenant_id, advertiser_id)
-    );
-    CREATE TABLE IF NOT EXISTS blog_assets (
-      id TEXT PRIMARY KEY,
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-}
-if (pgPool) {
-  ensureBlogTables().catch(error => console.error('[Content Studio] blog table check failed:', error?.message || error));
-  ensureAutopostProSeatsTable().catch(error => console.error('[Content Studio] autopost pro seats table check failed:', error?.message || error));
-  ensureAdTables().catch(error => console.error('[Content Studio] ad table check failed:', error?.message || error));
-  ensureTemplateTables().catch(error => console.error('[Content Studio] template table check failed:', error?.message || error));
-  ensureDocumentTables().catch(error => console.error('[Content Studio] document table check failed:', error?.message || error));
-  ensureVideoScriptTables().catch(error => console.error('[Content Studio] video script table check failed:', error?.message || error));
-  ensureAssetTables().catch(error => console.error('[Content Studio] asset table check failed:', error?.message || error));
-  ensureReferenceTables().catch(error => console.error('[Content Studio] reference table check failed:', error?.message || error));
-}
-
-function sendJson(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(body));
-}
-async function readJson(req) {
-  return await new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 1024 * 1024) reject(new Error('요청 본문이 너무 큽니다.'));
-    });
-    req.on('end', () => {
-      if (!raw) return resolve({});
-      try { resolve(JSON.parse(raw)); } catch { reject(new Error('JSON 형식이 올바르지 않습니다.')); }
-    });
-    req.on('error', reject);
-  });
-}
 function hashUserPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -929,1017 +2048,2908 @@ function verifyUserPassword(password, stored) {
   const a = Buffer.from(hash); const b = Buffer.from(check);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
-// 구독 상품명으로 등급을 판정합니다. HOWTOM Universe의 판정 로직과 정확히 동일해야
-// 합니다 - 다르면 같은 광고주인데 두 앱에서 등급이 다르게 보이는 혼란이 생깁니다.
+
+async function resolveRequestUser(req) {
+  const payload = verifyToken(bearerToken(req));
+  if (!payload) return null;
+  if (payload.sub === ADMIN_USER.id && payload.email === ADMIN_USER.email) {
+    return { id: 'owner', email: ADMIN_USER.email, name: ADMIN_USER.name, isOwner: true, permissionKeys: ALL_INTERNAL_PERMISSIONS, advertiserIds: null, status: 'active', isAdvertiserAccount: false, tier: null };
+  }
+  if (!pgPool || typeof payload.sub !== 'string') return null;
+  const result = await pgPool.query(
+    'SELECT u.id, u.email, u.name, u.status, u.is_advertiser_account, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
+    [payload.sub]
+  );
+  const row = result.rows[0];
+  if (!row || row.status !== 'active') return null;
+  const roleIds = row.role_ids || [];
+  let permissionKeys = [];
+  if (roleIds.length) {
+    const roles = await pgPool.query('SELECT permission_keys FROM app_roles WHERE id = ANY($1::uuid[])', [roleIds]);
+    permissionKeys = [...new Set(roles.rows.flatMap(r => r.permission_keys || []))];
+  }
+  // 광고주 계정은 항상 광고주 1곳으로 범위가 고정되어 있으므로, 그 광고주의 현재
+  // 구독 등급을 매 요청마다 다시 조회합니다(등급을 바꾸면 재로그인 없이 즉시 반영).
+  let tier = null;
+  if (row.is_advertiser_account && row.advertiser_ids && row.advertiser_ids.length === 1) {
+    const sub = await pgPool.query('SELECT plan_name FROM advertiser_subscriptions WHERE advertiser_id = $1', [row.advertiser_ids[0]]);
+    tier = portalTierFromPlanName(sub.rows[0]?.plan_name || '미설정');
+  }
+  return { id: row.id, email: row.email, name: row.name, isOwner: false, permissionKeys, advertiserIds: row.advertiser_ids, status: row.status, isAdvertiserAccount: row.is_advertiser_account, tier };
+}
+
+function hasPermission(user, key) {
+  return Boolean(user && (user.isOwner || (user.permissionKeys && user.permissionKeys.includes(key))));
+}
+function canAccessAdvertiser(user, advertiserId) {
+  if (!advertiserId) return true;
+  return Boolean(user && (user.isOwner || !user.advertiserIds || user.advertiserIds.includes(advertiserId)));
+}
+function denyUnlessPermitted(res, user, key) {
+  if (hasPermission(user, key)) return false;
+  sendJson(res, 403, { error: '이 작업을 수행할 권한이 없습니다.' });
+  return true;
+}
+
+/* ========================================================================
+   구독 상품 / 광고주별 구독 / 사용량 (구독 상품 서버 이전)
+   -----------------------------------------------------------------------
+   예전엔 이 전체 로직(canUseFeature 등)이 브라우저 localStorage 위에서만
+   동작해서 개발자도구로 손쉽게 우회 가능했습니다. 아래는 그 로직을 그대로
+   서버로 옮긴 것으로, 동작 방식(한도 계산 규칙)은 완전히 동일합니다.
+   ======================================================================== */
+function deriveEntitlementsFromPlan(entitlements) {
+  const list = Array.isArray(entitlements) ? entitlements : [];
+  const find = key => list.find(e => e.featureKey === key);
+  const blog = find('content.blog'), videoScript = find('content.video-script'), document_ = find('content.document');
+  const adCreation = find('content.ad-creation'), aiContent = find('ai.content'), blogIntegration = find('content.blog-integration');
+  return {
+    blogEnabled: blog ? blog.enabled : true,
+    blogPostsPerMonth: blog?.limit ?? null,
+    videoScriptsPerMonth: videoScript?.limit ?? null,
+    documentsPerMonth: document_?.limit ?? null,
+    adCreationsPerMonth: adCreation?.limit ?? null,
+    aiCreditsPerMonth: aiContent?.limit ?? null,
+    blogIntegrations: blogIntegration?.limit ?? null,
+  };
+}
+async function ensureAdvertiserSubscription(tenantId, advertiserId) {
+  const existing = await pgPool.query('SELECT * FROM advertiser_subscriptions WHERE advertiser_id = $1', [advertiserId]);
+  if (existing.rows.length) return existing.rows[0];
+  const renewsAt = new Date(); renewsAt.setMonth(renewsAt.getMonth() + 1);
+  const insert = await pgPool.query(
+    `INSERT INTO advertiser_subscriptions (tenant_id, advertiser_id, plan_name, status, entitlements, renews_at, note)
+     VALUES ($1,$2,'미설정','active',$3,$4,'구독 상품이 아직 지정되지 않았습니다.') RETURNING *`,
+    [tenantId, advertiserId, JSON.stringify({ blogEnabled: true }), renewsAt.toISOString()]
+  );
+  return insert.rows[0];
+}
+function getFeatureLimit(sub, feature) {
+  const e = sub.entitlements || {};
+  if (feature === 'blog') return e.blogEnabled === false ? 0 : e.blogPostsPerMonth;
+  if (feature === 'video-script') return e.videoScriptsPerMonth;
+  if (feature === 'document') return e.documentsPerMonth;
+  if (feature === 'ad-creation') return e.adCreationsPerMonth;
+  if (feature === 'ai-generation') return e.aiCreditsPerMonth;
+  return undefined;
+}
+async function getMonthlyUsage(advertiserId, feature, date = new Date()) {
+  const monthStart = new Date(date.getFullYear(), date.getMonth(), 1).toISOString();
+  const nextMonthStart = new Date(date.getFullYear(), date.getMonth() + 1, 1).toISOString();
+  const res = await pgPool.query(
+    'SELECT COALESCE(SUM(quantity),0) as total FROM usage_events WHERE advertiser_id = $1 AND feature = $2 AND created_at >= $3 AND created_at < $4',
+    [advertiserId, feature, monthStart, nextMonthStart]
+  );
+  return Number(res.rows[0].total) || 0;
+}
+async function canUseFeatureCheck(tenantId, advertiserId, feature) {
+  const sub = await ensureAdvertiserSubscription(tenantId, advertiserId);
+  const limit = getFeatureLimit(sub, feature);
+  const used = await getMonthlyUsage(advertiserId, feature);
+  const statusOk = ['trial', 'active'].includes(sub.status);
+  const enabled = feature !== 'blog' || sub.entitlements?.blogEnabled !== false;
+  const allowed = statusOk && enabled && (limit == null || used < limit);
+  return {
+    allowed, subscription: sub, limit: limit ?? undefined, used,
+    remaining: limit == null ? undefined : Math.max(0, limit - used),
+    reason: !statusOk ? '구독 상태 확인 필요' : !enabled ? '기능 사용 안 함' : (limit != null && used >= limit) ? '이번 달 사용 한도 초과' : '',
+  };
+}
+
+// 구독 상품 이름으로 등급을 판정합니다. "구독 상품 관리"에서 만든 상품명과 정확히
+// 일치해야 하므로, 상품명을 바꾸면 이 매핑도 같이 바꿔야 합니다.
+// resolveRequestUser()가 광고주 계정(is_advertiser_account=true)의 등급을 매길 때 씁니다.
 function portalTierFromPlanName(planName) {
+  // 예전엔 "HOWTOM CONTENT PRO"와 완전히 똑같은 문자열이어야만 매칭됐습니다 - 실제로
+  // "CONTENT PRO"(HOWTOM 접두어 없이)로 저장된 구독이 있어서 조용히 "미설정"으로
+  // 떨어지는 사고가 있었습니다. 대소문자·공백·접두어 차이에 안전하도록 부분 일치로
+  // 바꿉니다. 순서가 중요합니다 - "CONTENT PRO"를 "INSIGHT"보다 먼저 검사해야 합니다.
   const upper = (planName || '').toUpperCase();
   if (upper.includes('CONTENT PRO')) return 3;
   if (upper.includes('INSIGHT')) return 2;
   if (upper.includes('VIEW')) return 1;
-  return 0;
+  return 0; // 미설정 또는 인식 못 하는 상품명
 }
-/**
- * 요청 토큰이 광고주 계정(app_users.is_advertiser_account=true)인지 확인합니다.
- * HOWTOM Universe와 완전히 같은 DB(app_users/app_memberships)를 공유하므로, 계정을
- * 별도로 만들지 않고 그대로 재사용합니다 - Universe에서 발급한 광고주 계정으로
- * Content Studio에도 로그인할 수 있습니다(단, Universe 로그인과는 별개의 토큰입니다).
- */
-async function resolveAdvertiserAccount(email) {
-  if (!pgPool) return null;
-  const result = await pgPool.query(
-    `SELECT u.id, u.email, u.name, u.password_hash, u.status, m.advertiser_ids
-     FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id
-     WHERE u.email = $1 AND u.is_advertiser_account = true`,
-    [email]
-  );
-  return result.rows[0] || null;
-}
+const PORTAL_TIER_LABEL = { 0: '미설정', 1: 'VIEW', 2: 'INSIGHT', 3: 'CONTENT PRO' };
 
-function requireAuth(req) {
-  const header = String(req.headers.authorization || '');
-  if (!header.startsWith('Bearer ')) return null;
-  return verifyToken(header.slice(7));
-}
-function requireDb(res) {
-  if (!pgPool) {
-    sendJson(res, 503, { error: 'DATABASE_URL이 설정되지 않아 데이터베이스 기능을 사용할 수 없습니다.' });
-    return false;
-  }
-  return true;
-}
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2',
-};
-function serveStatic(pathname, res) {
-  const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const filePath = path.resolve(DIST_DIR, requested);
-  if (!filePath.startsWith(path.resolve(DIST_DIR))) { res.writeHead(403); res.end('Forbidden'); return; }
-  fs.readFile(filePath, (error, data) => {
-    if (!error) {
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
-      res.end(data); return;
+async function handleAuth(req, res, pathname) {
+  if (req.method === 'POST' && pathname === '/api/auth/login') {
+    if (!JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
+      sendJson(res, 500, { error: '서버에 로그인 정보가 설정되지 않았습니다. Railway 환경변수(HOWTOM_ADMIN_EMAIL, HOWTOM_ADMIN_PASSWORD, JWT_SECRET)를 확인하세요.' });
+      return true;
     }
-    fs.readFile(path.join(DIST_DIR, 'index.html'), (indexError, indexData) => {
-      if (indexError) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Content Studio build not found. Run npm run build first.'); return; }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(indexData);
+    let body;
+    try { body = await readJson(req); } catch (e) { sendJson(res, 400, { error: e instanceof Error ? e.message : '요청 본문이 올바르지 않습니다.' }); return true; }
+    const email = String(body.email ?? '').trim();
+    const password = String(body.password ?? '');
+    const ip = getClientIp(req);
+    if (!email || !password) { sendJson(res, 400, { error: '아이디와 비밀번호를 입력하세요.' }); return true; }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    // 1) 최초 관리자(owner) 계정 - 환경변수 로그인. 항상 그대로 유지합니다.
+    if (timingSafeStringEqual(email, ADMIN_EMAIL) && timingSafeStringEqual(password, ADMIN_PASSWORD)) {
+      const token = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + TOKEN_TTL_SECONDS });
+      addLog({ action: 'login_success', email, ip, result: 'success' });
+      sendJson(res, 200, { token, user: ADMIN_USER });
+      return true;
+    }
+
+    // 2) 실제 팀원 계정(app_users) - 비밀번호는 scrypt로 해시되어 있습니다.
+    if (pgPool) {
+      const tenantId = await getCurrentTenantId();
+      const result = await pgPool.query('SELECT id, email, name, password_hash, status FROM app_users WHERE tenant_id = $1 AND lower(email) = lower($2)', [tenantId, email]);
+      const row = result.rows[0];
+      if (row && row.password_hash && verifyUserPassword(password, row.password_hash)) {
+        if (row.status !== 'active') {
+          addLog({ action: 'login_failed', email, ip, result: 'fail' });
+          sendJson(res, 401, { error: row.status === 'invited' ? '아직 초대를 수락하지 않은 계정입니다. 관리자에게 문의하세요.' : '사용이 중지된 계정입니다.' });
+          return true;
+        }
+        await pgPool.query('UPDATE app_users SET last_login_at = now() WHERE id = $1', [row.id]);
+        const token = signToken({ sub: row.id, email: row.email, iat: now, exp: now + TOKEN_TTL_SECONDS });
+        const resolvedUser = await resolveRequestUser({ headers: { authorization: 'Bearer ' + token } });
+        addLog({ action: 'login_success', email, ip, result: 'success' });
+        sendJson(res, 200, { token, user: { id: row.id, email: row.email, name: row.name, role: resolvedUser?.permissionKeys?.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: resolvedUser?.permissionKeys || [], advertiserIds: resolvedUser?.advertiserIds ?? null, isOwner: false, isAdvertiserAccount: resolvedUser?.isAdvertiserAccount || false, tier: resolvedUser?.tier ?? null, tierLabel: resolvedUser?.tier != null ? PORTAL_TIER_LABEL[resolvedUser.tier] : null } });
+        return true;
+      }
+    }
+
+    addLog({ action: 'login_failed', email, ip, result: 'fail' });
+    sendJson(res, 401, { error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/auth/me') {
+    const user = await resolveRequestUser(req);
+    if (!user) { sendJson(res, 401, { error: '인증이 만료되었거나 유효하지 않습니다.' }); return true; }
+    if (user.isOwner) { sendJson(res, 200, { user: ADMIN_USER }); return true; }
+    sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, role: user.permissionKeys.includes('admin.system.manage') ? 'admin' : 'member', advertiser_id: null, permissionKeys: user.permissionKeys, advertiserIds: user.advertiserIds, isOwner: false, isAdvertiserAccount: user.isAdvertiserAccount || false, tier: user.tier ?? null, tierLabel: user.tier != null ? PORTAL_TIER_LABEL[user.tier] : null } });
+    return true;
+  }
+
+  return false; // 이 라우터가 처리하지 않는 경로 → 호출부에서 다음 단계로 계속 진행
+}
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+      if (raw.length > 5_000_000) { req.destroy(); reject(new Error('요청 데이터가 너무 큽니다.')); }
     });
+    req.on('end', () => {
+      try { resolve(raw ? JSON.parse(raw) : {}); } catch { reject(new Error('JSON 형식이 올바르지 않습니다.')); }
+    });
+    req.on('error', reject);
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const { pathname } = new URL(req.url || '/', 'http://localhost');
+async function forwardWebhook(url, payload) {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || `Webhook HTTP ${response.status}`);
+  try { return JSON.parse(text); } catch { return { ok: true, response: text }; }
+}
 
+function notionText(content) {
+  return [{ type: 'text', text: { content: String(content).slice(0, 1900) } }];
+}
+
+function notionParagraph(content) {
+  return { object: 'block', type: 'paragraph', paragraph: { rich_text: notionText(content) } };
+}
+
+function notionHeading(content, level = 2) {
+  const type = `heading_${level}`;
+  return { object: 'block', type, [type]: { rich_text: notionText(content) } };
+}
+
+
+
+async function createNotionPage(payload) {
+  const token = process.env.NOTION_API_TOKEN;
+  const pageId = process.env.NOTION_PARENT_PAGE_ID || payload?.notion?.dataSourceId;
+  if (!token || !pageId) throw new Error('NOTION_API_TOKEN과 NOTION_PARENT_PAGE_ID를 서버 환경변수에 설정하세요.');
+  const report = payload.report;
+  const children = [
+    notionParagraph(`${report.advertiser} · ${report.period} · ${report.createdAt}`),
+    notionHeading('핵심 지표', 2),
+    notionParagraph(`총 광고비: ₩${Math.round(report.summary.spend).toLocaleString()} | 총 DB: ${report.summary.db.toLocaleString()} | 총 매출: ₩${Math.round(report.summary.sales).toLocaleString()} | ROAS: ${Math.round(report.summary.roas)}%`),
+    notionHeading('매체별 성과', 2),
+    ...report.channelRows.map((row) => notionParagraph(`${row.channel} | 노출 ${row.impressions.toLocaleString()} | 클릭 ${row.clicks.toLocaleString()} | 광고비 ₩${row.spend.toLocaleString()} | DB ${row.db} | 매출 ₩${row.sales.toLocaleString()} | ROAS ${Math.round(row.roas)}%`)),
+    notionHeading('주요 인사이트', 2),
+    ...report.insights.map((item) => ({ object: 'block', type: 'bulleted_list_item', bulleted_list_item: { rich_text: notionText(item) } })),
+    notionHeading('다음 액션', 2),
+    ...report.actions.map((item) => ({ object: 'block', type: 'to_do', to_do: { rich_text: notionText(item), checked: false } })),
+  ];
+  const response = await fetch('https://api.notion.com/v1/pages', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Notion-Version': process.env.NOTION_VERSION || '2026-03-11',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      parent: { type: 'page_id', page_id: pageId },
+      properties: { title: { type: 'title', title: notionText(report.title) } },
+      children,
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.message || `Notion HTTP ${response.status}`);
+  return { ok: true, id: body.id, url: body.url };
+}
+
+// 90일 초과 등 오래 걸리는 동기화를 백그라운드에서 실행할 때, 진행 중인 작업을 추적합니다.
+// key = `${advertiserId}|${channel}` → { startedAt, days }
+const activeBackgroundSyncs = new Map();
+
+async function handleApi(req, res, pathname) {
+  try {
     if (req.method === 'GET' && pathname === '/api/health') {
+      const db = readDb();
       return sendJson(res, 200, {
-        ok: true, service: 'howtom-content-studio', phase: '3-autopost-pro-integrated', databaseConfigured: Boolean(DATABASE_URL),
-        aiConfigured: blogGenerationConfigured(), blogProvider: autopostProConfigured() ? 'autopost-pro' : (blogGenerationConfigured() ? 'partner' : null),
+        ok: true,
+        service: 'howtom-universe-backend',
+        publicRuntime: isPublicRuntime,
+        authBackendImplemented: true,
+        storage: DATA_DIR === path.join(baseDir, '.data') ? 'local-file' : 'mounted-volume',
+        zeroState: db.advertisers.length === 0 && db.blogProjects.length === 0,
       });
     }
 
-    if (req.method === 'POST' && pathname === '/api/login') {
-      if (!JWT_SECRET) return sendJson(res, 500, { error: '로그인 환경변수를 설정하세요.' });
-      const body = await readJson(req);
-      const email = String(body.email || '').trim().toLowerCase();
-      const password = String(body.password || '');
-      // 1) 기존 관리자 단일 계정 로그인(그대로 유지)
-      if (ADMIN_EMAIL && ADMIN_PASSWORD && timingSafeStringEqual(email, ADMIN_EMAIL.toLowerCase()) && timingSafeStringEqual(password, ADMIN_PASSWORD)) {
-        const token = signToken({ email, name: ADMIN_NAME, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7 });
-        return sendJson(res, 200, { token, user: { email, name: ADMIN_NAME } });
-      }
-      // 2) HOWTOM Universe에서 발급한 광고주 계정 로그인(같은 DB의 app_users 재사용)
-      const account = await resolveAdvertiserAccount(email);
-      if (account && account.password_hash && account.status === 'active' && verifyUserPassword(password, account.password_hash)) {
-        const advertiserId = (account.advertiser_ids || [])[0] || null;
-        const token = signToken({ email, name: account.name, isAdvertiserAccount: true, advertiserId, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7 });
-        return sendJson(res, 200, { token, user: { email, name: account.name, isAdvertiserAccount: true, advertiserId } });
-      }
-      return sendJson(res, 401, { error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    if (await handleAuth(req, res, pathname)) return;
+
+    // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
+    // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
+    if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+
+    // 데이터를 다루는 API(광고주·매체·키워드·소재 등)는 전부 Postgres(pgPool)를 직접 사용합니다.
+    // DATABASE_URL이 설정되지 않은 환경(예: 로컬에서 npm run dev만 실행한 경우)에서는 pgPool이
+    // null이라, 이 API들을 호출하면 "Cannot read properties of null (reading 'query')" 같은
+    // 알아보기 어려운 크래시로 죽습니다. 마이그레이션 상태 조회처럼 pgPool 없이도 응답해야 하는
+    // 극소수 엔드포인트만 예외로 남기고, 나머지 데이터 API는 여기서 미리 막아 이유를 알려줍니다.
+    const PG_OPTIONAL_PATHS = new Set(['/api/admin/migration-status', '/api/admin/migrate-to-postgres']);
+    if (!pgPool && !PG_OPTIONAL_PATHS.has(pathname)) {
+      return sendJson(res, 503, { error: 'DATABASE_URL이 설정되지 않았습니다. 로컬 개발 환경이라면 .env에 DATABASE_URL을 채우거나, Railway에 Postgres를 연결한 뒤 관리자 > 마이그레이션에서 데이터를 옮겨주세요.' });
     }
 
-    if (pathname.startsWith('/api/')) {
-      const payload = requireAuth(req);
-      if (!payload) return sendJson(res, 401, { error: '인증이 필요합니다.' });
-      // 광고주 계정이면 매 요청마다 최신 구독 등급을 다시 확인합니다(관리자가 등급을
-      // 바꿔도 재로그인 없이 반영). CONTENT PRO(3) 미달이면 콘텐츠 제작소 접근 자체를
-      // 차단합니다 - Universe 사이드바에 링크가 안 보이는 것과 별개로, 서버 쪽에서도
-      // 직접 URL로 들어오는 것까지 막아야 합니다.
-      if (payload.isAdvertiserAccount) {
-        if (!payload.advertiserId) return sendJson(res, 403, { error: '이 계정에 연결된 광고주가 없습니다.' });
-        const sub = pgPool ? await pgPool.query('SELECT plan_name FROM advertiser_subscriptions WHERE advertiser_id = $1', [payload.advertiserId]) : { rows: [] };
-        const tier = portalTierFromPlanName(sub.rows[0]?.plan_name || '');
-        if (tier < 3) return sendJson(res, 403, { error: `콘텐츠 제작소는 CONTENT PRO 구독에서 이용할 수 있습니다. (현재 등급 미달)` });
-        payload.advertiserScopeId = payload.advertiserId; // 이후 모든 조회를 이 값으로만 제한합니다.
-      }
-
-      if (req.method === 'GET' && pathname === '/api/advertisers') {
-        if (!pgPool) return sendJson(res, 200, []);
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 200, []);
-        const result = await pgPool.query(`
-          SELECT a.id::text AS id, a.name,
-                 COALESCE(to_jsonb(a)->>'industry','') AS industry,
-                 COALESCE(to_jsonb(a)->>'website','') AS website,
-                 COALESCE(to_jsonb(a)->>'phone','') AS phone,
-                 COALESCE(to_jsonb(a)->>'address','') AS address,
-                 to_jsonb(a)->>'business_reg_no' AS business_reg_no,
-                 to_jsonb(a)->>'autopost_pro_industry' AS autopost_pro_industry
-          FROM advertisers a WHERE a.tenant_id=$1 ${payload.advertiserScopeId ? 'AND a.id::text=$2' : ''} ORDER BY a.name
-        `, payload.advertiserScopeId ? [tenantId, payload.advertiserScopeId] : [tenantId]);
-        return sendJson(res, 200, result.rows);
-      }
-
-      if (pathname.startsWith('/api/ad/')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/ad/projects') {
-          const r = await pgPool.query(`SELECT id, data FROM ad_projects WHERE tenant_id=$1 ORDER BY updated_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), projectId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/ad/projects') {
-          const body = await readJson(req);
-          let row = normalizeAdProject(body);
-          row.projectId = makeId('ad');
-          if (!row.advertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          row.advertiserName = advRes.rows[0].name;
-          await pgPool.query(`INSERT INTO ad_projects (id, tenant_id, advertiser_id, data) VALUES ($1,$2,$3,$4)`, [row.projectId, tenantId, advRes.rows[0].id, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-
-        const adProjectMatch = pathname.match(/^\/api\/ad\/projects\/([^/]+)$/);
-        if (adProjectMatch && req.method === 'GET') {
-          const id = decodeURIComponent(adProjectMatch[1]);
-          const r = await pgPool.query(`SELECT id, data FROM ad_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return r.rows[0] ? sendJson(res, 200, { ...(r.rows[0].data || {}), projectId: r.rows[0].id }) : sendJson(res, 404, { error: '광고 제작 프로젝트를 찾을 수 없습니다.' });
-        }
-        if (adProjectMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(adProjectMatch[1]);
-          const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM ad_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const current = cur.rows[0]?.data;
-          if (!current) return sendJson(res, 404, { error: '광고 제작 프로젝트를 찾을 수 없습니다.' });
-          const updated = normalizeAdProject(patch, { ...current, projectId:id });
-          if (!updated.advertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, updated.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          updated.advertiserName = advRes.rows[0].name;
-          await pgPool.query(`UPDATE ad_projects SET advertiser_id=$3, data=$4, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, advRes.rows[0].id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (adProjectMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(adProjectMatch[1]);
-          await pgPool.query(`DELETE FROM ad_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      if (pathname.startsWith('/api/templates')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/templates') {
-          const r = await pgPool.query(`SELECT id, data FROM content_templates WHERE tenant_id=$1 ORDER BY updated_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), templateId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/templates') {
-          const body = await readJson(req);
-          const row = normalizeTemplate(body);
-          row.templateId = makeId('tpl');
-          let advertiserUuid = null;
-          if (row.advertiserId) {
-            const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-            if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-            advertiserUuid = advRes.rows[0].id; row.advertiserName = advRes.rows[0].name;
-          }
-          await pgPool.query(`INSERT INTO content_templates (id, tenant_id, advertiser_id, template_type, data) VALUES ($1,$2,$3,$4,$5)`, [row.templateId, tenantId, advertiserUuid, row.templateType, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-        const templateMatch = pathname.match(/^\/api\/templates\/([^/]+)$/);
-        if (templateMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(templateMatch[1]);
-          const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM content_templates WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          if (!cur.rows[0]?.data) return sendJson(res, 404, { error: '템플릿을 찾을 수 없습니다.' });
-          const updated = normalizeTemplate(patch, { ...cur.rows[0].data, templateId: id });
-          await pgPool.query(`UPDATE content_templates SET template_type=$3, data=$4, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, updated.templateType, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (templateMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(templateMatch[1]);
-          await pgPool.query(`DELETE FROM content_templates WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-        // 템플릿 복제: 이름 뒤에 "복사본"을 붙여 새 템플릿으로 저장합니다.
-        const duplicateMatch = pathname.match(/^\/api\/templates\/([^/]+)\/duplicate$/);
-        if (duplicateMatch && req.method === 'POST') {
-          const id = decodeURIComponent(duplicateMatch[1]);
-          const cur = await pgPool.query(`SELECT data FROM content_templates WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          if (!cur.rows[0]?.data) return sendJson(res, 404, { error: '템플릿을 찾을 수 없습니다.' });
-          const source = cur.rows[0].data;
-          const row = normalizeTemplate({ ...source, name: `${source.name} 복사본`, useCount: 0, isFavorite: false }, null);
-          row.templateId = makeId('tpl');
-          const advertiserUuid = row.advertiserId ? (await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId])).rows[0]?.id || null : null;
-          await pgPool.query(`INSERT INTO content_templates (id, tenant_id, advertiser_id, template_type, data) VALUES ($1,$2,$3,$4,$5)`, [row.templateId, tenantId, advertiserUuid, row.templateType, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-        // 새 버전 만들기: 같은 이름 계열로 버전 번호를 올려 새 템플릿으로 저장합니다.
-        const versionMatch = pathname.match(/^\/api\/templates\/([^/]+)\/new-version$/);
-        if (versionMatch && req.method === 'POST') {
-          const id = decodeURIComponent(versionMatch[1]);
-          const cur = await pgPool.query(`SELECT data FROM content_templates WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          if (!cur.rows[0]?.data) return sendJson(res, 404, { error: '템플릿을 찾을 수 없습니다.' });
-          const source = cur.rows[0].data;
-          const rootId = source.parentTemplateId || source.templateId;
-          const related = await pgPool.query(`SELECT data FROM content_templates WHERE tenant_id=$1 AND (id=$2 OR data->>'parentTemplateId'=$2)`, [tenantId, rootId]);
-          const maxVersion = Math.max(1, ...related.rows.map(r => Number(r.data?.version) || 1));
-          const row = normalizeTemplate({ ...source, version: maxVersion + 1, parentTemplateId: rootId, useCount: 0 }, null);
-          row.templateId = makeId('tpl');
-          const advertiserUuid = row.advertiserId ? (await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId])).rows[0]?.id || null : null;
-          await pgPool.query(`INSERT INTO content_templates (id, tenant_id, advertiser_id, template_type, data) VALUES ($1,$2,$3,$4,$5)`, [row.templateId, tenantId, advertiserUuid, row.templateType, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-      }
-
-      if (pathname.startsWith('/api/documents')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/documents') {
-          const r = await pgPool.query(`SELECT id, data FROM document_projects WHERE tenant_id=$1 ORDER BY updated_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), projectId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/documents') {
-          const body = await readJson(req);
-          const row = normalizeDocumentProject(body);
-          row.projectId = makeId('doc');
-          if (!row.advertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          row.advertiserName = advRes.rows[0].name;
-          await pgPool.query(`INSERT INTO document_projects (id, tenant_id, advertiser_id, data) VALUES ($1,$2,$3,$4)`, [row.projectId, tenantId, advRes.rows[0].id, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-        const docMatch = pathname.match(/^\/api\/documents\/([^/]+)$/);
-        if (docMatch && req.method === 'GET') {
-          const id = decodeURIComponent(docMatch[1]);
-          const r = await pgPool.query(`SELECT id, data FROM document_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return r.rows[0] ? sendJson(res, 200, { ...(r.rows[0].data || {}), projectId: r.rows[0].id }) : sendJson(res, 404, { error: '문서를 찾을 수 없습니다.' });
-        }
-        if (docMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(docMatch[1]);
-          const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM document_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const current = cur.rows[0]?.data;
-          if (!current) return sendJson(res, 404, { error: '문서를 찾을 수 없습니다.' });
-          const updated = normalizeDocumentProject(patch, { ...current, projectId: id });
-          await pgPool.query(`UPDATE document_projects SET data=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (docMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(docMatch[1]);
-          await pgPool.query(`DELETE FROM document_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      if (pathname.startsWith('/api/video-scripts')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/video-scripts') {
-          const r = await pgPool.query(`SELECT id, data FROM video_script_projects WHERE tenant_id=$1 ORDER BY updated_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), projectId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/video-scripts') {
-          const body = await readJson(req);
-          const row = normalizeVideoScriptProject(body);
-          row.projectId = makeId('vs');
-          if (!row.advertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          row.advertiserName = advRes.rows[0].name;
-          await pgPool.query(`INSERT INTO video_script_projects (id, tenant_id, advertiser_id, data) VALUES ($1,$2,$3,$4)`, [row.projectId, tenantId, advRes.rows[0].id, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-        const vsMatch = pathname.match(/^\/api\/video-scripts\/([^/]+)$/);
-        if (vsMatch && req.method === 'GET') {
-          const id = decodeURIComponent(vsMatch[1]);
-          const r = await pgPool.query(`SELECT id, data FROM video_script_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return r.rows[0] ? sendJson(res, 200, { ...(r.rows[0].data || {}), projectId: r.rows[0].id }) : sendJson(res, 404, { error: '영상 대본을 찾을 수 없습니다.' });
-        }
-        if (vsMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(vsMatch[1]);
-          const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM video_script_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const current = cur.rows[0]?.data;
-          if (!current) return sendJson(res, 404, { error: '영상 대본을 찾을 수 없습니다.' });
-          const updated = normalizeVideoScriptProject(patch, { ...current, projectId: id });
-          await pgPool.query(`UPDATE video_script_projects SET data=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (vsMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(vsMatch[1]);
-          await pgPool.query(`DELETE FROM video_script_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      if (pathname.startsWith('/api/assets')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/assets') {
-          const q = new URL(req.url, 'http://x').searchParams;
-          const assetType = cleanText(q.get('type') || '', 20);
-          const clauses = ['tenant_id = $1']; const params = [tenantId];
-          if (assetType) { params.push(assetType); clauses.push(`asset_type = $${params.length}`); }
-          const r = await pgPool.query(`SELECT id, advertiser_id::text as "advertiserId", asset_type as "assetType", name, url, tags, memo, created_at as "createdAt" FROM content_assets WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`, params);
-          return sendJson(res, 200, r.rows);
-        }
-        if (req.method === 'POST' && pathname === '/api/assets') {
-          const body = await readJson(req);
-          const name = cleanText(body.name, 200); const assetType = cleanText(body.assetType, 20);
-          if (!name || !assetType) return sendJson(res, 400, { error: '이름과 유형을 입력하세요.' });
-          const id = makeId('asset');
-          const tags = Array.isArray(body.tags) ? body.tags.map(x => cleanText(x, 60)).filter(Boolean) : [];
-          let advertiserUuid = null, advertiserName = null;
-          if (body.advertiserId) {
-            const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, body.advertiserId]);
-            if (advRes.rows[0]) { advertiserUuid = advRes.rows[0].id; advertiserName = advRes.rows[0].name; }
-          }
-          await pgPool.query(`INSERT INTO content_assets (id, tenant_id, advertiser_id, asset_type, name, url, tags, memo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [id, tenantId, advertiserUuid, assetType, name, cleanText(body.url || '', 1000) || null, tags, cleanText(body.memo || '', 1000) || null]);
-          return sendJson(res, 201, { id, advertiserId: advertiserUuid, advertiserName, assetType, name, url: body.url || null, tags, createdAt: new Date().toISOString() });
-        }
-        const assetMatch = pathname.match(/^\/api\/assets\/([^/]+)$/);
-        if (assetMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(assetMatch[1]);
-          await pgPool.query(`DELETE FROM content_assets WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      if (pathname.startsWith('/api/reference')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        // 실시간 검색 - 저장하지 않고 결과만 보여줍니다.
-        if (req.method === 'POST' && pathname === '/api/references/search') {
-          const body = await readJson(req);
-          const platform = cleanText(body.platform || 'meta', 20);
-          if (platform === 'threads') {
-            return sendJson(res, 200, { status: 'error', error: 'Threads는 Meta 공식 keyword_search API가 존재하지만, HOWTOM 커넥터가 아직 준비되지 않았습니다(연동 필요). 플랫폼 자체가 불가능한 것은 아닙니다.' });
-          }
-          if (platform === 'tiktok') {
-            return sendJson(res, 200, { status: 'error', error: 'TikTok Commercial Content API는 현재 EU 지역 데이터만 제공하고 연구자 승인제로 운영되어, 한국 상업 광고주 대상인 HOWTOM에서 바로 사용하기 어렵습니다(연동 필요, 자격·지역 요건 재확인 필요).' });
-          }
-          try {
-            const results = platform === 'youtube'
-              ? await searchYoutubeVideos({ keyword: cleanText(body.keyword || '', 200), channelId: cleanText(body.channelId || '', 100) || undefined })
-              : platform === 'instagram'
-              ? await searchInstagramHashtag({ hashtag: cleanText(body.keyword || '', 100), igBusinessAccountId: cleanText(body.igBusinessAccountId || '', 60) })
-              : await searchMetaAdLibrary({ keyword: cleanText(body.keyword || '', 200), pageIds: Array.isArray(body.pageIds) ? body.pageIds : undefined, country: cleanText(body.country || 'KR', 5) });
-            return sendJson(res, 200, { status: 'ok', results });
-          } catch (error) {
-            return sendJson(res, 200, { status: 'error', error: error instanceof Error ? error.message : String(error) });
-          }
-        }
-        if (req.method === 'GET' && pathname === '/api/references/connector-status') {
-          return sendJson(res, 200, { meta: adLibraryConfigured(), youtube: youtubeConfigured(), instagram: instagramConfigured(), tiktok: false, threads: false });
-        }
-        if (req.method === 'GET' && pathname === '/api/references/worker-status') {
-          return sendJson(res, 200, { enabled: adLibraryConfigured(), hoursKst: REFERENCE_WORKER_HOURS_KST, lastRunAt: referenceWorkerStatus.lastRunAt, lastResult: referenceWorkerStatus.lastResult });
-        }
-        if (req.method === 'POST' && pathname === '/api/references/worker-run-now') {
-          // 사용자가 "지금 바로 실행" 버튼을 눌렀을 때 씁니다. 응답은 바로 보내고, 실제 수집은 뒤에서 계속 진행합니다.
-          runReferenceWorkerCycle().catch(error => console.error('[레퍼런스 수집 Worker] 수동 실행 오류:', error?.message || error));
-          return sendJson(res, 200, { ok: true, message: '수집을 시작했습니다. 완료까지 몇 분 정도 걸릴 수 있습니다.' });
-        }
-
-        // 저장된 레퍼런스 목록/저장/삭제
-        if (req.method === 'GET' && pathname === '/api/references') {
-          const q = new URL(req.url, 'http://x').searchParams;
-          const advertiserId = cleanText(q.get('advertiserId') || '', 120);
-          const clauses = ['r.tenant_id = $1']; const params = [tenantId];
-          if (advertiserId) { params.push(advertiserId); clauses.push(`r.advertiser_id::text = $${params.length}`); }
-          const r = await pgPool.query(
-            `SELECT r.id, r.advertiser_id::text as "advertiserId", a.name as "advertiserName", r.platform, r.external_id as "externalId",
-                    r.page_name as "pageName", r.is_competitor as "isCompetitor", r.body, r.headline, r.description, r.cta,
-                    r.landing_url as "landingUrl", r.thumbnail_url as "thumbnailUrl", r.ad_snapshot_url as "adSnapshotUrl",
-                    r.start_date as "startDate", r.is_active as "isActive", r.flight_days as "flightDays", r.view_count as "viewCount", r.like_count as "likeCount", r.ai_analysis as "aiAnalysis", r.tags, r.memo,
-                    r.created_at as "createdAt",
-                    COALESCE(json_agg(json_build_object('boardId', bi.board_id, 'boardName', b.name)) FILTER (WHERE bi.board_id IS NOT NULL), '[]') as boards
-             FROM content_references r
-             LEFT JOIN advertisers a ON a.id = r.advertiser_id
-             LEFT JOIN reference_board_items bi ON bi.reference_id = r.id
-             LEFT JOIN reference_boards b ON b.id = bi.board_id
-             WHERE ${clauses.join(' AND ')} GROUP BY r.id, a.name ORDER BY r.created_at DESC`, params);
-          return sendJson(res, 200, r.rows);
-        }
-        if (req.method === 'POST' && pathname === '/api/references') {
-          const body = await readJson(req);
-          const id = makeId('ref');
-          let advertiserUuid = null;
-          if (body.advertiserId) {
-            const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, body.advertiserId]);
-            advertiserUuid = advRes.rows[0]?.id || null;
-          }
-          const flightDays = Number.isFinite(body.flightDays) ? body.flightDays : null;
-          const viewCount = Number.isFinite(body.viewCount) ? body.viewCount : null;
-          const likeCount = Number.isFinite(body.likeCount) ? body.likeCount : null;
-          await pgPool.query(
-            `INSERT INTO content_references (id, tenant_id, advertiser_id, platform, external_id, page_name, is_competitor, body, headline, description, cta, landing_url, thumbnail_url, media_type, ad_snapshot_url, country, start_date, is_active, flight_days, view_count, like_count, tags, memo)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
-            [id, tenantId, advertiserUuid, cleanText(body.platform || 'meta', 20), cleanText(body.externalId || '', 120) || null,
-             cleanText(body.pageName || '', 200), Boolean(body.isCompetitor), cleanText(body.body || '', 4000), cleanText(body.headline || '', 300),
-             cleanText(body.description || '', 1000), cleanText(body.cta || '', 100), cleanText(body.landingUrl || '', 1000) || null,
-             cleanText(body.thumbnailUrl || '', 1000) || null, cleanText(body.mediaType || '', 30), cleanText(body.adSnapshotUrl || '', 1000) || null,
-             cleanText(body.country || 'KR', 5), body.startDate || null, body.isActive === undefined ? null : Boolean(body.isActive), flightDays,
-             viewCount, likeCount, Array.isArray(body.tags) ? body.tags.map(x => cleanText(x, 60)).filter(Boolean) : [], cleanText(body.memo || '', 1000) || null]
-          );
-          return sendJson(res, 201, { id });
-        }
-        const refMatch = pathname.match(/^\/api\/references\/([^/]+)$/);
-        if (refMatch && req.method === 'PATCH') {
-          const id = decodeURIComponent(refMatch[1]);
-          const body = await readJson(req);
-          const sets = []; const params = [tenantId, id];
-          if (body.memo !== undefined) { params.push(cleanText(body.memo, 1000)); sets.push(`memo=$${params.length}`); }
-          if (body.tags !== undefined) { params.push(Array.isArray(body.tags) ? body.tags.map(x => cleanText(x, 60)).filter(Boolean) : []); sets.push(`tags=$${params.length}`); }
-          if (!sets.length) return sendJson(res, 400, { error: '수정할 내용이 없습니다.' });
-          await pgPool.query(`UPDATE content_references SET ${sets.join(', ')}, updated_at=now() WHERE tenant_id=$1 AND id=$2`, params);
-          return sendJson(res, 200, { ok: true });
-        }
-        if (refMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(refMatch[1]);
-          await pgPool.query(`DELETE FROM content_references WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-
-        // AI 분석: 저장된 레퍼런스 하나를 AI로 분석해서 후킹 유형·핵심 소구점·개선 제안을 뽑아줍니다.
-        const refAnalyzeMatch = pathname.match(/^\/api\/references\/([^/]+)\/analyze$/);
-        if (refAnalyzeMatch && req.method === 'POST') {
-          if (!aiConfigured()) return sendJson(res, 400, { error: 'AI가 연결되지 않았습니다. 관리자가 AI_PROVIDER/AI_API_KEY를 설정해야 합니다.' });
-          const id = decodeURIComponent(refAnalyzeMatch[1]);
-          const cur = await pgPool.query(`SELECT * FROM content_references WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const ref = cur.rows[0];
-          if (!ref) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
-          const contentText = [ref.headline, ref.body, ref.description].filter(Boolean).join('\n');
-          if (!contentText.trim()) return sendJson(res, 400, { error: '분석할 텍스트(제목·본문)가 없는 레퍼런스입니다.' });
-          const system = `당신은 광고·콘텐츠 카피를 분석하는 전문가입니다. 주어진 광고/콘텐츠 문구를 분석해서 반드시 아래 JSON 형식으로만 응답하세요. 그 외 설명이나 코드블록 표시는 절대 포함하지 마세요.\n{"hookType": "이 콘텐츠가 쓰는 후킹 방식 한 단어(예: 가격 소구, 후기형, 문제제기형, 희소성, 숫자 제시 등)", "keyMessage": "핵심 소구점 한 문장", "ctaAssessment": "CTA(행동유도) 문구에 대한 짧은 평가", "suggestions": ["우리 광고에 참고할 만한 개선 아이디어 1", "개선 아이디어 2", "개선 아이디어 3"]}`;
-          const user = `플랫폼: ${ref.platform}\n제목: ${ref.headline || '(없음)'}\n본문: ${ref.body || '(없음)'}\n설명: ${ref.description || '(없음)'}\nCTA: ${ref.cta || '(없음)'}`;
-          try {
-            const raw = await callAI({ system, user, maxTokens: 800 });
-            const parsed = parseAiJsonResponse(raw);
-            const analysis = {
-              hookType: cleanText(String(parsed.hookType || ''), 100),
-              keyMessage: cleanText(String(parsed.keyMessage || ''), 300),
-              ctaAssessment: cleanText(String(parsed.ctaAssessment || ''), 300),
-              suggestions: (Array.isArray(parsed.suggestions) ? parsed.suggestions : []).slice(0, 5).map(s => cleanText(String(s), 200)),
-            };
-            await pgPool.query(`UPDATE content_references SET ai_analysis=$3, ai_analyzed_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, JSON.stringify(analysis)]);
-            return sendJson(res, 200, { analysis, analyzedAt: new Date().toISOString() });
-          } catch (error) {
-            return sendJson(res, 502, { error: error instanceof Error ? `AI 분석에 실패했습니다: ${error.message}` : 'AI 분석에 실패했습니다.' });
-          }
-        }
-
-        // 레퍼런스 보드 CRUD
-        if (req.method === 'GET' && pathname === '/api/reference-boards') {
-          const r = await pgPool.query(
-            `SELECT b.id, b.advertiser_id::text as "advertiserId", b.name, b.created_at as "createdAt", COUNT(bi.reference_id)::int as "itemCount"
-             FROM reference_boards b LEFT JOIN reference_board_items bi ON bi.board_id = b.id
-             WHERE b.tenant_id=$1 GROUP BY b.id ORDER BY b.created_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows);
-        }
-        if (req.method === 'POST' && pathname === '/api/reference-boards') {
-          const body = await readJson(req);
-          const name = cleanText(body.name, 120);
-          if (!name) return sendJson(res, 400, { error: '보드 이름을 입력하세요.' });
-          const id = makeId('board');
-          let advertiserUuid = null;
-          if (body.advertiserId) { const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, body.advertiserId]); advertiserUuid = advRes.rows[0]?.id || null; }
-          await pgPool.query(`INSERT INTO reference_boards (id, tenant_id, advertiser_id, name) VALUES ($1,$2,$3,$4)`, [id, tenantId, advertiserUuid, name]);
-          return sendJson(res, 201, { id, name });
-        }
-        const boardMatch = pathname.match(/^\/api\/reference-boards\/([^/]+)$/);
-        if (boardMatch && req.method === 'PATCH') {
-          const id = decodeURIComponent(boardMatch[1]);
-          const body = await readJson(req);
-          const name = cleanText(body.name, 120);
-          if (!name) return sendJson(res, 400, { error: '보드 이름을 입력하세요.' });
-          await pgPool.query(`UPDATE reference_boards SET name=$3 WHERE tenant_id=$1 AND id=$2`, [tenantId, id, name]);
-          return sendJson(res, 200, { ok: true });
-        }
-        if (boardMatch && req.method === 'DELETE') {
-          await pgPool.query(`DELETE FROM reference_boards WHERE tenant_id=$1 AND id=$2`, [tenantId, decodeURIComponent(boardMatch[1])]);
-          return sendJson(res, 200, { ok: true });
-        }
-        const boardDetailMatch = pathname.match(/^\/api\/reference-boards\/([^/]+)\/items$/);
-        if (boardDetailMatch && req.method === 'GET') {
-          const r = await pgPool.query(
-            `SELECT r.id, r.advertiser_id::text as "advertiserId", a.name as "advertiserName", r.platform, r.external_id as "externalId",
-                    r.page_name as "pageName", r.is_competitor as "isCompetitor", r.body, r.headline, r.description, r.cta,
-                    r.landing_url as "landingUrl", r.thumbnail_url as "thumbnailUrl", r.ad_snapshot_url as "adSnapshotUrl",
-                    r.start_date as "startDate", r.is_active as "isActive", r.flight_days as "flightDays", r.view_count as "viewCount", r.like_count as "likeCount", r.ai_analysis as "aiAnalysis", r.tags, r.memo, r.created_at as "createdAt"
-             FROM reference_board_items bi
-             JOIN content_references r ON r.id = bi.reference_id
-             LEFT JOIN advertisers a ON a.id = r.advertiser_id
-             WHERE bi.board_id=$1 AND r.tenant_id=$2 ORDER BY bi.added_at DESC`,
-            [decodeURIComponent(boardDetailMatch[1]), tenantId]
-          );
-          return sendJson(res, 200, r.rows.map(row => ({ ...row, boards: [] })));
-        }
-        const boardItemMatch = pathname.match(/^\/api\/reference-boards\/([^/]+)\/items$/);
-        if (boardItemMatch && req.method === 'POST') {
-          const body = await readJson(req);
-          const referenceId = cleanText(body.referenceId || '', 120);
-          if (!referenceId) return sendJson(res, 400, { error: 'referenceId가 필요합니다.' });
-          await pgPool.query(`INSERT INTO reference_board_items (board_id, reference_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [decodeURIComponent(boardItemMatch[1]), referenceId]);
-          return sendJson(res, 200, { ok: true });
-        }
-        const boardItemRemoveMatch = pathname.match(/^\/api\/reference-boards\/([^/]+)\/items\/([^/]+)$/);
-        if (boardItemRemoveMatch && req.method === 'DELETE') {
-          await pgPool.query(`DELETE FROM reference_board_items WHERE board_id=$1 AND reference_id=$2`, [decodeURIComponent(boardItemRemoveMatch[1]), decodeURIComponent(boardItemRemoveMatch[2])]);
-          return sendJson(res, 200, { ok: true });
-        }
-
-        // 경쟁 브랜드 CRUD
-        if (req.method === 'GET' && pathname === '/api/reference-competitors') {
-          const q = new URL(req.url, 'http://x').searchParams;
-          const advertiserId = cleanText(q.get('advertiserId') || '', 120);
-          const clauses = ['tenant_id=$1']; const params = [tenantId];
-          if (advertiserId) { params.push(advertiserId); clauses.push(`advertiser_id::text=$${params.length}`); }
-          const r = await pgPool.query(`SELECT id, advertiser_id::text as "advertiserId", brand_name as "brandName", page_name as "pageName", created_at as "createdAt" FROM reference_competitors WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`, params);
-          return sendJson(res, 200, r.rows);
-        }
-        if (req.method === 'POST' && pathname === '/api/reference-competitors') {
-          const body = await readJson(req);
-          const brandName = cleanText(body.brandName, 120);
-          if (!brandName || !body.advertiserId) return sendJson(res, 400, { error: '광고주와 경쟁 브랜드명을 입력하세요.' });
-          const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, body.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          const id = makeId('competitor');
-          await pgPool.query(`INSERT INTO reference_competitors (id, tenant_id, advertiser_id, brand_name, page_name) VALUES ($1,$2,$3,$4,$5)`, [id, tenantId, advRes.rows[0].id, brandName, cleanText(body.pageName || '', 200) || null]);
-          return sendJson(res, 201, { id, brandName });
-        }
-        const competitorMatch = pathname.match(/^\/api\/reference-competitors\/([^/]+)$/);
-        if (competitorMatch && req.method === 'DELETE') {
-          await pgPool.query(`DELETE FROM reference_competitors WHERE tenant_id=$1 AND id=$2`, [tenantId, decodeURIComponent(competitorMatch[1])]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      if (pathname.startsWith('/api/blog/')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/blog/projects') {
-          const r = await pgPool.query(
-            `SELECT id, data FROM blog_projects WHERE tenant_id=$1 ${payload.advertiserScopeId ? `AND data->>'advertiserId'=$2` : ''} ORDER BY created_at DESC`,
-            payload.advertiserScopeId ? [tenantId, payload.advertiserScopeId] : [tenantId]
-          );
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), projectId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/blog/projects') {
-          const body = await readJson(req); const stamp = new Date().toISOString();
-          // 광고주 계정은 body.advertiserId를 신뢰하지 않고 항상 본인 광고주로 고정합니다.
-          const forcedAdvertiserId = payload.advertiserScopeId || cleanText(body.advertiserId, 120);
-          const row = {
-            projectId: makeId('blog'), advertiserId: forcedAdvertiserId, advertiserName: cleanText(body.advertiserName, 120),
-            industry: cleanText(body.industry || '일반 서비스업', 120), platform: cleanText(body.platform || '네이버 블로그', 120), contentType: cleanText(body.contentType || '정보형 블로그', 120),
-            purpose: cleanText(body.purpose || '정보 제공', 120), primaryKeyword: cleanText(body.primaryKeyword || '', 200), secondaryKeywords: Array.isArray(body.secondaryKeywords) ? body.secondaryKeywords.map(x => cleanText(x, 100)).filter(Boolean).slice(0, 20) : [],
-            region: cleanText(body.region || '', 120), targetLength: Number(body.targetLength || 2000), tone: cleanText(body.tone || '광고주 문체 자동 적용', 120), referenceText: cleanText(body.referenceText || '', 20000),
-            options: { style: true, advertiserInfo: true, photos: true, compliance: true, seo: true, medical: false, ...(body.options || {}) },
-            titleOptions: [], selectedTitle: '', blocks: [], status: 'draft', complianceStatus: 'not-reviewed', medicalReview: { required: null, status: 'not-reviewed', reviewNumber: '', reviewedAt: '', locked: false },
-            seoScore: 0, complianceIssues: [], assetIds: [], publishStatus: 'draft', scheduledAt: '', publishedUrl: '', createdAt: stamp, updatedAt: stamp,
-          };
-          if (!row.advertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          await pgPool.query(`INSERT INTO blog_projects (id, tenant_id, advertiser_id, data) VALUES ($1,$2,$3,$4)`, [row.projectId, tenantId, advRes.rows[0].id, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-
-        const projectMatch = pathname.match(/^\/api\/blog\/projects\/([^/]+)$/);
-        if (projectMatch && req.method === 'GET') {
-          const id = decodeURIComponent(projectMatch[1]);
-          const r = await pgPool.query(`SELECT id, data FROM blog_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          if (!r.rows[0]) return sendJson(res, 404, { error: '블로그 프로젝트를 찾을 수 없습니다.' });
-          if (payload.advertiserScopeId && r.rows[0].data?.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          return sendJson(res, 200, { ...(r.rows[0].data || {}), projectId: r.rows[0].id });
-        }
-        if (projectMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(projectMatch[1]); const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM blog_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const current = cur.rows[0]?.data;
-          if (!current) return sendJson(res, 404, { error: '블로그 프로젝트를 찾을 수 없습니다.' });
-          if (payload.advertiserScopeId && current.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          if (current.medicalReview?.locked && (patch.blocks || patch.selectedTitle) && !patch.unlockForRevision) return sendJson(res, 409, { error: '심의 완료 문안이 잠겨 있습니다. 재검토로 전환한 뒤 수정하세요.' });
-          const safePatch = { ...patch }; delete safePatch.projectId; delete safePatch.createdAt; delete safePatch.unlockForRevision; delete safePatch.advertiserId;
-          const updated = { ...current, ...safePatch, projectId: id, updatedAt: new Date().toISOString() };
-          await pgPool.query(`UPDATE blog_projects SET data=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (projectMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(projectMatch[1]);
-          if (payload.advertiserScopeId) {
-            const cur = await pgPool.query(`SELECT data FROM blog_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-            if (cur.rows[0] && cur.rows[0].data?.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          }
-          await pgPool.query(`DELETE FROM blog_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-
-        if (req.method === 'GET' && pathname === '/api/blog/ai-status') {
-          return sendJson(res, 200, { configured: blogGenerationConfigured(), provider: autopostProConfigured() ? 'autopost-pro' : (blogGenerationConfigured() ? 'partner' : null) });
-        }
-
-        // 환경변수가 "설정되어 있는지"와 "실제로 유효해서 API가 응답하는지"는 다른 문제라,
-        // 실제로 오토포스트 Pro 서버에 호출을 한 번 날려보고 결과를 그대로 보여줍니다.
-        if (req.method === 'GET' && pathname === '/api/blog/autopost-pro/test-connection') {
-          if (!autopostProConfigured()) return sendJson(res, 200, { connected: false, reason: 'AUTOPOST_PRO_API_KEY가 설정되어 있지 않습니다.' });
-          try {
-            await autopostProRequest('GET', '/v1/usage');
-            return sendJson(res, 200, { connected: true, reason: '정상적으로 연결되어 응답을 받았습니다.' });
-          } catch (error) {
-            const status = error?.status;
-            const reason = status === 401 || status === 403 ? 'API 키가 유효하지 않습니다(401/403). 발급받은 키가 정확한지 확인하세요.'
-              : status ? `오토포스트 Pro 서버가 오류를 반환했습니다(HTTP ${status}): ${error?.message || ''}`
-              : `오토포스트 Pro 서버에 연결하지 못했습니다: ${error?.message || error}`;
-            return sendJson(res, 200, { connected: false, reason, status: status || null });
-          }
-        }
-
-        // ── 좌석(seat) 관리: 조회(GET)는 절대 새로 만들지 않고, 생성은 POST로만 ────
-        if (req.method === 'GET' && pathname === '/api/blog/autopost-pro/seat') {
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const q = new URL(req.url, 'http://x').searchParams;
-          const advertiserId = q.get('advertiserId');
-          if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
-          if (payload.advertiserScopeId && advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
-          const cached = await findAutopostProSeat(advertiserId);
-          if (!cached) return sendJson(res, 404, { error: '아직 좌석이 없습니다. 먼저 초안을 생성하거나 좌석을 만드세요.', noSeat: true });
-          try {
-            const fresh = await autopostProRequest('GET', `/v1/seats/${cached.seat_id}`);
-            await pgPool.query('UPDATE autopost_pro_seats SET plan=$2, trial_remaining=$3, status=$4, updated_at=now() WHERE advertiser_id=$1', [advertiserId, fresh.plan || null, fresh.trial_remaining ?? null, fresh.status || null]);
-            return sendJson(res, 200, fresh);
-          } catch (error) {
-            return sendJson(res, error?.status || 502, { error: error?.message || '좌석 정보를 가져오지 못했습니다.' });
-          }
-        }
-        if (req.method === 'POST' && pathname === '/api/blog/autopost-pro/seat') {
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const body = await readJson(req);
-          const advertiserId = cleanText(body.advertiserId || '', 120);
-          if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
-          if (payload.advertiserScopeId && advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
-          const advRes = await pgPool.query('SELECT id, name, industry, business_reg_no, autopost_pro_industry FROM advertisers WHERE tenant_id=$1 AND id::text=$2', [tenantId, advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
-          try {
-            const seatRow = await ensureAutopostProSeat(tenantId, advRes.rows[0]);
-            return sendJson(res, 201, seatRow);
-          } catch (error) {
-            return sendJson(res, error?.status || 502, { error: error?.message || '좌석 생성에 실패했습니다.' });
-          }
-        }
-        // ── 아래 3개는 여러 광고주를 관리하는 내부 직원 전용 기능입니다.
-        // 광고주 계정은 본인 좌석 하나만 조회/생성할 수 있고, 정지·재개·전체목록·
-        // 전체사용량 같은 관리 기능에는 아예 접근할 수 없습니다. ──
-        if (payload.advertiserScopeId && (
-          (req.method === 'POST' && (pathname === '/api/blog/autopost-pro/seat/suspend' || pathname === '/api/blog/autopost-pro/seat/activate')) ||
-          (req.method === 'GET' && (pathname === '/api/blog/autopost-pro/seats' || pathname === '/api/blog/autopost-pro/usage'))
-        )) {
-          return sendJson(res, 403, { error: '이 기능은 관리자 전용입니다.' });
-        }
-        if (req.method === 'POST' && (pathname === '/api/blog/autopost-pro/seat/suspend' || pathname === '/api/blog/autopost-pro/seat/activate')) {
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const body = await readJson(req);
-          const advertiserId = cleanText(body.advertiserId || '', 120);
-          if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
-          const action = pathname.endsWith('suspend') ? 'suspend' : 'activate';
-          try {
-            const updated = await setAutopostProSeatStatus(advertiserId, action);
-            return sendJson(res, 200, updated);
-          } catch (error) {
-            return sendJson(res, error?.status || 502, { error: error?.message || '좌석 상태 변경에 실패했습니다.' });
-          }
-        }
-        if (req.method === 'GET' && pathname === '/api/blog/autopost-pro/seats') {
-          // 광고주 계약 종료 시 정지할 대상을 찾기 위한 전체 목록(HOWTOM 광고주명 포함).
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const rows = await pgPool.query(
-            `SELECT s.*, a.name as advertiser_name FROM autopost_pro_seats s JOIN advertisers a ON a.id = s.advertiser_id WHERE s.tenant_id = $1 ORDER BY s.updated_at DESC`,
-            [tenantId]
-          );
-          return sendJson(res, 200, { items: rows.rows });
-        }
-
-        // ── 월 사용량·정산 조회 ───────────────────────────────────────────
-        if (req.method === 'GET' && pathname === '/api/blog/autopost-pro/usage') {
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const q = new URL(req.url, 'http://x').searchParams;
-          const month = q.get('month');
-          try {
-            const usage = await autopostProRequest('GET', `/v1/usage${month ? `?month=${encodeURIComponent(month)}` : ''}`);
-            return sendJson(res, 200, usage);
-          } catch (error) {
-            return sendJson(res, error?.status || 502, { error: error?.message || '사용량 조회에 실패했습니다.' });
-          }
-        }
-
-        // ── 업종별 규정검수(/v1/compliance) - HOWTOM 자체 사전점검(complianceEngine.ts)과는
-        // 별개입니다. 여기서는 오토포스트 Pro가 실제로 계산한 결과만 반환·저장합니다.
-        if (req.method === 'POST' && pathname === '/api/blog/compliance') {
-          if (!autopostProConfigured()) return sendJson(res, 400, { error: '오토포스트 Pro가 아직 연결되지 않았습니다.' });
-          const body = await readJson(req);
-          const industry = cleanText(body.industry || '', 40);
-          const text = cleanText(body.text || '', 20000);
-          const orgName = cleanText(body.orgName || body.org_name || '', 200);
-          if (!industry || !text) return sendJson(res, 400, { error: 'industry와 text가 필요합니다.' });
-          try {
-            const result = await autopostProRequest('POST', '/v1/compliance', { industry, text, org_name: orgName });
-            await pgPool.query(
-              `INSERT INTO blog_compliance_checks (tenant_id, project_id, passed, issues) VALUES ($1,$2,$3,$4)`,
-              [tenantId, cleanText(body.projectId || '', 120) || null, Boolean(result.passed), JSON.stringify(result.issues || [])]
-            );
-            return sendJson(res, 200, result);
-          } catch (error) {
-            return sendJson(res, error?.status || 502, { error: error?.message || '규정검수에 실패했습니다.' });
-          }
-        }
-
-        // ── 초안 생성 (중복 과금 방지: 같은 idempotencyKey는 AI를 다시 부르지 않습니다) ──
-        if (req.method === 'POST' && pathname === '/api/blog/generate') {
-          const body = await readJson(req);
-          const keyword = cleanText(body.primaryKeyword, 200);
-          if (!keyword) return sendJson(res, 400, { error: '메인 키워드를 입력하세요.' });
-          const idempotencyKey = cleanText(body.idempotencyKey || '', 100);
-          if (!idempotencyKey) return sendJson(res, 400, { error: 'idempotencyKey가 필요합니다(중복 생성·중복 과금 방지용).' });
-          const projectId = cleanText(body.projectId || '', 120);
-          if (!projectId) return sendJson(res, 400, { error: 'projectId가 필요합니다.' });
-
-          // 외부(과금 가능) API를 부르기 전에 반드시 먼저 확인합니다: 이 프로젝트가
-          // 실제로 존재하는가? 존재하지 않으면 여기서 즉시 404로 끝내고, 오토포스트 Pro는
-          // 아예 호출하지 않습니다 - 잘못된 projectId로 과금만 발생하고 저장은 안 되는
-          // 상황을 원천적으로 막습니다.
-          const projectRow = await pgPool.query('SELECT data FROM blog_projects WHERE tenant_id=$1 AND id=$2', [tenantId, projectId]);
-          if (!projectRow.rows.length) return sendJson(res, 404, { error: '존재하지 않는 프로젝트입니다.' });
-          // advertiserId는 클라이언트가 보낸 값을 신뢰하지 않고, 이 프로젝트에 실제로
-          // 연결된 광고주로 항상 덮어씁니다 - 클라이언트 값과 프로젝트 소속 광고주가
-          // 달라도(또는 조작되어도) 항상 프로젝트의 진짜 광고주 기준으로만 과금·좌석이 결정됩니다.
-          const verifiedAdvertiserId = cleanText(projectRow.rows[0].data?.advertiserId || '', 120);
-          if (payload.advertiserScopeId && verifiedAdvertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-
-          // 이미 같은 키로 완전히 끝난 시도가 있으면 그 결과를 그대로 재사용합니다(재클릭·재요청 방지).
-          const existing = await pgPool.query('SELECT * FROM blog_generation_requests WHERE idempotency_key=$1', [idempotencyKey]);
-          const reqRow = existing.rows[0];
-          if (reqRow?.status === 'completed') {
-            return sendJson(res, 200, { ...reqRow.result, billing: reqRow.billing, idempotencyKey, replayed: true });
-          }
-
-          let genResult;
-          if (reqRow?.status === 'ai_completed') {
-            // AI 호출은 이미 성공(=이미 과금됐을 수 있음)했는데 저장에서 멈춘 경우 - AI를
-            // 다시 부르지 않고, 캐시해둔 결과로 저장만 다시 시도합니다. 이 fix 배포 전에
-            // 이미 저장된(정제 안 된) 캐시일 수도 있으니 여기서도 한 번 더 정제합니다.
-            genResult = sanitizeDeep({ ...reqRow.result, billing: reqRow.billing });
-          } else {
-            try {
-              const brief = {
-                advertiserId: verifiedAdvertiserId,
-                industry: cleanText(body.industry || '업종 무관', 60), platform: cleanText(body.platform || '블로그', 60),
-                primaryKeyword: keyword,
-                // 서브 키워드·지역·톤앤매너·참고자료는 오토포스트 Pro API 규격에 없는 필드라
-                // 실제 생성 요청에는 반영되지 않습니다 - HOWTOM 내부 참고용으로만 저장됩니다.
-                secondaryKeywords: Array.isArray(body.secondaryKeywords) ? body.secondaryKeywords : [],
-                region: cleanText(body.region || '', 60), targetLength: Number(body.targetLength) || undefined, tone: cleanText(body.tone || '자연스러운 정보 전달형', 60),
-                length: cleanText(body.length || '', 20), numImages: body.numImages, confirmOverage: Boolean(body.confirmOverage),
-                idempotencyKey,
-              };
-              genResult = sanitizeDeep(await callBlogGenerationProvider(brief));
-              await pgPool.query(
-                `INSERT INTO blog_generation_requests (tenant_id, project_id, idempotency_key, provider_draft_id, status, billing, result)
-                 VALUES ($1,$2,$3,$4,'ai_completed',$5,$6)
-                 ON CONFLICT (idempotency_key) DO UPDATE SET status='ai_completed', billing=$5, result=$6, provider_draft_id=$4`,
-                [tenantId, projectId, idempotencyKey, genResult.providerDraftId || null, JSON.stringify(genResult.billing || null), JSON.stringify(genResult)]
-              );
-            } catch (error) {
-              const status = error?.code === 'overage_confirm_required' ? 409 : (error?.status || 502);
-              return sendJson(res, status, { error: error instanceof Error ? error.message : 'AI 원고 생성에 실패했습니다.', code: error?.code });
-            }
-          }
-
-          // 생성된 내용을 프로젝트에 저장합니다(위에서 이미 존재를 확인했으니 여기선 항상 있습니다).
-          // 이 저장이 실패해도 "생성 실패"가 아니라 "생성은 끝났고(이미 과금됐을 수 있음)
-          // 저장만 재시도가 필요"한 상태입니다.
-          try {
-            const cur = await pgPool.query('SELECT data FROM blog_projects WHERE tenant_id=$1 AND id=$2', [tenantId, projectId]);
-            if (cur.rows[0]) {
-              // genResult는 이미 위에서(callBlogGenerationProvider 직후, 첫 DB 저장 전에)
-              // sanitizeDeep으로 정제됐으므로 여기서 다시 필드별로 정제할 필요가 없습니다.
-              const updated = {
-                ...cur.rows[0].data,
-                titleOptions: genResult.titles || [], selectedTitle: genResult.titles?.[0] || '', blocks: genResult.blocks || [], status: 'writing',
-                billing: genResult.billing || null, providerDraftId: genResult.providerDraftId || null, tags: genResult.tags || [], metaDescription: genResult.metaDescription || '',
-                updatedAt: new Date().toISOString(),
-              };
-              await pgPool.query('UPDATE blog_projects SET data=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [tenantId, projectId, JSON.stringify(updated)]);
-            }
-            await pgPool.query(`UPDATE blog_generation_requests SET status='completed', completed_at=now() WHERE idempotency_key=$1`, [idempotencyKey]);
-            return sendJson(res, 200, { ...genResult, idempotencyKey });
-          } catch (saveError) {
-            // 예전엔 이 에러가 콘솔에 전혀 안 남아서, 저장이 왜 계속 실패하는지 로그로도
-            // 알 방법이 없었습니다 - 반드시 남깁니다(Railway 배포 로그에서 확인 가능).
-            console.error('[블로그 생성] 저장 실패:', { projectId, idempotencyKey, error: saveError?.message || saveError, stack: saveError?.stack });
-            return sendJson(res, 200, {
-              ...genResult, idempotencyKey,
-              saveWarning: `초안 생성은 완료됐지만 저장 중 오류가 발생했습니다(이미 과금됐을 수 있어 다시 생성하지 마세요): ${saveError?.message || '알 수 없는 오류'}. 같은 화면에서 다시 시도하면 재생성 없이 저장만 재시도합니다.`,
-            });
-          }
-        }
-
-        const styleMatch = pathname.match(/^\/api\/blog\/styles\/([^/]+)$/);
-        if (styleMatch && req.method === 'GET') {
-          const advertiserId = decodeURIComponent(styleMatch[1]);
-          const r = await pgPool.query(`SELECT data FROM blog_styles WHERE tenant_id=$1 AND advertiser_id::text=$2`, [tenantId, advertiserId]);
-          return sendJson(res, 200, r.rows[0]?.data || { advertiserId, tone: '', rules: [], preferredPhrases: [], prohibitedPhrases: [], cta: '', sourceTexts: [] });
-        }
-        if (styleMatch && req.method === 'PUT') {
-          const advertiserId = decodeURIComponent(styleMatch[1]); const body = await readJson(req);
-          const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '광고주를 찾을 수 없습니다.' });
-          const updated = { ...body, advertiserId, updatedAt: new Date().toISOString() };
-          await pgPool.query(`INSERT INTO blog_styles (tenant_id, advertiser_id, data) VALUES ($1,$2,$3) ON CONFLICT (tenant_id, advertiser_id) DO UPDATE SET data=EXCLUDED.data`, [tenantId, advRes.rows[0].id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-
-        if (req.method === 'GET' && pathname === '/api/blog/assets') {
-          const r = await pgPool.query(`SELECT id, data FROM blog_assets WHERE tenant_id=$1 ORDER BY created_at DESC`, [tenantId]);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), assetId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/blog/assets') {
-          const body = await readJson(req);
-          const row = { assetId: makeId('asset'), advertiserId: cleanText(body.advertiserId, 120), name: cleanText(body.name, 200), url: cleanText(body.url, 1000), tags: Array.isArray(body.tags) ? body.tags.map(x => cleanText(x, 80)).filter(Boolean) : [], createdAt: new Date().toISOString() };
-          if (!row.advertiserId || !row.name) return sendJson(res, 400, { error: '광고주와 자산명을 입력하세요.' });
-          const advRes = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, row.advertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '광고주를 찾을 수 없습니다.' });
-          await pgPool.query(`INSERT INTO blog_assets (id, tenant_id, data) VALUES ($1,$2,$3)`, [row.assetId, tenantId, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-      }
-
-      // ── 광고 제작·영상 대본·문서 작성 (HOWTOM Universe에서 이관) ────────────
-      // blog_projects와 완전히 같은 방식(서버 JSONB)입니다. project_type으로
-      // 'ad'|'video-script'|'document' 3종류를 한 테이블에서 나눠서 관리합니다.
-      if (pathname.startsWith('/api/content-projects')) {
-        if (!requireDb(res)) return;
-        const tenantId = await getCurrentTenantId();
-        if (!tenantId) return sendJson(res, 409, { error: 'HOWTOM tenant를 찾을 수 없습니다.' });
-
-        if (req.method === 'GET' && pathname === '/api/content-projects') {
-          const q = new URL(req.url, 'http://x').searchParams;
-          const type = q.get('type');
-          const conditions = ['tenant_id=$1']; const params = [tenantId];
-          if (type) { params.push(type); conditions.push(`project_type=$${params.length}`); }
-          if (payload.advertiserScopeId) { params.push(payload.advertiserScopeId); conditions.push(`data->>'advertiserId'=$${params.length}`); }
-          const r = await pgPool.query(`SELECT id, data FROM content_projects WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`, params);
-          return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), projectId: row.id })));
-        }
-        if (req.method === 'POST' && pathname === '/api/content-projects') {
-          const body = await readJson(req);
-          const projectType = cleanText(body.projectType || '', 20);
-          if (!['ad', 'video-script', 'document'].includes(projectType)) return sendJson(res, 400, { error: 'projectType은 ad, video-script, document 중 하나여야 합니다.' });
-          const forcedAdvertiserId = payload.advertiserScopeId || cleanText(body.advertiserId, 120);
-          if (!forcedAdvertiserId) return sendJson(res, 400, { error: '광고주를 선택하세요.' });
-          const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id=$1 AND id::text=$2`, [tenantId, forcedAdvertiserId]);
-          if (!advRes.rows[0]) return sendJson(res, 400, { error: '선택한 광고주를 찾을 수 없습니다.' });
-          const stamp = new Date().toISOString();
-          const row = { ...body, projectId: makeId('content'), projectType, advertiserId: forcedAdvertiserId, advertiserName: advRes.rows[0].name, status: body.status || 'draft', createdAt: stamp, updatedAt: stamp };
-          await pgPool.query(`INSERT INTO content_projects (id, tenant_id, project_type, advertiser_id, data) VALUES ($1,$2,$3,$4,$5)`, [row.projectId, tenantId, projectType, advRes.rows[0].id, JSON.stringify(row)]);
-          return sendJson(res, 201, row);
-        }
-        const cpMatch = pathname.match(/^\/api\/content-projects\/([^/]+)$/);
-        if (cpMatch && req.method === 'GET') {
-          const id = decodeURIComponent(cpMatch[1]);
-          const r = await pgPool.query(`SELECT id, data FROM content_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          if (!r.rows[0]) return sendJson(res, 404, { error: '프로젝트를 찾을 수 없습니다.' });
-          if (payload.advertiserScopeId && r.rows[0].data?.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          return sendJson(res, 200, { ...(r.rows[0].data || {}), projectId: r.rows[0].id });
-        }
-        if (cpMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
-          const id = decodeURIComponent(cpMatch[1]); const patch = await readJson(req);
-          const cur = await pgPool.query(`SELECT data FROM content_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          const current = cur.rows[0]?.data;
-          if (!current) return sendJson(res, 404, { error: '프로젝트를 찾을 수 없습니다.' });
-          if (payload.advertiserScopeId && current.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          const safePatch = { ...patch }; delete safePatch.projectId; delete safePatch.createdAt; delete safePatch.projectType; delete safePatch.advertiserId;
-          const updated = { ...current, ...safePatch, projectId: id, updatedAt: new Date().toISOString() };
-          await pgPool.query(`UPDATE content_projects SET data=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, JSON.stringify(updated)]);
-          return sendJson(res, 200, updated);
-        }
-        if (cpMatch && req.method === 'DELETE') {
-          const id = decodeURIComponent(cpMatch[1]);
-          if (payload.advertiserScopeId) {
-            const cur = await pgPool.query(`SELECT data FROM content_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-            if (cur.rows[0] && cur.rows[0].data?.advertiserId !== payload.advertiserScopeId) return sendJson(res, 403, { error: '이 프로젝트에 접근할 권한이 없습니다.' });
-          }
-          await pgPool.query(`DELETE FROM content_projects WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
-          return sendJson(res, 200, { ok: true });
-        }
-      }
-
-      return sendJson(res, 404, { error: '현재 단계에서 제공하지 않는 API입니다.' });
+    // ---- PostgreSQL 마이그레이션 (SaaS 전환 1단계) --------------------------------------
+    // 원본 JSON 파일은 전혀 건드리지 않습니다. 몇 번을 실행해도 안전합니다(ON CONFLICT 처리).
+    if (req.method === 'GET' && pathname === '/api/admin/migration-status') {
+      return sendJson(res, 200, {
+        databaseConfigured: Boolean(pgPool),
+        encryptionKeyConfigured: Boolean(ENCRYPTION_KEY),
+      });
     }
+    if (req.method === 'POST' && pathname === '/api/admin/migrate-to-postgres') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      if (!ENCRYPTION_KEY) return sendJson(res, 400, { error: 'SECRET_ENCRYPTION_KEY가 설정되지 않았습니다(64자 16진수).' });
+      try {
+        const json = readDb();
+        const log = [];
 
-    serveStatic(pathname, res);
-  } catch (error) {
-    console.error('[Content Studio]', error);
-    sendJson(res, 500, { error: error instanceof Error ? error.message : '서버 오류가 발생했습니다.' });
-  }
-});
+        log.push('스키마를 생성합니다...');
+        const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
+        await pgPool.query(schemaSql);
 
-// ============================================================
-// 레퍼런스 자동 수집 Worker (PHASE 4)
-// ------------------------------------------------------------
-// 별도 서비스로 분리하지 않고, 유니버스의 자동 동기화와 같은 방식으로 이 서버 프로세스
-// 안에서 정해진 시간마다 실행합니다. 수집이 느리거나 하나 실패해도 웹 화면 응답에는
-// 영향을 주지 않도록, 흐름을 절대 막지 않고(non-blocking) 에러를 전부 잡아서 넘어갑니다.
-// ============================================================
-let referenceWorkerStatus = { lastRunAt: null, lastResult: null };
+        // 예전에 잘못 번역되어 저장된 CTA 문구('지금 쇼핑하기')를 정확한 번역('지금 구매하기')으로 일괄 수정합니다.
+        // 여러 번 실행해도 안전합니다(이미 고쳐진 값은 조건에 안 걸려 그냥 넘어갑니다).
+        const ctaFixResult = await pgPool.query(`UPDATE creative_daily_metrics SET cta = '지금 구매하기' WHERE cta = '지금 쇼핑하기'`);
+        if (ctaFixResult.rowCount) log.push(`CTA 문구 정정: '지금 쇼핑하기' → '지금 구매하기' (${ctaFixResult.rowCount}건)`);
 
-/** 등록된 경쟁 브랜드를 전부 순회하며, 새 광고는 저장하고 기존 광고는 게재 상태를 갱신합니다. */
-async function runReferenceWorkerCycle() {
-  if (!pgPool || !adLibraryConfigured()) {
-    console.log('[레퍼런스 수집 Worker] DB 또는 Meta 광고 라이브러리 연동이 없어 건너뜁니다.');
-    return;
-  }
-  const competitors = await pgPool.query(`SELECT id, tenant_id, advertiser_id::text as advertiser_id, brand_name, page_name FROM reference_competitors`);
-  console.log(`[레퍼런스 수집 Worker] 시작 - 경쟁 브랜드 ${competitors.rows.length}개`);
-  let newCount = 0, updatedCount = 0, failedCount = 0;
-  for (const c of competitors.rows) {
-    try {
-      const results = await searchMetaAdLibrary({ keyword: c.page_name || c.brand_name });
-      for (const r of results) {
-        const existing = await pgPool.query(`SELECT id FROM content_references WHERE tenant_id=$1 AND platform='meta' AND external_id=$2`, [c.tenant_id, r.externalId]);
-        if (existing.rows[0]) {
-          // 이미 저장된 광고면 게재 상태(운영 중/종료, 게재일수)만 최신으로 갱신합니다. 문구 등 나머지 내용은 사용자가 저장한 그대로 둡니다.
-          await pgPool.query(`UPDATE content_references SET is_active=$3, flight_days=$4, updated_at=now() WHERE id=$1 AND tenant_id=$2`, [existing.rows[0].id, c.tenant_id, r.isActive, r.flightDays]);
-          updatedCount++;
+        log.push('테넌트(고객사)를 생성합니다...');
+        const tenantName = ADMIN_USER.name ? `${ADMIN_USER.name}의 회사` : '하우투엠';
+        const tenantRes = await pgPool.query(
+          `INSERT INTO tenants (name, slug, plan, max_advertisers, max_members, max_media_accounts, monthly_ai_limit, can_use_automation, can_use_client_portal)
+           VALUES ($1, 'howtom', 'agency', 999, 999, 999, 999999, true, true)
+           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id, advertisers_migrated_at`,
+          [tenantName]
+        );
+        const tenantId = tenantRes.rows[0].id;
+
+        log.push('관리자 계정을 만듭니다...');
+        const passwordHash = await hashPassword(ADMIN_PASSWORD);
+        const userRes = await pgPool.query(
+          `INSERT INTO users (email, password_hash, name) VALUES ($1,$2,$3)
+           ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash RETURNING id`,
+          [ADMIN_EMAIL, passwordHash, ADMIN_USER.name || '관리자']
+        );
+        const userId = userRes.rows[0].id;
+        await pgPool.query(`INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1,$2,'owner') ON CONFLICT DO NOTHING`, [tenantId, userId]);
+
+        // 예전에 마이그레이션을 여러 번 눌러서 생긴 중복 광고주를 정리합니다.
+        // 같은 이름이 여러 개면, 실제 성과 데이터(daily_metrics)가 가장 많이 붙어있는 것만 남기고 나머지는 지웁니다.
+        const dupRes = await pgPool.query(
+          `SELECT a.id, a.name, COUNT(dm.id) as metric_count
+           FROM advertisers a LEFT JOIN daily_metrics dm ON dm.advertiser_id = a.id
+           WHERE a.tenant_id = $1 GROUP BY a.id, a.name ORDER BY a.name, metric_count DESC`,
+          [tenantId]
+        );
+        const seenNames = new Set(); const toDelete = [];
+        for (const row of dupRes.rows) {
+          if (seenNames.has(row.name)) toDelete.push(row.id); else seenNames.add(row.name);
+        }
+        if (toDelete.length) {
+          await pgPool.query(`DELETE FROM advertisers WHERE id = ANY($1::uuid[])`, [toDelete]);
+          log.push(`중복 광고주 ${toDelete.length}개 정리`);
+        }
+
+        const migratedBefore = Boolean(tenantRes.rows[0].advertisers_migrated_at);
+        const advertiserIdMap = new Map();
+        if (migratedBefore) {
+          // 이미 한 번 이전을 마쳤으면, 광고주를 다시 만들지 않습니다. 원본 JSON 파일은 절대
+          // 건드리지 않기 때문에, 여기서 다시 만들면 사용자가 화면에서 삭제한 광고주가
+          // '마이그레이션 실행'을 누를 때마다 되살아나는 문제가 생깁니다. 대신 이름 기준으로
+          // 지금 Postgres에 실제로 있는 광고주만 찾아 매핑합니다(삭제된 광고주는 자연히 제외됨).
+          log.push('광고주는 이미 이전을 마쳐 다시 만들지 않습니다(삭제한 광고주가 되살아나지 않도록).');
+          for (const adv of json.advertisers || []) {
+            const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
+            if (existing.rows[0]) advertiserIdMap.set(adv.id, existing.rows[0].id);
+          }
         } else {
-          // 새로 발견된 경쟁사 광고는 자동으로 레퍼런스로 저장합니다.
-          const id = makeId('ref');
+          log.push('광고주 및 매체 연동 정보를 옮깁니다...');
+          for (const adv of json.advertisers || []) {
+            // 같은 이름의 광고주가 이미 있으면 새로 만들지 않고 그 광고주를 그대로 씁니다(중복 생성 방지).
+            const existing = await pgPool.query(`SELECT id FROM advertisers WHERE tenant_id=$1 AND name=$2 LIMIT 1`, [tenantId, adv.name]);
+            let newAdvId;
+            if (existing.rows[0]) {
+              newAdvId = existing.rows[0].id;
+              await pgPool.query(
+                `UPDATE advertisers SET monthly_budget=$3, brand_color=$4, industry=$5, website=$6, phone=$7, address=$8, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+                [newAdvId, tenantId, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+              );
+            } else {
+              const advRes = await pgPool.query(
+                `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+                [tenantId, adv.name, adv.monthly_budget || 0, adv.brand_color || null, adv.industry || null, adv.website || null, adv.phone || null, adv.address || null]
+              );
+              newAdvId = advRes.rows[0].id;
+            }
+            advertiserIdMap.set(adv.id, newAdvId);
+            for (const acc of adv.accounts || []) {
+              await pgPool.query(
+                `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted, last_synced_at, last_row_count, last_sync_error)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 ON CONFLICT (advertiser_id, channel) DO UPDATE SET status = EXCLUDED.status`,
+                [tenantId, newAdvId, acc.channel, acc.status || 'connected', acc.account_id || null,
+                 encryptSecret(acc.api_key), encryptSecret(acc.secret_key),
+                 acc.last_synced_at || null, acc.last_row_count || null, acc.last_sync_error || null]
+              );
+            }
+          }
+          await pgPool.query(`UPDATE tenants SET advertisers_migrated_at = now() WHERE id = $1`, [tenantId]);
+        }
+        log.push(`광고주 ${advertiserIdMap.size}개 이전 완료`);
+
+        async function copyMetrics(rows, table, columns, valueFn) {
+          let count = 0;
+          for (const row of rows || []) {
+            const newAdvId = advertiserIdMap.get(row.advertiserId);
+            if (!newAdvId) continue;
+            const values = valueFn(row, newAdvId);
+            const placeholders = values.map((_, i) => `$${i + 1}`).join(',');
+            await pgPool.query(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, values);
+            count++;
+          }
+          return count;
+        }
+
+        const dmCount = await copyMetrics(json.dailyMetrics, 'daily_metrics',
+          ['tenant_id','advertiser_id','channel','date','impressions','clicks','spend','db_count','purchases','revenue'],
+          (r, advId) => [tenantId, advId, r.channel, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0]);
+        log.push(`계정 일별 성과 ${dmCount}건`);
+
+        const cpmCount = await copyMetrics(json.campaignMetrics, 'campaign_daily_metrics',
+          ['tenant_id','advertiser_id','channel','campaign_id','campaign_name','date','impressions','clicks','spend','db_count','purchases','revenue'],
+          (r, advId) => [tenantId, advId, r.channel, r.campaignId, r.campaignName||null, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0]);
+        log.push(`캠페인 일별 성과 ${cpmCount}건`);
+
+        const cdmCount = await copyMetrics(json.creativeDailyMetrics, 'creative_daily_metrics',
+          ['tenant_id','advertiser_id','channel','campaign_id','campaign_name','adgroup_id','adgroup_name','ad_id','ad_name','date','impressions','clicks','spend','db_count','purchases','revenue','thumbnail_url','media_type','video_url','title','body','description','cta'],
+          (r, advId) => [tenantId, advId, r.channel, r.campaignId||null, r.campaignName||null, r.adgroupId||null, r.adgroupName||null, r.adId, r.adName||null, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0, r.thumbnailUrl||null, r.mediaType||null, r.videoUrl||null, r.title||null, r.body||null, r.description||null, r.cta||null]);
+        log.push(`소재 일별 성과 ${cdmCount}건`);
+
+        const kdmCount = await copyMetrics(json.keywordDailyMetrics, 'keyword_daily_metrics',
+          ['tenant_id','advertiser_id','channel','campaign_id','campaign_name','adgroup_id','adgroup_name','keyword_id','keyword','date','impressions','clicks','spend','db_count','purchases','revenue'],
+          (r, advId) => [tenantId, advId, r.channel, r.campaignId||null, r.campaignName||null, r.adgroupId||null, r.adgroupName||null, r.keywordId||'', r.keyword, r.date, r.impressions||0, r.clicks||0, r.spend||0, r.dbCount||0, r.purchases||0, r.revenue||0]);
+        log.push(`키워드 일별 성과 ${kdmCount}건`);
+
+        let svCount = 0;
+        for (const v of json.syncValidationLogs || []) {
+          const newAdvId = advertiserIdMap.get(v.advertiserId);
           await pgPool.query(
-            `INSERT INTO content_references (id, tenant_id, advertiser_id, platform, external_id, page_name, is_competitor, body, headline, description, cta, ad_snapshot_url, start_date, is_active, flight_days)
-             VALUES ($1,$2,$3,'meta',$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13)`,
-            [id, c.tenant_id, c.advertiser_id, r.externalId, r.pageName, r.body, r.headline, r.description, r.cta, r.adSnapshotUrl, r.startDate, r.isActive, r.flightDays]
+            `INSERT INTO sync_validation_logs (tenant_id, advertiser_id, channel, date_from, date_to, source_label, source_totals, stored_totals, delta, ok)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [tenantId, newAdvId || null, v.channel, v.since || null, v.until || null, v.sourceLabel || null,
+             JSON.stringify(v.source || {}), JSON.stringify(v.stored || {}), JSON.stringify(v.delta || {}), Boolean(v.ok)]
           );
-          newCount++;
+          svCount++;
+        }
+        log.push(`동기화 검증 로그 ${svCount}건`);
+
+        for (const p of json.blogProjects || []) {
+          await pgPool.query(`INSERT INTO blog_projects (id, tenant_id, advertiser_id, data) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`,
+            [p.projectId || makeId('blog'), tenantId, advertiserIdMap.get(p.advertiserId) || null, JSON.stringify(p)]);
+        }
+        for (const a of json.blogAssets || []) {
+          await pgPool.query(`INSERT INTO blog_assets (id, tenant_id, data) VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING`, [a.assetId || makeId('asset'), tenantId, JSON.stringify(a)]);
+        }
+        for (const st of json.blogStyles || []) {
+          const newAdvId = advertiserIdMap.get(st.advertiserId);
+          if (newAdvId) await pgPool.query(`INSERT INTO blog_styles (tenant_id, advertiser_id, data) VALUES ($1,$2,$3) ON CONFLICT (tenant_id, advertiser_id) DO UPDATE SET data=EXCLUDED.data`, [tenantId, newAdvId, JSON.stringify(st)]);
+        }
+        for (const s of json.scheduleSlots || []) {
+          await pgPool.query(`INSERT INTO schedule_slots (id, tenant_id, data) VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING`, [String(s.id || makeId('slot')), tenantId, JSON.stringify(s)]);
+        }
+        for (const l of json.logs || []) {
+          await pgPool.query(`INSERT INTO activity_logs (tenant_id, action, data) VALUES ($1,$2,$3)`, [tenantId, l.action || 'unknown', JSON.stringify(l)]);
+        }
+        log.push(`블로그 ${json.blogProjects?.length ?? 0}건, 일정 ${json.scheduleSlots?.length ?? 0}건, 로그 ${json.logs?.length ?? 0}건`);
+
+        log.push('완료. 원본 JSON 파일은 그대로 남아있고, 서비스는 계속 정상 동작합니다.');
+        return sendJson(res, 200, { ok: true, tenantId, log });
+      } catch (error) {
+        return sendJson(res, 500, { error: error instanceof Error ? error.message : '마이그레이션에 실패했습니다.' });
+      }
+    }
+
+    // 네이버 등 매체별 비밀키는 절대 브라우저로 보내지 않습니다 - accounts[].secret_key/api_key는 항상 가려서 응답합니다.
+    function redactAdvertiser(adv) {
+      if (!adv?.accounts) return adv;
+      return { ...adv, accounts: adv.accounts.map(a => ({ ...a, secret_key: a.secret_key ? '••••••••' : undefined, api_key: a.api_key ? `${String(a.api_key).slice(0, 6)}••••` : undefined })) };
+    }
+
+    // ---- 광고주 CRUD (PostgreSQL 기반) --------------------------------------------------
+    async function pgFetchAdvertisers(tenantId, whereId) {
+      const res = await pgPool.query(
+        `SELECT a.id, a.name, a.monthly_budget, a.brand_color, a.industry, a.website, a.phone, a.address, a.business_reg_no, a.autopost_pro_industry,
+                a.created_at, a.updated_at,
+                COALESCE(json_agg(json_build_object(
+                  'channel', m.channel, 'status', m.status, 'account_id', m.account_id,
+                  'api_key', CASE WHEN m.api_key_encrypted IS NOT NULL THEN 'encrypted' ELSE NULL END,
+                  'secret_key', CASE WHEN m.secret_key_encrypted IS NOT NULL THEN 'encrypted' ELSE NULL END,
+                  'last_synced_at', m.last_synced_at, 'last_row_count', m.last_row_count, 'last_sync_error', m.last_sync_error
+                ) ORDER BY m.channel) FILTER (WHERE m.id IS NOT NULL), '[]') as accounts
+         FROM advertisers a
+         LEFT JOIN media_accounts m ON m.advertiser_id = a.id
+         WHERE a.tenant_id = $1 ${whereId ? 'AND a.id = $2' : ''}
+         GROUP BY a.id ORDER BY a.created_at DESC`,
+        whereId ? [tenantId, whereId] : [tenantId]
+      );
+      return res.rows.map(r => ({
+        id: r.id, name: r.name, monthly_budget: Number(r.monthly_budget) || 0, brand_color: r.brand_color,
+        industry: r.industry, website: r.website, phone: r.phone, address: r.address, business_reg_no: r.business_reg_no,
+        autopost_pro_industry: r.autopost_pro_industry,
+        created_at: r.created_at, updated_at: r.updated_at, accounts: r.accounts || [],
+      }));
+    }
+
+    if (req.method === 'GET' && pathname === '/api/advertisers') {
+      const tenantId = await getCurrentTenantId();
+      const rows = await pgFetchAdvertisers(tenantId);
+      // 권한 분리: 광고주 범위가 제한된 팀원에게는 그 목록만 보여줍니다(owner/전체 접근 사용자는 그대로 전체).
+      // 이전에는 인증 자체가 실패해도(비로그인 등) 그냥 전체 목록을 돌려주는 취약점이 있었습니다 -
+      // 반드시 로그인된 사용자여야 합니다.
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const scoped = !requester.isOwner && requester.advertiserIds
+        ? rows.filter(r => requester.advertiserIds.includes(String(r.id)))
+        : rows;
+      return sendJson(res, 200, scoped.map(redactAdvertiser));
+    }
+    if (req.method === 'POST' && pathname === '/api/advertisers') {
+      const body = await readJson(req);
+      const name = cleanText(body.name, 120);
+      if (!name) return sendJson(res, 400, { error: '광고주명을 입력하세요.' });
+      const tenantId = await getCurrentTenantId();
+      const advRes = await pgPool.query(
+        `INSERT INTO advertisers (tenant_id, name, monthly_budget, brand_color, industry, website, phone, address, business_reg_no)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+        [tenantId, name, Number(body.monthly_budget ?? body.monthlyBudget ?? 0) || 0,
+         cleanText(body.brand_color || body.color || '#2563eb', 30), cleanText(body.industry || '', 120),
+         cleanText(body.website || '', 500), cleanText(body.phone || '', 100), cleanText(body.address || '', 300),
+         cleanText(body.business_reg_no || body.businessRegNo || '', 30) || null]
+      );
+      const newId = advRes.rows[0].id;
+      for (const acc of (Array.isArray(body.accounts) ? body.accounts : [])) {
+        await pgPool.query(
+          `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [tenantId, newId, acc.channel, acc.status || 'connected', acc.account_id || null, encryptSecret(acc.api_key), encryptSecret(acc.secret_key)]
+        );
+      }
+      const [created] = await pgFetchAdvertisers(tenantId, newId);
+      return sendJson(res, 201, redactAdvertiser(created));
+    }
+    const advertiserMatch = pathname.match(/^\/api\/advertisers\/([^/]+)$/);
+    if (advertiserMatch && (req.method === 'PUT' || req.method === 'PATCH')) {
+      const id = decodeURIComponent(advertiserMatch[1]); const body = await readJson(req);
+      const tenantId = await getCurrentTenantId();
+      const [existing] = await pgFetchAdvertisers(tenantId, id);
+      if (!existing) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (!canAccessAdvertiser(requester, id)) return sendJson(res, 403, { error: '이 광고주를 수정할 권한이 없습니다.' });
+
+      const fields = ['name','monthly_budget','brand_color','industry','website','phone','address','business_reg_no','autopost_pro_industry'];
+      const updates = {};
+      for (const f of fields) {
+        const camelKey = f === 'monthly_budget' ? 'monthlyBudget' : f === 'brand_color' ? 'color' : f === 'business_reg_no' ? 'businessRegNo' : f === 'autopost_pro_industry' ? 'autopostProIndustry' : f;
+        if (body[f] !== undefined) updates[f] = body[f];
+        else if (body[camelKey] !== undefined) updates[f] = body[camelKey];
+      }
+      if (Object.keys(updates).length) {
+        const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 3}`).join(', ');
+        await pgPool.query(`UPDATE advertisers SET ${setClauses}, updated_at = now() WHERE id = $1 AND tenant_id = $2`,
+          [id, tenantId, ...Object.values(updates)]);
+      } else {
+        await pgPool.query(`UPDATE advertisers SET updated_at = now() WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+      }
+
+      const connectEvents = [];
+      if (Array.isArray(body.accounts)) {
+        for (const incoming of body.accounts) {
+          if (incoming._remove) {
+            const del = await pgPool.query(`DELETE FROM media_accounts WHERE advertiser_id=$1 AND channel=$2 RETURNING id`, [id, incoming.channel]);
+            if (del.rowCount) connectEvents.push({ channel: incoming.channel, type: 'disconnect' });
+            continue;
+          }
+          const existingAcc = await pgPool.query(`SELECT status FROM media_accounts WHERE advertiser_id=$1 AND channel=$2`, [id, incoming.channel]);
+          const wasConnected = existingAcc.rows[0]?.status === 'connected';
+          // api_key/secret_key가 이번 요청에 없으면(예: 다른 화면의 부분 저장) 기존 암호화 값을 그대로 유지합니다.
+          await pgPool.query(
+            `INSERT INTO media_accounts (tenant_id, advertiser_id, channel, status, account_id, api_key_encrypted, secret_key_encrypted)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (advertiser_id, channel) DO UPDATE SET
+               status = EXCLUDED.status,
+               account_id = COALESCE(EXCLUDED.account_id, media_accounts.account_id),
+               api_key_encrypted = COALESCE(EXCLUDED.api_key_encrypted, media_accounts.api_key_encrypted),
+               secret_key_encrypted = COALESCE(EXCLUDED.secret_key_encrypted, media_accounts.secret_key_encrypted)`,
+            [tenantId, id, incoming.channel, incoming.status || 'connected', incoming.account_id || null,
+             incoming.api_key ? encryptSecret(incoming.api_key) : null, incoming.secret_key ? encryptSecret(incoming.secret_key) : null]
+          );
+          if (incoming.status === 'connected' && !wasConnected) connectEvents.push({ channel: incoming.channel, type: 'connect' });
         }
       }
-    } catch (error) {
-      failedCount++;
-      console.error(`[레퍼런스 수집 Worker 실패] ${c.brand_name}:`, error?.message || error);
+      for (const ev of connectEvents) {
+        try {
+          await addLog({ action: ev.type === 'connect' ? 'channel_connected' : 'channel_disconnected', advertiserId: id, advertiserName: existing.name, channel: ev.channel });
+        } catch (err) {
+          console.error('[매체 연결 기록 실패]', ev.channel, ev.type, err?.message || err);
+        }
+      }
+      if (connectEvents.length) console.log(`[매체 연결] ${existing.name} - ${connectEvents.map(e => `${e.channel}:${e.type}`).join(', ')}`);
+      const [updated] = await pgFetchAdvertisers(tenantId, id);
+      return sendJson(res, 200, redactAdvertiser(updated));
     }
-    // Meta API 요청이 한꺼번에 몰리지 않도록 브랜드 사이에 약간의 간격을 둡니다.
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  console.log(`[레퍼런스 수집 Worker] 완료 - 신규 ${newCount}건, 갱신 ${updatedCount}건, 실패 ${failedCount}개 브랜드`);
-  referenceWorkerStatus = { lastRunAt: new Date().toISOString(), lastResult: { competitors: competitors.rows.length, newCount, updatedCount, failedCount } };
+    if (advertiserMatch && req.method === 'DELETE') {
+      const id = decodeURIComponent(advertiserMatch[1]);
+      const tenantId = await getCurrentTenantId();
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (!canAccessAdvertiser(requester, id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+      // ON DELETE CASCADE로 media_accounts/daily_metrics/campaign_daily_metrics/creative_daily_metrics/
+      // keyword_daily_metrics/blog_projects까지 함께 삭제됩니다.
+      await pgPool.query(`DELETE FROM advertisers WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === 'GET' && pathname === '/api/logs') { const tenantId = await getCurrentTenantId(); return sendJson(res, 200, (await pgReadDb(tenantId)).logs); }
+
+    // ---- Meta 광고 API 연동 ----
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/status') {
+      return sendJson(res, 200, { configured: metaConfigured() });
+    }
+
+    // ---- 보고서 관리 ---------------------------------------------------------------
+    // 보고서도 대시보드/인사이트와 완전히 동일한 중앙 dailyMetrics를 사용합니다.
+    // 보고서 요청 시 외부 매체 API를 다시 호출하지 않으므로 같은 광고주·같은 기간의 숫자는 항상 동일합니다.
+    if (req.method === 'POST' && pathname === '/api/reports/daily-performance') {
+      const body = await readJson(req);
+      const advertiserName = cleanText(body.advertiserName || '', 120);
+      const month = cleanText(body.month || '', 7);
+      const platforms = Array.isArray(body.platforms) ? body.platforms : [];
+      const [yearStr, monthStr] = month.split('-');
+      const year = Number(yearStr), monthNum = Number(monthStr);
+      if (!advertiserName || !year || !monthNum) return sendJson(res, 400, { error: 'advertiserName과 month가 필요합니다.' });
+
+      const tenantId = await getCurrentTenantId();
+      const db = await pgReadDb(tenantId);
+      const advertiser = db.advertisers.find(a => a.name === advertiserName);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      const daysInMonth = new Date(year, monthNum, 0).getDate();
+      const pad = n => String(n).padStart(2, '0');
+      const since = `${year}-${pad(monthNum)}-01`;
+      const monthEndIso = `${year}-${pad(monthNum)}-${pad(daysInMonth)}`;
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const until = monthEndIso > todayIso ? todayIso : monthEndIso;
+      const requestedChannels = new Map([['메타','meta'],['네이버','naver'],['구글','google'],['당근','daangn'],['카카오','kakao'],['틱톡','tiktok']]);
+      const selected = platforms.length ? platforms : [...requestedChannels.keys()];
+      const source = {};
+      const statuses = [];
+
+      for (const label of selected) {
+        const channel = requestedChannels.get(label);
+        if (!channel) continue;
+        const account = (advertiser.accounts || []).find(a => a.channel === channel);
+        if (!account || account.status !== 'connected') { statuses.push({ channel, label, status: 'disconnected' }); continue; }
+        if (!IMPLEMENTED_METRIC_CHANNELS.has(channel)) { statuses.push({ channel, label, status: 'connector_unimplemented' }); continue; }
+        if (account.last_sync_error) { statuses.push({ channel, label, status: 'error', error: account.last_sync_error }); continue; }
+        const rows = (db.dailyMetrics || []).filter(r => String(r.advertiserId) === String(advertiser.id) && r.channel === channel && r.date >= since && r.date <= until);
+        const byDate = new Map(rows.map(r => [r.date, r]));
+        const impressions=[], clicks=[], spend=[], leads=[], purchases=[], revenue=[];
+        for (let day=1;day<=daysInMonth;day++) {
+          const iso=`${year}-${pad(monthNum)}-${pad(day)}`; const row=byDate.get(iso);
+          impressions.push(metricNumber(row?.impressions)); clicks.push(metricNumber(row?.clicks)); spend.push(metricNumber(row?.spend)); leads.push(metricNumber(row?.dbCount)); purchases.push(metricNumber(row?.purchases)); revenue.push(metricNumber(row?.revenue));
+        }
+        source[label]={ impressions, clicks, spend, leads, purchases, revenue };
+        statuses.push({ channel, label, status: 'connected', lastSyncedAt: account.last_synced_at || null, rowCount: rows.length });
+      }
+      return sendJson(res, 200, { ok: true, source, statuses, mode: 'central-metrics', from: since, to: until, collectedAt: new Date().toISOString() });
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/accounts') {
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      try {
+        const accounts = await metaListAdAccounts();
+        return sendJson(res, 200, { accounts });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+      }
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/meta/insights') {
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const accountId = query.get('accountId');
+      const since = query.get('since');
+      const until = query.get('until');
+      if (!accountId || !since || !until) return sendJson(res, 400, { error: 'accountId, since, until 파라미터가 모두 필요합니다.' });
+      try {
+        const rows = await metaFetchInsights(accountId, since, until);
+        return sendJson(res, 200, { rows });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
+      }
+    }
+
+    // ---- 중앙 성과 데이터 저장소(dailyMetrics / creativeMetrics / keywordMetrics) -------
+    // 매체 계정 연동(설정 > 매체 계정 연동 > 광고 매체 계정)에서 연결에 성공하면 이 저장소에
+    // 데이터를 채워 넣고, 보고서/통합 홈/캠페인 관리/소재 관리/키워드 관리 등 모든 화면이
+    // 이 한 곳만 읽습니다.
+    function metricNumber(value) { return Number(value || 0) || 0; }
+    async function upsertDailyMetrics(tenantId, advertiserId, channel, rows) {
+      const valid = (rows || []).filter(r => r.date);
+      if (!valid.length) return;
+      await pgQueryWithRetry(
+        `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+         SELECT $1, $2, $3, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc
+         FROM UNNEST($4::date[], $5::bigint[], $6::bigint[], $7::numeric[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::bigint[], $14::bigint[]) AS t(d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc)
+         ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
+           impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout,
+           unconfirmed_count=EXCLUDED.unconfirmed_count, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.date), valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)),
+         valid.map(r => metricNumber(r.spend)), valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout)),
+         valid.map(r => metricNumber(r.unconfirmed))]
+      );
+    }
+    async function readStoredDailyMetrics(tenantId, advertiserId, channel, since, until) {
+      const result = await pgQueryWithRetry(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, impressions, clicks, spend, db_count, purchases, revenue, unconfirmed_count
+           FROM daily_metrics
+          WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3 AND date BETWEEN $4::date AND $5::date
+          ORDER BY date`,
+        [tenantId, advertiserId, channel, since, until]
+      );
+      return result.rows.map(row => ({
+        date: row.date,
+        impressions: metricNumber(row.impressions),
+        clicks: metricNumber(row.clicks),
+        spend: metricNumber(row.spend),
+        dbCount: metricNumber(row.db_count),
+        purchases: metricNumber(row.purchases),
+        revenue: metricNumber(row.revenue),
+        unconfirmed: metricNumber(row.unconfirmed_count),
+      }));
+    }
+
+    async function upsertCampaignDailyMetrics(tenantId, advertiserId, channel, rows) {
+      const valid = (rows || []).filter(r => r.date && r.campaignId);
+      if (!valid.length) return;
+      await pgQueryWithRetry(
+        `INSERT INTO campaign_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+         SELECT $1, $2, $3, cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::date[], $8::bigint[], $9::bigint[], $10::numeric[], $11::bigint[], $12::bigint[], $13::numeric[], $14::bigint[], $15::bigint[], $16::bigint[], $17::bigint[]) AS t(cid, cname, ctype, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc)
+         ON CONFLICT (advertiser_id, channel, campaign_id, date) DO UPDATE SET
+           campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks,
+           spend=EXCLUDED.spend, db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout,
+           unconfirmed_count=EXCLUDED.unconfirmed_count, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => String(r.campaignId)), valid.map(r => r.campaignName || String(r.campaignId)), valid.map(r => r.campaignType || ''), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout)),
+         valid.map(r => metricNumber(r.unconfirmed))]
+      );
+    }
+    async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
+      const valid = (rows || []).filter(r => r.date && r.adId);
+      if (!valid.length) return;
+      await pgQueryWithRetry(
+        `INSERT INTO creative_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, ad_id, ad_name, date, impressions, clicks, spend, db_count, purchases, revenue, thumbnail_url, media_type, video_url, title, body, description, cta, carousel_images, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg::jsonb, atc, creg, ichk, unc
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::text[], $19::text[], $20::text[], $21::text[], $22::text[], $23::text[], $24::text[], $25::text[], $26::bigint[], $27::bigint[], $28::bigint[], $29::bigint[])
+           AS t(cid, cname, ctype, agid, agname, aid, aname, d, imp, clk, sp, dbc, pur, rev, thumb, mtype, vurl, ttl, bdy, desc_, cta_, cimg, atc, creg, ichk, unc)
+         ON CONFLICT (advertiser_id, channel, ad_id, date) DO UPDATE SET
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
+           ad_name=EXCLUDED.ad_name, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           thumbnail_url=EXCLUDED.thumbnail_url, media_type=EXCLUDED.media_type, video_url=EXCLUDED.video_url, title=EXCLUDED.title,
+           body=EXCLUDED.body, description=EXCLUDED.description, cta=EXCLUDED.cta, carousel_images=EXCLUDED.carousel_images,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout,
+           unconfirmed_count=EXCLUDED.unconfirmed_count, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
+         valid.map(r => String(r.adId)), valid.map(r => r.adName || String(r.adId)), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => r.thumbnailUrl || null), valid.map(r => r.mediaType || null), valid.map(r => r.videoUrl || null), valid.map(r => r.title || ''),
+         valid.map(r => r.body || ''), valid.map(r => r.description || ''), valid.map(r => r.cta || ''),
+         valid.map(r => JSON.stringify(r.carouselImages || null)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout)),
+         valid.map(r => metricNumber(r.unconfirmed))]
+      );
+    }
+    async function upsertKeywordDailyMetrics(tenantId, advertiserId, channel, rows) {
+      const valid = (rows || []).filter(r => r.date && (r.keywordId || r.keyword));
+      if (!valid.length) return;
+      await pgQueryWithRetry(
+        `INSERT INTO keyword_daily_metrics (tenant_id, advertiser_id, channel, campaign_id, campaign_name, campaign_type, adgroup_id, adgroup_name, keyword_id, keyword, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+         SELECT $1, $2, $3, cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc
+         FROM UNNEST($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::bigint[], $13::bigint[], $14::numeric[], $15::bigint[], $16::bigint[], $17::numeric[], $18::bigint[], $19::bigint[], $20::bigint[], $21::bigint[])
+           AS t(cid, cname, ctype, agid, agname, kwid, kw, d, imp, clk, sp, dbc, pur, rev, atc, creg, ichk, unc)
+         ON CONFLICT (advertiser_id, channel, keyword_id, keyword, date) DO UPDATE SET
+           campaign_id=EXCLUDED.campaign_id, campaign_name=EXCLUDED.campaign_name, campaign_type=EXCLUDED.campaign_type, adgroup_id=EXCLUDED.adgroup_id, adgroup_name=EXCLUDED.adgroup_name,
+           impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, spend=EXCLUDED.spend,
+           db_count=EXCLUDED.db_count, purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue,
+           add_to_cart=EXCLUDED.add_to_cart, complete_registration=EXCLUDED.complete_registration, initiate_checkout=EXCLUDED.initiate_checkout,
+           unconfirmed_count=EXCLUDED.unconfirmed_count, updated_at=now()`,
+        [tenantId, advertiserId, channel,
+         valid.map(r => r.campaignId || ''), valid.map(r => r.campaignName || ''), valid.map(r => r.campaignType || ''), valid.map(r => r.adgroupId || ''), valid.map(r => r.adgroupName || ''),
+         valid.map(r => r.keywordId || ''), valid.map(r => r.keyword || r.keywordId), valid.map(r => r.date),
+         valid.map(r => metricNumber(r.impressions)), valid.map(r => metricNumber(r.clicks)), valid.map(r => metricNumber(r.spend)),
+         valid.map(r => metricNumber(r.dbCount)), valid.map(r => metricNumber(r.purchases)), valid.map(r => metricNumber(r.revenue)),
+         valid.map(r => metricNumber(r.addToCart)), valid.map(r => metricNumber(r.completeRegistration)), valid.map(r => metricNumber(r.initiateCheckout)),
+         valid.map(r => metricNumber(r.unconfirmed))]
+      );
+    }
+    function aggregateMetricRows(rows) {
+      return (rows || []).reduce((a, r) => ({ impressions: a.impressions + metricNumber(r.impressions), clicks: a.clicks + metricNumber(r.clicks), spend: a.spend + metricNumber(r.spend), dbCount: a.dbCount + metricNumber(r.dbCount), purchases: a.purchases + metricNumber(r.purchases), unconfirmed: a.unconfirmed + metricNumber(r.unconfirmed), revenue: a.revenue + metricNumber(r.revenue) }), { impressions: 0, clicks: 0, spend: 0, dbCount: 0, purchases: 0, unconfirmed: 0, revenue: 0 });
+    }
+    async function recordValidation(tenantId, advertiserId, channel, since, until, sourceRows, storedRows, sourceLabel, accountId = '') {
+      const source = aggregateMetricRows(sourceRows);
+      const stored = aggregateMetricRows(storedRows);
+      const delta = Object.fromEntries(Object.keys(source).map(k => [k, metricNumber(stored[k]) - metricNumber(source[k])]));
+      const tolerance = (key) => key === 'spend' || key === 'revenue' ? 1 : 0;
+      const ok = Object.keys(delta).every(k => Math.abs(delta[k]) <= tolerance(k));
+      try {
+        await pgQueryWithRetry(
+          `INSERT INTO sync_validation_logs (tenant_id, advertiser_id, channel, date_from, date_to, source_label, source_totals, stored_totals, delta, ok, account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [tenantId, advertiserId, channel, since || null, until || null, sourceLabel, JSON.stringify(source), JSON.stringify(stored), JSON.stringify(delta), ok, accountId || null]
+        );
+        console.log(`[Sync 검증 로그 저장] ${channel} advertiser=${advertiserId} ${since}~${until} ok=${ok}`);
+      } catch (error) {
+        // 검증 로그 저장이 실패해도 동기화 자체는 계속되도록 하되, 원인이 보이도록 반드시 남깁니다.
+        console.error(`[Sync 검증 로그 저장 실패] ${channel} advertiser=${advertiserId}:`, error?.message || error);
+      }
+      return { ok, source, stored, delta };
+    }
+
+/** 동기화 성공/실패 결과를 해당 광고주·매체 연결 정보에 기록합니다 - '데이터 수집 현황' 화면이 이 값을 읽습니다. */
+async function recordSyncResult(tenantId, advertiserId, channel, { ok, count, error, note }) {
+  // 장기 수집의 마지막 bookkeeping 단계입니다. 여기서 일시적인 DB connection timeout 한 번 때문에
+  // 앞에서 정상 저장된 6개월치 전체를 '동기화 실패'로 오판하지 않도록 일반 저장보다 더 넉넉하게 재시도합니다.
+  await pgQueryWithRetry(
+    `UPDATE media_accounts SET last_synced_at = now(),
+       last_row_count = CASE WHEN $4 THEN $5 ELSE last_row_count END,
+       last_sync_error = CASE WHEN $4 THEN NULL ELSE $6 END
+     WHERE advertiser_id = $1 AND channel = $2 AND tenant_id = $3`,
+    [advertiserId, channel, tenantId, ok, count ?? 0, error || '알 수 없는 오류'],
+    { maxAttempts: 6, label: `sync result ${channel}/${advertiserId}` }
+  );
+  const advRes = await pgQueryWithRetry(
+    `SELECT name FROM advertisers WHERE id = $1`,
+    [advertiserId],
+    { maxAttempts: 4, label: `sync advertiser lookup ${advertiserId}` }
+  );
+  const advertiserName = advRes.rows[0]?.name || advertiserId;
+  // note: 전체는 성공(ok=true)이지만 일부 구간만 실패한 경우의 상세 내역입니다. 상태 표시(성공/실패)
+  // 자체는 건드리지 않고(대부분 성공한 걸 실패로 잘못 보여주지 않기 위해), 감사 로그에만 남깁니다.
+  addLog({ action: ok ? 'sync_success' : 'sync_failed', advertiserId, advertiserName, channel, count: count ?? 0, error: ok ? null : (error || '알 수 없는 오류'), note: note || null });
 }
 
-/** 하루 2번(한국시간 08시, 20시)에 레퍼런스 자동 수집을 실행합니다. 광고 라이브러리는 하루 단위로
- * 갱신되는 데이터라 성과 동기화만큼 자주 돌 필요는 없습니다. */
-const REFERENCE_WORKER_HOURS_KST = [8, 20];
-let lastReferenceWorkerKey = '';
-function scheduleReferenceWorker() {
+function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
+  const timer = setTimeout(() => {
+    recordSyncResult(tenantId, advertiserId, channel, result)
+      .then(() => console.log(`[동기화 상태 후속 기록 성공] ${channel} advertiser=${advertiserId}`))
+      .catch(error => console.error(`[동기화 상태 후속 기록 실패] ${channel} advertiser=${advertiserId}:`, error?.message || error));
+  }, 15_000);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
+    /** 동기화(백엔드 내부용)에서만 사용합니다 - 실제 API 호출을 위해 복호화된 값을 반환합니다. 프론트로는 절대 내려보내지 않습니다. */
+    async function pgGetMediaAccountForSync(tenantId, advertiserId, channel) {
+      const r = await pgQueryWithRetry(
+        `SELECT account_id, api_key_encrypted, secret_key_encrypted, status FROM media_accounts WHERE tenant_id=$1 AND advertiser_id=$2 AND channel=$3`,
+        [tenantId, advertiserId, channel],
+        { maxAttempts: 4, label: `media account lookup ${channel}/${advertiserId}` }
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return { account_id: row.account_id, status: row.status, api_key: decryptSecret(row.api_key_encrypted), secret_key: decryptSecret(row.secret_key_encrypted) };
+    }
+
+    if (req.method === 'GET' && pathname === '/api/integrations/auto-sync-status') {
+      // 서버 메모리(autoSyncStatus)는 배포 등으로 서버가 재시작되면 사라지므로, DB에 저장된
+      // 이력을 우선 사용합니다. DB 조회가 안 되는 경우에만 메모리 값을 fallback으로 씁니다.
+      let lastRunAt = autoSyncStatus.lastRunAt;
+      let lastResult = autoSyncStatus.lastResult;
+      if (pgPool) {
+        try {
+          const tenantId = await getCurrentTenantId();
+          const r = await pgPool.query(`SELECT auto_sync_last_run_at, auto_sync_last_result FROM tenants WHERE id=$1`, [tenantId]);
+          if (r.rows[0]?.auto_sync_last_run_at) {
+            lastRunAt = r.rows[0].auto_sync_last_run_at;
+            lastResult = r.rows[0].auto_sync_last_result;
+          }
+        } catch { /* DB 조회 실패 시 메모리 값을 그대로 사용합니다. */ }
+      }
+      return sendJson(res, 200, {
+        enabled: Boolean(pgPool),
+        hoursKst: AUTO_SYNC_HOURS_KST,
+        lastRunAt,
+        lastResult,
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/integrations/sync') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const channel = cleanText(body.channel || '', 40);
+      // Meta는 최대 37개월(공식 한도)까지, 네이버는 실제 데이터 보존 한계인 최대 24개월(730일)까지만 지원됩니다.
+      // (네이버는 저희 쪽 제한이 아니라 네이버 서버 자체가 그 이상 데이터를 보관하지 않습니다.)
+      const maxDays = channel === 'naver' ? 730 : 1110;
+      // days=0은 '어제' 전용 특수값입니다(오늘 포함 최근 N일로는 "어제 하루만"을 표현할 수 없어서 별도 처리).
+      const isYesterdayOnly = Number(body.days) === 0;
+      const days = isYesterdayOnly ? 1 : Math.min(Math.max(Number(body.days || 90), 1), maxDays);
+      if (!advertiserId || !channel) return sendJson(res, 400, { error: 'advertiserId, channel이 필요합니다.' });
+
+      const tenantId = await getCurrentTenantId();
+      const [advertiser] = await pgFetchAdvertisers(tenantId, advertiserId);
+      if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      const account = await pgGetMediaAccountForSync(tenantId, advertiserId, channel);
+      if (!account || account.status !== 'connected' || !account.account_id) return sendJson(res, 400, { error: `${channel} 계정이 연결되어 있지 않습니다.` });
+
+      if (channel === 'meta') {
+        if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+        try {
+          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
+          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
+          const since = sinceDate.toISOString().slice(0, 10);
+          // 소재별(ad) 일별 데이터는 광고 개수가 많으면 데이터량이 매우 커지므로, 아주 긴 기간을 요청해도
+          // 최근 90일까지만 세부 수집합니다. 계정/캠페인 단위 추이는 요청한 전체 기간(최대 37개월) 그대로 수집됩니다.
+          const adSinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.min(89, days - 1)); return d; })();
+          const adSince = adSinceDate.toISOString().slice(0, 10);
+          const [accountRows, campaignRows, adRows] = await Promise.all([
+            metaFetchInsights(account.account_id, since, until),
+            metaFetchCampaignInsights(account.account_id, since, until),
+            metaFetchAdInsights(account.account_id, adSince, until),
+          ]);
+          // '통합 홈' 등 계정 전체 화면은, 캠페인별로 따로 가져와서 다시 합산한 값이 아니라
+          // Meta가 계정 레벨에서 직접 집계해 내려주는 accountRows를 그대로 저장합니다.
+          // 매체(광고관리자 등)가 레벨(계정/캠페인)마다 내부적으로 조금씩 다르게 집계할 수 있어,
+          // 캠페인 합산본을 저장하면 광고관리자에서 보는 계정 전체 숫자와 어긋날 수 있기 때문입니다.
+          const dailyRows = accountRows;
+          await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
+          await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
+          if (adRows.length) {
+            const thumbnails = await metaFetchAdCreativeThumbnails([...new Set(adRows.map(r => r.adId))], account.account_id).catch(err => { console.error('[meta-creative 전체 실패]', err?.message || err); return {}; });
+            const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
+            await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, enrichedAdRows);
+          }
+          // 진단용: 캠페인 레벨을 합산한 값이 계정 레벨 원천과 얼마나 다른지 기록합니다(저장 기준은 위에서 이미 계정 레벨로 확정).
+          const validation = await recordValidation(tenantId, advertiserId, channel, since, until, accountRows, campaignRows, 'Meta 계정 레벨 원천(저장 기준) vs 캠페인 합산(진단용)', account.account_id);
+          await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
+          return sendJson(res, 200, { ok: true, channel, count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: adRows.length, since, until, validation });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.';
+          await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg });
+          return sendJson(res, 502, { error: msg });
+        }
+      }
+
+      if (channel === 'naver') {
+        if (!account.api_key || !account.secret_key) return sendJson(res, 400, { error: '네이버 API Key/Secret Key가 저장되어 있지 않습니다.' });
+        const syncKey = `${advertiserId}|naver`;
+        if (activeBackgroundSyncs.has(syncKey)) {
+          const active = activeBackgroundSyncs.get(syncKey);
+          return sendJson(res, 409, { error: `이미 ${active.days}일치 수집이 백그라운드에서 진행 중입니다. '데이터 수집 현황'에서 완료를 확인한 뒤 다시 시도하세요.` });
+        }
+        // (중요) 90일 초과 백그라운드 동기화는 광고주별로는 중복 방지가 되어 있었지만,
+        // '서로 다른' 광고주끼리는 동시에 여러 건이 겹쳐서 돌 수 있었습니다. 이 경우 여러
+        // 대형 동기화가 같은 서버 프로세스의 메모리(힙)를 나눠 쓰게 되어, 개별로는 안전한
+        // 용량이어도 합쳐지면 메모리 안전 한계를 넘겨 실패하는 사고가 있었습니다(실제 발생 -
+        // 완도군수산 진행 중에 다시마전복수산 동기화가 겹쳐 실패). 그래서 90일 초과 백그라운드
+        // 동기화는 전체를 통틀어 한 번에 하나만 실행되도록 제한합니다.
+        //
+        // (2026-08-31 추가) 이 제한은 90일 초과 요청끼리만 서로 막았는데, 매일 7·9·14·17·19시에
+        // 자동 실행되는 '자동 동기화'(광고주별 최근 3일치, 90일 이하라 이 제한을 안 탐)가
+        // 마침 대형 백그라운드 동기화와 같은 시간에 겹치면, 짧은 동기화 여러 건이 같은 서버
+        // 프로세스 메모리를 추가로 나눠 쓰면서 대형 동기화가 시작하자마자 이미 메모리가 높은
+        // 상태였던 사고가 있었습니다. 그래서 대형(90일 초과) 백그라운드 동기화가 하나라도
+        // 진행 중이면, 자동 동기화를 포함한 다른 모든 네이버 동기화 요청을 일시적으로
+        // 대기시켜(실패 처리) 메모리를 독점적으로 쓸 수 있게 합니다.
+        if (activeBackgroundSyncs.size > 0) {
+          const [[otherKey, otherInfo]] = activeBackgroundSyncs.entries();
+          if (otherKey !== syncKey || days > 90) {
+            const otherAdvertiserId = otherKey.split('|')[0];
+            return sendJson(res, 409, { error: `다른 광고주(${otherAdvertiserId})의 대형 수집(${otherInfo.days}일치)이 진행 중이라 메모리 확보를 위해 이번 요청은 건너뜁니다. 그 동기화가 끝난 뒤 자동으로 다시 시도됩니다.` });
+          }
+        }
+        // 이 광고주처럼 키워드 2,000개 + 소재 수백 개를 항목별로 조회하는 계정은 90일 초과 시
+        // 네이버 API 호출이 1만 회를 넘어 수십 분이 걸립니다. HTTP 요청은 그 전에 프록시/브라우저가
+        // 끊어버리므로("90일 이상 동기화 실패"의 원인), 긴 수집은 백그라운드로 돌리고 즉시 응답합니다.
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        /**
+         * 한 구간(최대 90일)을 수집해 저장합니다.
+         * (중요) 90일 초과 요청을 통짜로 처리하면 키워드 2,000개 × 396일 같은 계정에서
+         * 수백만 행이 메모리에 쌓여 서버가 OOM(heap out of memory)으로 죽습니다(실제 발생).
+         * 그래서 긴 기간은 구간별로 "수집 → 저장 → 메모리 해제"를 반복합니다.
+         */
+        // 다음번에 또 OOM이 나더라도 어느 단계에서 메모리가 늘었는지 바로 보이도록,
+        // 무거운 단계마다 힙 사용량을 찍습니다(수십 바이트 수준의 오버헤드라 상시 켜둬도 무방).
+        const logHeap = (label) => {
+          // 캠페인/소재/키워드 각 단계가 끝날 때마다 먼저 강제로 정리한 뒤 측정합니다.
+          // 이렇게 안 하면 방금 끝난 단계의 회수 가능한 가비지가 아직 안 치워진 채로
+          // 측정되어, 실제로는 여유가 있는데도 안전장치가 조기에 발동하거나(오탐),
+          // 다음 단계로 넘어가면서 불필요하게 메모리가 계속 누적되어 보입니다.
+          if (global.gc) global.gc();
+          const m = process.memoryUsage();
+          console.log(`[메모리] ${label} - heapUsed=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`);
+          assertMemorySafe(label);
+        };
+        const syncNaverRange = async (since, until, isLastSegment, detailFloor) => {
+          // 계정/캠페인은 전체 요청 기간을 수집하지만, 긴 백필에서 소재/키워드까지 수백 일을
+          // 반복 조회하면 커머스 대형 계정은 API 호출 수가 폭증해 실패합니다.
+          // detailFloor 이전 구간은 세부 수집을 건너뛰고, 겹치는 구간은 detailFloor부터만 수집합니다.
+          const detailSince = detailFloor && until >= detailFloor ? (since < detailFloor ? detailFloor : since) : null;
+          // 캠페인/소재/키워드를 동시에(Promise.all) 요청하면 네이버 API 호출이 한꺼번에 몰려서
+          // 키워드처럼 단계가 많은(캠페인→광고그룹→키워드→통계) 항목이 조용히 비어버리는 경우가 있어,
+          // 순서대로 하나씩 처리합니다.
+          logHeap(`구간 ${since}~${until} 시작`);
+          const campaignRows = await naverFetchCampaignDailyMetrics(credentials, since, until);
+          logHeap(`캠페인 ${campaignRows.length}행 수집 후`);
+          const creativeRows = detailSince ? await naverFetchCreativeDailyMetrics(credentials, detailSince, until) : [];
+          logHeap(detailSince ? `소재 ${creativeRows.length}행 수집 후` : `소재 수집 생략(장기 백필 세부 보존구간 이전)`);
+          const keywordRows = detailSince ? await naverFetchKeywordDailyMetrics(credentials, detailSince, until) : [];
+          logHeap(detailSince ? `키워드 ${keywordRows.length}행 수집 후` : `키워드 수집 생략(장기 백필 세부 보존구간 이전)`);
+
+          // 네이버가 전환 유형(purchase/add_to_cart/...)을 직접 분류해주는 상세 리포트를 가져와서,
+          // /stats 기반 '추정치'(전체 전환 - 구매 등)를 정확한 실제값으로 덮어씁니다.
+          // (2026-08-31) 이 리포트는 하루당 1건씩 API를 호출해야 해서 비용이 큽니다. 그래서
+          // "/stats 세부 필드(장바구니 등) 조회가 이미 정상 작동하는 계정"은 실시간 분리가
+          // 이미 정확하므로 예전처럼 최근 구간에서만 가볍게 보정하고, "/stats 세부 필드
+          // 조회가 안 되는 것으로 확인된 계정"만 전체 기간에 이 무거운 리포트 방식을
+          // 적용합니다. 처음엔 모든 계정에 전체 기간 적용을 시도했는데, 원래도 소재/키워드가
+          // 많아 무거운 계정에 이중으로 부담이 겹쳐 메모리 안전장치가 더 자주 발동하는
+          // 부작용이 있었습니다 - 필요한 계정에만 비용을 쓰도록 좁힙니다.
+          const funnelCacheEntry = naverFunnelSupportCache.get(credentials.customerId);
+          const funnelSplitWorks = Boolean(funnelCacheEntry?.result?.definitive &&
+            (funnelCacheEntry.result.addToCart || funnelCacheEntry.result.completeRegistration || funnelCacheEntry.result.initiateCheckout));
+          const needsFullRangeReport = !funnelSplitWorks; // 확인이 안 됐거나(아직 모름) 미지원으로 확인된 경우 모두 안전하게 리포트로 보정
+          if (needsFullRangeReport || isLastSegment) try {
+            const reportSince = needsFullRangeReport ? since : undefined; // 분류 보정은 캠페인 전체 구간 기준; 세부 수집 생략 여부와 분리합니다.
+            const effectiveReportSince = reportSince || (() => { const d = new Date(`${until}T00:00:00`); d.setDate(d.getDate() - 6); const bounded = d.toISOString().slice(0, 10); return bounded < since ? since : bounded; })();
+            const reportResult = await naverFetchDailyMetricsViaReport(credentials, effectiveReportSince, until, {
+              campaignIds: new Set(campaignRows.map(r => r.campaignId).filter(Boolean)),
+              adIds: new Set(creativeRows.map(r => r.adId).filter(Boolean)),
+              keywordIds: new Set(keywordRows.map(r => r.keywordId).filter(Boolean)),
+            });
+            const campaignDetail = reportResult.campaignRows || [];
+            const creativeDetail = reportResult.creativeRows || [];
+            const keywordDetail = reportResult.keywordRows || [];
+            if (campaignDetail.length || creativeDetail.length || keywordDetail.length) {
+              const CONV_FIELDS = ['dbCount', 'purchases', 'addToCart', 'completeRegistration', 'initiateCheckout', 'revenue', 'unconfirmed'];
+
+              // 캠페인 레벨 리포트 집계만으로 날짜 안전성을 검증합니다. 소재/키워드 레벨까지 섞어
+              // 합산하면 같은 전환이 레벨별로 중복 집계되어 검증값이 부풀 수 있습니다.
+              const sumByDate = (rows2, f) => {
+                const m = new Map();
+                for (const r2 of rows2) m.set(r2.date, (m.get(r2.date) || 0) + (Number(r2[f]) || 0));
+                return m;
+              };
+              const statsPurchByDate = sumByDate(campaignRows, 'purchases');
+              const reportPurchByDate = sumByDate(campaignDetail, 'purchases');
+              const coveredDates = new Set();
+              const skippedDates = [];
+              for (const d of new Set(campaignDetail.map(x => x.date))) {
+                if ((statsPurchByDate.get(d) || 0) > 0 && (reportPurchByDate.get(d) || 0) === 0) skippedDates.push(d);
+                else coveredDates.add(d);
+              }
+              if (skippedDates.length) console.error(`[naver-conversion-detail] ⚠️ 다음 날짜는 /stats 구매가 리포트 분류에서 사라져 덮어쓰지 않습니다: ${JSON.stringify(skippedDates)}`);
+
+              const detailCampaignIds = new Set(campaignDetail.map(d => d.campaignId).filter(Boolean));
+              const statsCampaignIds = new Set(campaignRows.map(r2 => r2.campaignId).filter(Boolean));
+              const idOverlap = [...detailCampaignIds].some(id => statsCampaignIds.has(id));
+
+              if (detailCampaignIds.size && statsCampaignIds.size && !idOverlap) {
+                console.error(`[naver-conversion-detail] ⚠️ 덮어쓰기 건너뜀 - 리포트와 /stats의 캠페인 ID 형식이 일치하지 않습니다. 리포트 ID 예시=${JSON.stringify([...detailCampaignIds].slice(0, 3))} / stats ID 예시=${JSON.stringify([...statsCampaignIds].slice(0, 3))}. /stats 기반 값(purchaseCcnt 등)을 그대로 유지합니다.`);
+              } else if (coveredDates.size) {
+                const applyExact = (targetRows, idField, detailRows, detailIdField) => {
+                  const exact = new Map();
+                  for (const d of detailRows) {
+                    if (!coveredDates.has(d.date)) continue;
+                    const id = d[detailIdField];
+                    if (!id) continue;
+                    exact.set(`${d.date}|${id}`, d); // 리포트 함수에서 이미 date+id로 합산되어 있습니다.
+                  }
+                  let replaced = 0;
+                  for (const row of targetRows) {
+                    if (!coveredDates.has(row.date)) continue;
+                    const hit = exact.get(`${row.date}|${row[idField]}`);
+                    for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
+                    if (hit) replaced++;
+                  }
+                  return replaced;
+                };
+                const c1 = applyExact(creativeRows, 'adId', creativeDetail, 'adId');
+                const c2 = applyExact(keywordRows, 'keywordId', keywordDetail, 'keywordId');
+                const c3 = applyExact(campaignRows, 'campaignId', campaignDetail, 'campaignId');
+                console.log(`[naver-conversion-detail] 리포트 커버 날짜 ${[...coveredDates].sort().join(', ')}만 정확한 전환유형으로 교체 - 소재 ${c1}건, 키워드 ${c2}건, 캠페인 ${c3}건. 나머지 기간은 /stats 값 유지.`);
+              }
+            }
+          } catch (error) {
+            console.error('[naver-conversion-detail] 전환 상세 리포트를 가져오지 못해 기존 추정치를 그대로 사용합니다:', error?.message || error);
+          }
+
+          // 네이버는 Meta와 달리 "계정 레벨 전용" API가 따로 없습니다(naverFetchDailyMetrics도
+          // 결국 캠페인 데이터를 다시 합산할 뿐이라, 별도로 부르면 네이버 API만 두 번 호출하는
+          // 낭비였습니다). 그래서 네이버는 이미 가져온 campaignRows를 합산해 그대로 저장합니다.
+          const dailyRows = aggregateDailyFromDetailed(campaignRows);
+          await upsertDailyMetrics(tenantId, advertiserId, channel, dailyRows);
+          await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
+          if (creativeRows.length) await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, creativeRows);
+          if (keywordRows.length) await upsertKeywordDailyMetrics(tenantId, advertiserId, channel, keywordRows);
+
+          // 진단용: 캠페인 레벨 합계와 소재 레벨 합계를 캠페인별로 대조해서, 소재 레벨에서
+          // 어느 캠페인이 얼마나 누락되는지 확인합니다("소재 관리" 합계가 "통합 홈"과 다르다는
+          // 문제의 원인 파악용).
+          {
+            const campaignTotals = new Map();
+            for (const r of campaignRows) {
+              const key = r.campaignId || r.campaignName;
+              const cur = campaignTotals.get(key) || { name: r.campaignName, dbCount: 0, purchases: 0 };
+              cur.dbCount += Number(r.dbCount || 0); cur.purchases += Number(r.purchases || 0);
+              campaignTotals.set(key, cur);
+            }
+            const creativeTotals = new Map();
+            for (const r of creativeRows) {
+              const key = r.campaignId || r.campaignName;
+              const cur = creativeTotals.get(key) || { dbCount: 0, purchases: 0, adCount: 0 };
+              cur.dbCount += Number(r.dbCount || 0); cur.purchases += Number(r.purchases || 0); cur.adCount++;
+              creativeTotals.set(key, cur);
+            }
+            for (const [key, camp] of campaignTotals) {
+              if (camp.dbCount + camp.purchases === 0) continue;
+              const creative = creativeTotals.get(key);
+              const creativeTotal = creative ? creative.dbCount + creative.purchases : 0;
+              const campTotal = camp.dbCount + camp.purchases;
+              if (creativeTotal !== campTotal) {
+                console.log(`[네이버 소재 커버리지 대조] 캠페인="${camp.name}" 캠페인레벨(DB${camp.dbCount}+구매${camp.purchases}=${campTotal}) vs 소재레벨 합계(${creative ? `DB${creative.dbCount}+구매${creative.purchases}=${creativeTotal}, 소재 ${creative.adCount}개` : '소재 데이터 없음'}) ${creativeTotal < campTotal ? '⚠️ 소재 레벨에서 누락됨' : ''}`);
+              }
+            }
+          }
+
+          // 네이버는 purchaseCcnt/purchaseConvAmt를 원천으로 삼아 저장한 뒤, 같은 기간의
+          // daily_metrics를 다시 읽어 구매 전환이 DB 저장 과정에서 변형되지 않았는지 즉시 검증합니다.
+          // 특히 purchases에 dbCount/ccnt가 섞이는 회귀가 생기면 여기서 validation.ok=false가 됩니다.
+          const storedDailyRows = await readStoredDailyMetrics(tenantId, advertiserId, channel, since, until);
+          const validation = await recordValidation(
+            tenantId, advertiserId, channel, since, until,
+            dailyRows, storedDailyRows,
+            'Naver /stats purchaseCcnt 원천 vs HOWTOM daily_metrics 저장값',
+            account.account_id,
+          );
+          if (!validation.ok) throw new Error(`네이버 원천 전환값과 HOWTOM 저장값이 일치하지 않습니다: ${JSON.stringify(validation.delta)}`);
+
+          logHeap(`구간 ${since}~${until} 저장 완료`);
+          return { count: dailyRows.length, campaignCount: campaignRows.length, creativeCount: creativeRows.length, keywordCount: keywordRows.length, validation };
+        };
+
+        const doNaverSync = async () => {
+          const until = isYesterdayOnly ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })() : new Date().toISOString().slice(0, 10);
+          const sinceDate = isYesterdayOnly ? new Date(`${until}T00:00:00`) : (() => { const d = new Date(); d.setDate(d.getDate() - Math.max(0, days - 1)); return d; })();
+          const since = sinceDate.toISOString().slice(0, 10);
+          // 먼저 가벼운 preflight로 이 계정이 실제 일별 응답을 지원하는지 확인합니다.
+          // 기존 코드는 이 판단보다 먼저 segments를 만들어서, 첫 실행에서는 fallback 계정도
+          // 30일 구간으로 고정되는 버그가 있었습니다.
+          const dayByDayFallback = await naverPreflightDailyGranularity(credentials, until).catch(error => {
+            console.log(`[naver-preflight] 전체 확인 실패 - 기본 30일 구간으로 진행: ${error?.message || error}`);
+            return naverNeedsDayByDayFallback.has(credentials.customerId);
+          });
+          const segmentSize = dayByDayFallback ? 10 : 30;
+          const segments = splitIntoChunks(since, until, segmentSize);
+
+          // 긴 기간 백필은 '계정/캠페인 전체 기간 + 세부 최근 구간'으로 처리합니다.
+          // 일반 계정은 최근 90일, 일자별 재조회가 필요한 대형 계정은 최근 30일만 소재/키워드를
+          // 다시 수집합니다. 기존 DB의 더 오래된 세부 행은 삭제하지 않습니다.
+          const requestedDetailDays = days > 90
+            ? (dayByDayFallback ? NAVER_FALLBACK_DETAIL_HISTORY_DAYS : NAVER_DETAIL_HISTORY_DAYS)
+            : days;
+          const detailFloorDate = new Date(`${until}T00:00:00`);
+          detailFloorDate.setDate(detailFloorDate.getDate() - Math.max(0, requestedDetailDays - 1));
+          const detailFloor = detailFloorDate.toISOString().slice(0, 10);
+          console.log(`[naver-sync] 전체 ${since}~${until}, 구간=${segmentSize}일, 소재/키워드 백필=${detailFloor}~${until}${dayByDayFallback ? ' (일자별 fallback 계정)' : ''}`);
+          const total = { count: 0, campaignCount: 0, creativeCount: 0, keywordCount: 0 };
+          let lastValidation = null;
+          const failedSegments = [];
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const isLast = i === segments.length - 1;
+            const active = activeBackgroundSyncs.get(syncKey);
+            if (active) active.progress = `구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 수집 중`;
+            console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 시작: ${seg.since}~${seg.until}`);
+            // (2026-08-31) 예전엔 구간 하나가 예외를 던지면(메모리 안전장치, 검증 불일치,
+            // 네이버 일시 오류 등) 그 예외가 이 반복문 전체를 뚫고 나가서, 이미 성공적으로
+            // 저장된 다른 구간들까지 전부 '실패'로 기록되는 버그가 있었습니다. 6개월처럼
+            // 구간이 많아질수록(12~18개) 그중 하나만 걸려도 전체가 실패로 보이는 것이
+            // "6개월 이상만 계속 실패한다"는 증상의 핵심 원인이었습니다. 이제 구간마다
+            // 개별로 실패를 기록하고 다음 구간으로 계속 진행합니다.
+            let r;
+            try {
+              r = await syncNaverRange(seg.since, seg.until, isLast, detailFloor);
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              console.error(`[naver-sync] 구간 ${i + 1}/${segments.length} (${seg.since}~${seg.until}) 실패, 다음 구간으로 계속 진행합니다: ${msg}`);
+              failedSegments.push({ since: seg.since, until: seg.until, error: msg });
+              if (global.gc) global.gc();
+              continue;
+            }
+            total.count += r.count; total.campaignCount += r.campaignCount; total.creativeCount += r.creativeCount; total.keywordCount += r.keywordCount;
+            lastValidation = r.validation;
+            console.log(`[naver-sync] 구간 ${i + 1}/${segments.length} 완료: 일별 ${r.count}행, 캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행`);
+            // (2026-08-31) 구간이 끝나도 V8이 곧바로 GC를 돌리지 않아 이전 구간의 데이터가
+            // 다음 구간까지 누적되는 사고가 있었습니다(새 구간 시작 전인데 이미 힙 3.6GB+).
+            // railway.toml에서 --expose-gc로 켜둔 global.gc()를 여기서 명시적으로 호출해,
+            // 다음 구간이 항상 낮은 기준점에서 시작하도록 강제로 정리합니다.
+            if (global.gc) {
+              const beforeGc = process.memoryUsage().heapUsed;
+              global.gc();
+              const afterGc = process.memoryUsage().heapUsed;
+              console.log(`[메모리] 구간 ${i + 1}/${segments.length} 완료 후 강제 정리 - ${(beforeGc / 1048576).toFixed(0)}MB → ${(afterGc / 1048576).toFixed(0)}MB`);
+            }
+          }
+          const succeededSegments = segments.length - failedSegments.length;
+          if (succeededSegments === 0 && segments.length > 0) {
+            // 전 구간이 다 실패했으면 이건 진짜 실패입니다 - 예전처럼 예외를 던져 실패로 기록합니다.
+            throw new Error(failedSegments[0]?.error || '모든 구간이 실패했습니다.');
+          }
+          if (failedSegments.length) {
+            console.log(`[naver-sync] 전체 ${segments.length}구간 중 ${succeededSegments}개 성공, ${failedSegments.length}개 실패: ${JSON.stringify(failedSegments.map(f => `${f.since}~${f.until}`))}`);
+          }
+          let statusRecorded = true;
+          try {
+            const partialNote = failedSegments.length
+              ? `일부 구간 실패(${succeededSegments}/${segments.length}개 구간 성공) - 실패 구간: ${failedSegments.map(f => `${f.since}~${f.until}`).join(', ')}. 실패한 기간만 다시 좁혀서 재시도하면 채워집니다.`
+              : null;
+            await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: total.count, note: partialNote });
+          } catch (error) {
+            // 데이터 수집/저장 자체가 끝난 뒤 '마지막 상태 표시 UPDATE'만 일시 실패한 경우입니다.
+            // 이 예외를 밖으로 던지면 실제 데이터는 정상인데 UI에 '실패'로 기록되는 잘못된 판정이 생깁니다.
+            statusRecorded = false;
+            console.error(`[네이버 동기화] 데이터 저장은 완료됐지만 최종 상태 기록이 지연됩니다: ${error?.message || error}`);
+            scheduleSyncResultRetry(tenantId, advertiserId, channel, { ok: true, count: total.count });
+          }
+          return { ok: true, channel, ...total, since, until, segments: segments.length, detailSince: detailFloor, validation: lastValidation, statusRecorded };
+        };
+        const onNaverFail = async (error) => {
+          const msg = error instanceof Error ? error.message : '네이버 API 호출에 실패했습니다.';
+          await recordSyncResult(tenantId, advertiserId, channel, { ok: false, error: msg }).catch(() => {});
+          return msg;
+        };
+
+        if (days > 90) {
+          activeBackgroundSyncs.set(syncKey, { startedAt: new Date().toISOString(), days });
+          console.log(`[백그라운드 동기화 시작] naver advertiser=${advertiserId} 최근 ${days}일`);
+          doNaverSync()
+            .then(r => console.log(`[백그라운드 동기화 완료] naver advertiser=${advertiserId} ${r.count}일치 (캠페인 ${r.campaignCount}행, 소재 ${r.creativeCount}행, 키워드 ${r.keywordCount}행)`))
+            .catch(async (error) => {
+              const msg = await onNaverFail(error);
+              console.error(`[백그라운드 동기화 실패] naver advertiser=${advertiserId}: ${msg}`);
+            })
+            .finally(() => activeBackgroundSyncs.delete(syncKey));
+          return sendJson(res, 202, {
+            ok: true, background: true, channel, days,
+            message: `${days}일치 수집을 백그라운드에서 시작했습니다. 계정·캠페인은 전체 기간을 수집하고, 대형 계정의 안정성을 위해 소재·키워드 장기 백필은 최근 구간만 수집합니다. '데이터 수집 현황'에서 완료 여부를 확인하세요.`,
+          });
+        }
+
+        try {
+          return sendJson(res, 200, await doNaverSync());
+        } catch (error) {
+          return sendJson(res, 502, { error: await onNaverFail(error) });
+        }
+      }
+
+      if (!IMPLEMENTED_METRIC_CHANNELS.has(channel)) return sendJson(res, 501, { error: `${channel} 커넥터는 아직 구현되지 않았습니다.`, status: 'connector_unimplemented' });
+      return sendJson(res, 400, { error: `${channel} 동기화 요청을 처리할 수 없습니다.` });
+    }
+
+    async function parseMetricQuery() {
+      const query = new URLSearchParams((req.url || '').split('?')[1] || '');
+      const from = query.get('from') || query.get('since') || '';
+      const to = query.get('to') || query.get('until') || '';
+      const advertiserId = query.get('advertiserId') || '';
+      const channels = (query.get('channel') || '').split(',').map(v => v.trim()).filter(Boolean);
+      // 권한 분리: 이 요청 사용자가 광고주 범위 제한이 있는 팀원이면(owner/전체 접근 아님),
+      // accessibleAdvertiserIds에 그 범위만 담습니다. filterMetricRows/metricConnectionStatus가
+      // 이 값을 보고 그 범위 밖 데이터는 결과에서 완전히 제외합니다.
+      // 중요: 인증 자체가 안 되면(비로그인, 무효 토큰) 이 함수가 예전엔 "제한 없음"으로
+      // 취급해서 전체 데이터를 그대로 돌려주는 심각한 취약점이 있었습니다 - 여기서 바로
+      // 401을 응답하고 null을 반환합니다(호출부는 null이면 즉시 return해야 합니다).
+      const requester = await resolveRequestUser(req);
+      if (!requester) { sendJson(res, 401, { error: '인증이 필요합니다.' }); return null; }
+      const accessibleAdvertiserIds = !requester.isOwner && requester.advertiserIds ? requester.advertiserIds.map(String) : null;
+      return { query, from, to, advertiserId, channels, accessibleAdvertiserIds };
+    }
+    function filterMetricRows(rows, filters) {
+      return (rows || []).filter(row =>
+        (!filters.advertiserId || String(row.advertiserId) === filters.advertiserId) &&
+        (!filters.accessibleAdvertiserIds || filters.accessibleAdvertiserIds.includes(String(row.advertiserId))) &&
+        (!filters.channels.length || filters.channels.includes(String(row.channel))) &&
+        (!filters.from || !row.date || String(row.date) >= filters.from) &&
+        (!filters.to || !row.date || String(row.date) <= filters.to)
+      );
+    }
+    function advertiserNameMap(db) { return new Map((db.advertisers || []).map(a => [String(a.id), a.name])); }
+    function decorateRows(rows, db) {
+      const names = advertiserNameMap(db);
+      return rows.map(row => ({ ...row, advertiserName: names.get(String(row.advertiserId)) || String(row.advertiserId) }));
+    }
+    function withDerived(row) {
+      const impressions = metricNumber(row.impressions), clicks = metricNumber(row.clicks), spend = metricNumber(row.spend), dbCount = metricNumber(row.dbCount), purchases = metricNumber(row.purchases), revenue = metricNumber(row.revenue);
+      const addToCart = metricNumber(row.addToCart), completeRegistration = metricNumber(row.completeRegistration), initiateCheckout = metricNumber(row.initiateCheckout);
+      // DB(Lead)와 구매(Purchase)는 서로 다른 전환입니다. 합계는 "총 전환"을 표시하는 화면에서만
+      // totalConversions로 사용하고, DB/구매 전용 KPI는 각각의 전용 분모로 계산합니다.
+      const totalConversions = dbCount + purchases;
+      return { ...row, impressions, clicks, spend, dbCount, purchases, revenue, addToCart, completeRegistration, initiateCheckout, totalConversions,
+        ctr: impressions ? clicks / impressions * 100 : 0,
+        cpc: clicks ? spend / clicks : 0,
+        cpm: impressions ? spend / impressions * 1000 : 0,
+        cvr: clicks ? totalConversions / clicks * 100 : 0,
+        cpa: totalConversions ? spend / totalConversions : 0,
+        dbCvr: clicks ? dbCount / clicks * 100 : 0,
+        dbCpa: dbCount ? spend / dbCount : 0,
+        purchaseCvr: clicks ? purchases / clicks * 100 : 0,
+        purchaseCpa: purchases ? spend / purchases : 0,
+        roas: spend ? revenue / spend * 100 : 0 };
+
+    }
+    function groupMetrics(rows, keyFn, seedFn) {
+      const map = new Map();
+      for (const row of rows) {
+        const key = keyFn(row);
+        const cur = map.get(key) || seedFn(row);
+        cur.impressions += metricNumber(row.impressions); cur.clicks += metricNumber(row.clicks); cur.spend += metricNumber(row.spend); cur.dbCount += metricNumber(row.dbCount); cur.purchases += metricNumber(row.purchases); cur.revenue += metricNumber(row.revenue);
+        cur.addToCart = (cur.addToCart || 0) + metricNumber(row.addToCart); cur.completeRegistration = (cur.completeRegistration || 0) + metricNumber(row.completeRegistration); cur.initiateCheckout = (cur.initiateCheckout || 0) + metricNumber(row.initiateCheckout);
+        if (row.date) { cur.from = !cur.from || row.date < cur.from ? row.date : cur.from; cur.to = !cur.to || row.date > cur.to ? row.date : cur.to; }
+        map.set(key, cur);
+      }
+      return Array.from(map.values()).map(withDerived);
+    }
+    function metricConnectionStatus(db, filters) {
+      let selected = filters.advertiserId ? db.advertisers.filter(a => String(a.id) === filters.advertiserId) : db.advertisers;
+      if (filters.accessibleAdvertiserIds) selected = selected.filter(a => filters.accessibleAdvertiserIds.includes(String(a.id)));
+      return selected.flatMap(adv => (adv.accounts || []).map(acc => ({
+        advertiserId: String(adv.id), advertiserName: adv.name, channel: acc.channel,
+        status: acc.status !== 'connected' ? 'disconnected' : IMPLEMENTED_METRIC_CHANNELS.has(acc.channel) ? (acc.last_sync_error ? 'error' : 'connected') : 'connector_unimplemented',
+        lastSyncedAt: acc.last_synced_at || null, lastRowCount: acc.last_row_count || 0, error: acc.last_sync_error || null,
+      })));
+    }
+    function metricMeta(db, filters) { return { from: filters.from || null, to: filters.to || null, connections: metricConnectionStatus(db, filters), generatedAt: new Date().toISOString() }; }
+
+    // ── 광고주 포털 전용 대시보드 - 세션의 advertiserId로 강제 고정합니다 ──────
+    if (req.method === 'GET' && pathname === '/api/metrics/daily') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters));
+      const rows = decorateRows(filterMetricRows(db.dailyMetrics, filters), db).sort((a,b) => String(a.date).localeCompare(String(b.date)));
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/summary') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const source = filterMetricRows(db.dailyMetrics, filters);
+      const summary = withDerived(aggregateMetricRows(source));
+      return sendJson(res, 200, { summary, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/media') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.channel}`, r => ({ channel: r.channel, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      void names;
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/advertisers') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.dailyMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.advertiserId}`, r => ({ advertiserId: r.advertiserId, advertiserName: names.get(String(r.advertiserId)) || String(r.advertiserId), impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
+      // 광고주 계정(내부 직원 아님)은 INSIGHT 등급(2) 이상이어야 캠페인별 분석을 볼 수 있습니다.
+      const requesterForTier = await resolveRequestUser(req);
+      if (requesterForTier?.isAdvertiserAccount && (requesterForTier.tier ?? 0) < 2) {
+        return sendJson(res, 403, { error: `이 기능은 INSIGHT 이상 구독에서 이용할 수 있습니다. (현재: ${PORTAL_TIER_LABEL[requesterForTier.tier ?? 0]})`, requiredTier: 2, currentTier: requesterForTier.tier ?? 0 });
+      }
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.campaignMetrics, filters);
+      const rows = groupMetrics(source, r => `${r.advertiserId}|${r.channel}|${r.campaignId}`, r => ({ advertiserId:r.advertiserId, advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId), channel:r.channel, campaignId:r.campaignId, campaignName:r.campaignName, impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/creatives') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.creativeDailyMetrics, filters);
+      const grouped = new Map();
+      for (const row of source) {
+        const key=`${row.advertiserId}|${row.channel}|${row.adId}`;
+        const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adgroupId:row.adgroupId||'',adgroupName:row.adgroupName||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};
+        cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
+      }
+      const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
+    }
+    // 소재 상세를 열 때만(목록 전체가 아니라) 그 순간 Meta 미리보기를 요청합니다 - 매번 전체 동기화에서
+    // 불러오면 API 호출이 너무 많아지고, 실제로 눌러본 소재만 필요하기 때문입니다.
+    if (req.method === 'GET' && pathname === '/api/creative-preview') {
+      const query = new URL(req.url, 'http://x').searchParams;
+      const adId = cleanText(query.get('adId') || '', 60);
+      if (!adId) return sendJson(res, 400, { error: 'adId가 필요합니다.' });
+      if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      try {
+        const previewUrl = await metaFetchAdPreview(adId);
+        return sendJson(res, 200, { previewUrl });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : '미리보기 조회에 실패했습니다.' });
+      }
+    }
+
+    // ============================================================
+    // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
+    // ============================================================
+    // ── 경쟁사 추적 (인사이트 > 경쟁사 분석) ─────────────────────────────────
+    // ── 팀원 계정 관리 (설정 > 사용자 관리) ──────────────────────────────
+    if (pathname.startsWith('/api/users')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      await ensureDefaultRoles(tenantId);
+      const detailMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/users') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const rows = await pgPool.query(
+          `SELECT u.id, u.email, u.name, u.title, u.department, u.status, u.is_owner, u.last_login_at, u.created_at, u.updated_at,
+             m.role_ids, m.advertiser_ids
+           FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id
+           WHERE u.tenant_id = $1 ORDER BY u.created_at ASC`, [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/users') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const body = await readJson(req);
+        const email = cleanText(body.email || '', 200).toLowerCase();
+        const name = cleanText(body.name || '', 100);
+        if (!email || !email.includes('@')) return sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        // 초기 비밀번호는 관리자가 직접 정해서 팀원에게 별도로 전달합니다(이메일 발송 인프라가
+        // 아직 없어서, "초대 링크" 대신 이 방식을 씁니다 - 팀원은 로그인 후 설정에서 변경 가능).
+        const initialPassword = String(body.initialPassword || '');
+        if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO app_users (tenant_id, email, password_hash, name, title, department, status)
+             VALUES ($1,$2,$3,$4,$5,$6,'active') RETURNING id, email, name, title, department, status, is_owner, created_at, updated_at`,
+            [tenantId, email, hashUserPassword(initialPassword), name, cleanText(body.title || '', 100) || null, cleanText(body.department || '', 100) || null]
+          );
+          const user = insert.rows[0];
+          if (Array.isArray(body.roleIds) && body.roleIds.length) {
+            await pgPool.query(
+              `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)`,
+              [tenantId, user.id, body.roleIds, body.advertiserIds || null]
+            );
+          }
+          return sendJson(res, 201, user);
+        } catch (error) {
+          if (String(error?.message || '').includes('duplicate')) return sendJson(res, 409, { error: '이미 등록된 이메일입니다.' });
+          throw error;
+        }
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const targetId = detailMatch[1];
+
+
+        const body = await readJson(req);
+        const sets = []; const params = [targetId, tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.title !== undefined) set('title', cleanText(body.title || '', 100) || null);
+        if (body.department !== undefined) set('department', cleanText(body.department || '', 100) || null);
+        if (body.status !== undefined) set('status', body.status);
+        if (body.newPassword) {
+          if (String(body.newPassword).length < 8) return sendJson(res, 400, { error: '비밀번호는 8자 이상이어야 합니다.' });
+          set('password_hash', hashUserPassword(String(body.newPassword)));
+        }
+        if (sets.length) {
+          const upd = await pgPool.query(`UPDATE app_users SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 AND is_owner = false RETURNING id`, params);
+          if (!upd.rows.length) return sendJson(res, 404, { error: '팀원 계정을 찾을 수 없거나 수정할 수 없는 계정입니다.' });
+        }
+        if (body.roleIds !== undefined || body.advertiserIds !== undefined) {
+          const existing = await pgPool.query('SELECT role_ids, advertiser_ids FROM app_memberships WHERE user_id = $1', [targetId]);
+          const roleIds = body.roleIds !== undefined ? body.roleIds : (existing.rows[0]?.role_ids || []);
+          const advertiserIds = body.advertiserIds !== undefined ? body.advertiserIds : (existing.rows[0]?.advertiser_ids ?? null);
+          await pgPool.query(
+            `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (user_id) DO UPDATE SET role_ids = EXCLUDED.role_ids, advertiser_ids = EXCLUDED.advertiser_ids, updated_at = now()`,
+            [tenantId, targetId, roleIds, advertiserIds]
+          );
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        await pgPool.query('DELETE FROM app_users WHERE id = $1 AND tenant_id = $2 AND is_owner = false', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+    // ── 광고주 포털 계정 관리 (내부 직원이 광고주에게 발급) ──────────────
+    // ── 광고주 회사 담당자(연락처) - 서버 저장, 팀 전체 공유 ──────────────
+    if (pathname.startsWith('/api/advertiser-contacts')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/advertiser-contacts') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId');
+        if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const rows = await pgPool.query(
+          `SELECT id, advertiser_id, name, title, email, phone, note, created_at, updated_at FROM advertiser_contacts
+           WHERE tenant_id = $1 ${advertiserId ? 'AND advertiser_id = $2' : ''} ORDER BY created_at DESC`,
+          advertiserId ? [tenantId, advertiserId] : [tenantId]
+        );
+        const accessible = rows.rows.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
+        return sendJson(res, 200, { items: accessible });
+      }
+      if (req.method === 'POST' && pathname === '/api/advertiser-contacts') {
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const name = cleanText(body.name || '', 100);
+        if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO advertiser_contacts (tenant_id, advertiser_id, name, title, email, phone, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, advertiser_id, name, title, email, phone, note, created_at, updated_at`,
+          [tenantId, advertiserId, name, cleanText(body.title || '', 100) || null, cleanText(body.email || '', 200) || null, cleanText(body.phone || '', 50) || null, cleanText(body.note || '', 500) || null]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const contactMatch = pathname.match(/^\/api\/advertiser-contacts\/([^/]+)$/);
+      if (req.method === 'DELETE' && contactMatch) {
+        const contactId = contactMatch[1];
+        const existing = await pgPool.query('SELECT advertiser_id FROM advertiser_contacts WHERE id=$1 AND tenant_id=$2', [contactId, tenantId]);
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '담당자를 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, existing.rows[0].advertiser_id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        await pgPool.query('DELETE FROM advertiser_contacts WHERE id=$1 AND tenant_id=$2', [contactId, tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    if (pathname.startsWith('/api/advertiser-accounts')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/advertiser-accounts') {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId');
+        if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        // 광고주 계정 = is_advertiser_account=true인 app_users. advertiser_ids는 항상
+        // 정확히 그 광고주 1곳입니다(팀원과 달리 여러 광고주를 담당하지 않음).
+        const rows = await pgPool.query(
+          `SELECT u.id, u.email, u.name, u.status, m.advertiser_ids, u.last_login_at, u.created_at
+           FROM app_users u JOIN app_memberships m ON m.user_id = u.id
+           WHERE u.tenant_id = $1 AND u.is_advertiser_account = true ORDER BY u.created_at DESC`,
+          [tenantId]
+        );
+        const withAdvName = await Promise.all(rows.rows.map(async r => {
+          const advId = (r.advertiser_ids || [])[0];
+          const adv = advId ? await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [advId]) : { rows: [] };
+          return { id: r.id, email: r.email, name: r.name, status: r.status, advertiser_id: advId || null, advertiser_name: adv.rows[0]?.name || '', last_login_at: r.last_login_at, created_at: r.created_at };
+        }));
+        const filtered = advertiserId ? withAdvName.filter(r => r.advertiser_id === advertiserId) : withAdvName;
+        const accessible = filtered.filter(r => canAccessAdvertiser(requester, r.advertiser_id));
+        return sendJson(res, 200, { items: accessible });
+      }
+      if (req.method === 'POST' && pathname === '/api/advertiser-accounts') {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const email = cleanText(body.email || '', 200).toLowerCase();
+        const name = cleanText(body.name || '', 100);
+        if (!advertiserId) return sendJson(res, 400, { error: 'advertiserId가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        if (!email || !email.includes('@')) return sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' });
+        if (!name) return sendJson(res, 400, { error: '이름을 입력하세요.' });
+        const initialPassword = String(body.initialPassword || '');
+        if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
+        try {
+          const roleId = await ensureAdvertiserRole(tenantId);
+          const insert = await pgPool.query(
+            `INSERT INTO app_users (tenant_id, email, password_hash, name, status, is_advertiser_account)
+             VALUES ($1,$2,$3,$4,'active',true) RETURNING id, email, name, status, created_at`,
+            [tenantId, email, hashUserPassword(initialPassword), name]
+          );
+          const user = insert.rows[0];
+          await pgPool.query(
+            `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)`,
+            [tenantId, user.id, [roleId], [advertiserId]]
+          );
+          addLog({ action: 'advertiser_account_create', advertiserId, email, actorId: requester.id });
+          return sendJson(res, 201, { ...user, advertiser_id: advertiserId });
+        } catch (error) {
+          if (String(error?.message || '').includes('duplicate')) return sendJson(res, 409, { error: '이미 등록된 이메일입니다.' });
+          throw error;
+        }
+      }
+      const advertiserAccountMatch = pathname.match(/^\/api\/advertiser-accounts\/([^/]+)$/);
+      if (req.method === 'PATCH' && advertiserAccountMatch) {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const accountId = advertiserAccountMatch[1];
+        const existing = await pgPool.query(
+          `SELECT m.advertiser_ids FROM app_users u JOIN app_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.tenant_id=$2 AND u.is_advertiser_account=true`,
+          [accountId, tenantId]
+        );
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, (existing.rows[0].advertiser_ids || [])[0])) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const body = await readJson(req);
+        const sets = []; const params = [];
+        if (body.status && ['active', 'disabled'].includes(body.status)) { params.push(body.status); sets.push(`status = $${params.length}`); }
+        if (body.resetPassword) {
+          const newPassword = String(body.resetPassword);
+          if (newPassword.length < 8) return sendJson(res, 400, { error: '새 비밀번호는 8자 이상이어야 합니다.' });
+          params.push(hashUserPassword(newPassword)); sets.push(`password_hash = $${params.length}`);
+        }
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 내용이 없습니다.' });
+        params.push(accountId, tenantId);
+        await pgPool.query(`UPDATE app_users SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length - 1} AND tenant_id = $${params.length}`, params);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && advertiserAccountMatch) {
+        if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
+        const accountId = advertiserAccountMatch[1];
+        const existing = await pgPool.query(
+          `SELECT m.advertiser_ids FROM app_users u JOIN app_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.tenant_id=$2 AND u.is_advertiser_account=true`,
+          [accountId, tenantId]
+        );
+        if (!existing.rows[0]) return sendJson(res, 404, { error: '계정을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(requester, (existing.rows[0].advertiser_ids || [])[0])) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        await pgPool.query('DELETE FROM app_users WHERE id=$1 AND tenant_id=$2', [accountId, tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+    }
+
+
+    // ── 권한 묶음(역할) 관리 (설정 > 권한 묶음 / 기능별 이용 권한) ────────────
+    if (pathname.startsWith('/api/roles')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      await ensureDefaultRoles(tenantId);
+      const detailMatch = pathname.match(/^\/api\/roles\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/roles') {
+        // 역할 "목록"은 사용자 편집 화면(역할 선택 드롭다운)에서도 필요해서, 팀원 관리 권한이
+        // 있으면 조회는 허용합니다. 실제 수정은 admin.roles.manage로 별도 검사합니다.
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const rows = await pgPool.query('SELECT * FROM app_roles WHERE tenant_id = $1 ORDER BY is_system DESC, created_at ASC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/roles') {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        const body = await readJson(req);
+        const name = cleanText(body.name || '', 100);
+        if (!name) return sendJson(res, 400, { error: '역할명을 입력하세요.' });
+        const insert = await pgPool.query(
+          'INSERT INTO app_roles (tenant_id, name, description, scope, permission_keys) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+          [tenantId, name, cleanText(body.description || '사용자 정의 역할', 300), body.scope || 'internal', body.permissionKeys || []]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        // '관리자' 시스템 역할은 실수로 스스로 잠기는 것을 막기 위해 권한 목록 수정을 막습니다
+        // (기존 프론트 시안의 안전장치를 서버에서도 동일하게 강제합니다).
+        const current = await pgPool.query('SELECT is_system, name FROM app_roles WHERE id = $1 AND tenant_id = $2', [detailMatch[1], tenantId]);
+        if (!current.rows.length) return sendJson(res, 404, { error: '역할을 찾을 수 없습니다.' });
+        const body = await readJson(req);
+        if (current.rows[0].is_system && current.rows[0].name === '관리자' && body.permissionKeys !== undefined) {
+          return sendJson(res, 400, { error: "'관리자' 역할의 권한은 안전을 위해 수정할 수 없습니다." });
+        }
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.description !== undefined) set('description', cleanText(body.description, 300));
+        if (body.permissionKeys !== undefined) set('permission_keys', body.permissionKeys);
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE app_roles SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        return sendJson(res, 200, upd.rows[0]);
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.roles.manage')) return true;
+        await pgPool.query('DELETE FROM app_roles WHERE id = $1 AND tenant_id = $2 AND is_system = false', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 전체 구독 목록 (관리자 대시보드/광고주 현황용) ─────────────────────
+    if (req.method === 'GET' && pathname === '/api/subscriptions') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const clauses = ['tenant_id = $1']; const params = [tenantId];
+      if (!requester.isOwner && requester.advertiserIds) {
+        params.push(requester.advertiserIds); clauses.push(`advertiser_id = ANY($${params.length}::uuid[])`);
+      }
+      const rows = await pgPool.query(`SELECT * FROM advertiser_subscriptions WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`, params);
+      return sendJson(res, 200, { items: rows.rows });
+    }
+
+    // ── 구독 상품 관리 (관리자) ────────────────────────────────────────
+    if (pathname.startsWith('/api/subscription-plans')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const detailMatch = pathname.match(/^\/api\/subscription-plans\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/subscription-plans') {
+        const rows = await pgPool.query('SELECT * FROM subscription_plans WHERE tenant_id = $1 ORDER BY created_at DESC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/subscription-plans') {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        const name = cleanText(body.name || '', 100);
+        if (!name) return sendJson(res, 400, { error: '상품명을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO subscription_plans (tenant_id, name, description, monthly_price, vat_included, status, entitlements)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          [tenantId, name, body.description || null, body.monthlyPrice ?? null, body.vatIncluded ?? true, body.status || 'draft', JSON.stringify(body.entitlements || [])]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      if (req.method === 'PATCH' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', cleanText(body.name, 100));
+        if (body.description !== undefined) set('description', body.description);
+        if (body.monthlyPrice !== undefined) set('monthly_price', body.monthlyPrice);
+        if (body.status !== undefined) set('status', body.status);
+        if (body.entitlements !== undefined) set('entitlements', JSON.stringify(body.entitlements));
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE subscription_plans SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        if (!upd.rows.length) return sendJson(res, 404, { error: '상품을 찾을 수 없습니다.' });
+        return sendJson(res, 200, upd.rows[0]);
+      }
+      if (req.method === 'DELETE' && detailMatch) {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        await pgPool.query('DELETE FROM subscription_plans WHERE id = $1 AND tenant_id = $2', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 광고주별 구독 조회/적용 ────────────────────────────────────────
+    const subMatch = pathname.match(/^\/api\/advertisers\/([^/]+)\/subscription$/);
+    if (subMatch) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const advertiserId = decodeURIComponent(subMatch[1]);
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET') {
+        return sendJson(res, 200, await ensureAdvertiserSubscription(tenantId, advertiserId));
+      }
+      if (req.method === 'PATCH') {
+        if (denyUnlessPermitted(res, requester, 'admin.plans.manage')) return true;
+        const body = await readJson(req);
+        await ensureAdvertiserSubscription(tenantId, advertiserId);
+        if (body.planId) {
+          const plan = await pgPool.query('SELECT * FROM subscription_plans WHERE id = $1 AND tenant_id = $2', [body.planId, tenantId]);
+          if (!plan.rows.length) return sendJson(res, 404, { error: '구독 상품을 찾을 수 없습니다.' });
+          const entitlements = deriveEntitlementsFromPlan(plan.rows[0].entitlements);
+          const upd = await pgPool.query(
+            `UPDATE advertiser_subscriptions SET plan_id=$3, plan_name=$4, entitlements=$5, updated_at=now() WHERE advertiser_id=$1 AND tenant_id=$2 RETURNING *`,
+            [advertiserId, tenantId, body.planId, plan.rows[0].name, JSON.stringify(entitlements)]
+          );
+          return sendJson(res, 200, upd.rows[0]);
+        }
+        const sets = []; const params = [advertiserId, tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.status !== undefined) set('status', body.status);
+        if (body.note !== undefined) set('note', body.note);
+        if (body.renewsAt !== undefined) set('renews_at', body.renewsAt);
+        if (body.entitlements !== undefined) {
+          // 관리자가 상품 없이 개별 항목(블로그 사용 여부, 월 한도 등)을 직접 조정하는 경우 -
+          // 기존 entitlements에 부분 병합합니다(상품 적용과 달리 완전 교체가 아님).
+          const current = await pgPool.query('SELECT entitlements FROM advertiser_subscriptions WHERE advertiser_id = $1 AND tenant_id = $2', [advertiserId, tenantId]);
+          const merged = { ...(current.rows[0]?.entitlements || {}), ...body.entitlements };
+          set('entitlements', JSON.stringify(merged));
+        }
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE advertiser_subscriptions SET ${sets.join(', ')}, updated_at = now() WHERE advertiser_id = $1 AND tenant_id = $2 RETURNING *`, params);
+        return sendJson(res, 200, upd.rows[0]);
+      }
+    }
+
+    // ── 사용량 기록/조회 (구독 한도 집계의 유일한 원본) ───────────────────
+    if (pathname === '/api/usage-events' || pathname === '/api/usage-events/check') {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/usage-events/check') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const advertiserId = q.get('advertiserId'); const feature = q.get('feature');
+        if (!advertiserId || !feature) return sendJson(res, 400, { error: 'advertiserId와 feature가 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        return sendJson(res, 200, await canUseFeatureCheck(tenantId, advertiserId, feature));
+      }
+
+      if (req.method === 'GET' && pathname === '/api/usage-events') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['tenant_id = $1']; const params = [tenantId];
+        if (q.get('advertiserId')) {
+          if (!canAccessAdvertiser(requester, q.get('advertiserId'))) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+          params.push(q.get('advertiserId')); clauses.push(`advertiser_id = $${params.length}`);
+        } else if (!requester.isOwner && requester.advertiserIds) {
+          params.push(requester.advertiserIds); clauses.push(`advertiser_id = ANY($${params.length}::uuid[])`);
+        }
+        if (q.get('feature')) { params.push(q.get('feature')); clauses.push(`feature = $${params.length}`); }
+        const rows = await pgPool.query(`SELECT * FROM usage_events WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 500`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/usage-events') {
+        const body = await readJson(req);
+        const advertiserId = cleanText(body.advertiserId || '', 120);
+        const feature = cleanText(body.feature || '', 40);
+        const action = cleanText(body.action || '', 40);
+        if (!advertiserId || !feature || !action) return sendJson(res, 400, { error: 'advertiserId, feature, action이 필요합니다.' });
+        if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        // recordUsageOnce와 동일한 규칙: sourceId가 이미 기록되어 있으면 중복 집계하지 않고 기존 값을 그대로 돌려줍니다.
+        if (body.sourceId) {
+          const existing = await pgPool.query('SELECT * FROM usage_events WHERE advertiser_id=$1 AND feature=$2 AND action=$3 AND source_id=$4 LIMIT 1', [advertiserId, feature, action, body.sourceId]);
+          if (existing.rows.length) return sendJson(res, 200, existing.rows[0]);
+        }
+        const sub = await ensureAdvertiserSubscription(tenantId, advertiserId);
+        const insert = await pgPool.query(
+          `INSERT INTO usage_events (tenant_id, advertiser_id, subscription_id, feature, action, quantity, source_id, provider, provider_cost, ai_cost)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [tenantId, advertiserId, sub.id, feature, action, Number(body.quantity) || 1, body.sourceId || null, body.provider || null, body.providerCost ?? null, body.aiCost ?? null]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+    }
+
+    if (pathname.startsWith('/api/competitors')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const tenantId = await getCurrentTenantId();
+      const detailMatch = pathname.match(/^\/api\/competitors\/([^/]+)$/);
+
+      if (req.method === 'GET' && pathname === '/api/competitors') {
+        const requester = await resolveRequestUser(req);
+        if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['c.tenant_id = $1']; const params = [tenantId];
+        if (q.get('advertiserId')) { params.push(q.get('advertiserId')); clauses.push(`c.advertiser_id = $${params.length}`); }
+        // 권한 분리: 광고주 범위가 제한된 팀원에게는 그 범위의 광고주(+전사 공통, advertiser_id NULL)만 보여줍니다.
+        if (!requester.isOwner && requester.advertiserIds) {
+          params.push(requester.advertiserIds); clauses.push(`(c.advertiser_id = ANY($${params.length}::uuid[]) OR c.advertiser_id IS NULL)`);
+        }
+        const rows = await pgPool.query(
+          `SELECT c.*, a.name as advertiser_name,
+             (SELECT count(*) FROM references_store r WHERE r.competitor_id = c.id) as observation_count
+           FROM competitors c LEFT JOIN advertisers a ON a.id = c.advertiser_id
+           WHERE ${clauses.join(' AND ')} ORDER BY c.created_at DESC`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/competitors') {
+        const body = await readJson(req);
+        if (!body.name || !String(body.name).trim()) return sendJson(res, 400, { error: '경쟁사명이 필요합니다.' });
+        const insert = await pgPool.query(
+          `INSERT INTO competitors (tenant_id, advertiser_id, name, industry, website_url, channels, priority, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [tenantId, body.advertiserId || null, cleanText(body.name, 200), cleanText(body.industry || '', 100) || null,
+           cleanText(body.websiteUrl || '', 500) || null, JSON.stringify(body.channels || []),
+           body.priority || 'normal', body.status || 'active', body.createdBy || 'admin']
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+
+      if (req.method === 'PATCH' && detailMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.name !== undefined) set('name', cleanText(body.name, 200));
+        if (body.industry !== undefined) set('industry', cleanText(body.industry || '', 100) || null);
+        if (body.websiteUrl !== undefined) set('website_url', cleanText(body.websiteUrl || '', 500) || null);
+        if (body.channels !== undefined) set('channels', JSON.stringify(body.channels || []));
+        if (body.priority !== undefined) set('priority', body.priority);
+        if (body.status !== undefined) set('status', body.status);
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        const upd = await pgPool.query(`UPDATE competitors SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2 RETURNING *`, params);
+        if (!upd.rows.length) return sendJson(res, 404, { error: '경쟁사를 찾을 수 없습니다.' });
+        return sendJson(res, 200, upd.rows[0]);
+      }
+
+      if (req.method === 'DELETE' && detailMatch) {
+        // 경쟁사 추적을 중단해도, 이미 수집·태그·다른 곳에 활용됐을 수 있는 관찰 소재 자체는
+        // 지우지 않고 '어느 경쟁사인지'만 연결 해제합니다(SET NULL) - 콘텐츠 유실 방지.
+        await pgPool.query(`UPDATE references_store SET competitor_id = NULL WHERE competitor_id = $1`, [detailMatch[1]]);
+        await pgPool.query(`DELETE FROM competitors WHERE id = $1 AND tenant_id = $2`, [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── AI 심층 분석 (인사이트 > AI 추천) ────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/ai/recommendations') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 추천이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const userPrompt = cleanText(body.prompt || '', 8000);
+      if (!userPrompt) return sendJson(res, 400, { error: 'prompt가 필요합니다.' });
+      // 안전 규칙은 클라이언트가 조작할 수 없도록 반드시 서버가 시스템 프롬프트로 강제합니다.
+      const systemPrompt = [
+        '당신은 광고 운영 데이터를 해석하는 보조 분석가입니다. 아래 규칙을 반드시 지키세요.',
+        '1) 제공되지 않은 수치를 만들지 않는다.',
+        '2) 근거 없는 원인을 확정하지 않는다 - 가능성으로만 표현한다.',
+        '3) 추정은 반드시 추정이라고 표시한다.',
+        '4) 광고비 조정은 검토안으로만 제시하고, 즉시 실행 가능한 것처럼 말하지 않는다.',
+        '5) 사용자 메시지에 제공된 광고주명·캠페인/소재/키워드 이름·매체명·수치가 있으면 반드시 findings와 actions에 그대로 인용한다. "여러 캠페인", "일부 소재"처럼 뭉뚱그리지 말고 실제 이름을 명시한다.',
+        '6) 각 finding의 title 또는 description에 매체명(네이버/메타/카카오 등)을 반드시 함께 표기한다 - 매체명을 빼고 캠페인명만 쓰지 않는다.',
+        '7) 제공된 목록에 캠페인·소재·키워드 유형이 섞여 있으면, findings가 한 유형에만 쏠리지 않도록 각 유형에서 최소 1개 이상 다룬다(단, 실제로 문제가 되는 항목이 있을 때만 - 없는 유형까지 억지로 만들지 않는다).',
+        '',
+        '반드시 아래 JSON 형식으로만 응답하세요. 코드블록이나 설명 텍스트 없이 순수 JSON만 출력합니다.',
+        '{"executiveSummary":"전체 요약(2~3문장)","findings":[{"title":"","description":"","evidenceIds":[],"confidence":"low|medium|high"}],"actions":[{"priority":1,"action":"","reason":"","targetType":""}],"cautions":["..."]}',
+      ].join('\n');
+      try {
+        const raw = await callAiInsights(systemPrompt, userPrompt);
+        const cleaned = raw.trim().replace(/^```json\s*|```$/g, '');
+        let parsed;
+        try { parsed = JSON.parse(cleaned); } catch { return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' }); }
+        return sendJson(res, 200, parsed);
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 분석 요청에 실패했습니다.' });
+      }
+    }
+
+    // ── AI 기반 월간 보고서/다음달 제안서 인사이트 (규칙 기반 문구 대신 AI가 작성) ──
+    if (req.method === 'POST' && pathname === '/api/ai/report-insights') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 추천이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const kind = body.kind === 'proposal' ? 'proposal' : 'report'; // 'report' | 'proposal'
+      const advertiserName = cleanText(body.advertiserName || '', 120);
+      const current = body.current || {}; const previous = body.previous || {};
+      const mediaTable = Array.isArray(body.mediaTable) ? body.mediaTable.slice(0, 20) : [];
+      if (!advertiserName || !mediaTable.length) return sendJson(res, 400, { error: '보고서 데이터가 부족합니다. 먼저 보고서를 생성하세요.' });
+      // 화면 계산 숫자를 AI에게 그대로 주고, 그 숫자를 근거로만 문장을 쓰게 합니다 - 숫자를
+      // 새로 만들거나 다르게 계산하면 화면에 보이는 KPI와 모순되는 문장이 나올 수 있습니다.
+      const dataBlock = JSON.stringify({ advertiserName, thisMonth: current, previousMonth: previous, byMedia: mediaTable }, null, 0);
+      const systemPrompt = [
+        '당신은 광고 성과 데이터를 바탕으로 짧은 한국어 인사이트 문장을 쓰는 보조 마케팅 분석가입니다.',
+        '반드시 아래 규칙을 지키세요.',
+        '1) 사용자가 제공한 JSON 데이터에 있는 숫자만 사용한다 - 새로운 숫자를 만들거나 다시 계산하지 않는다.',
+        '2) 근거 없는 원인을 확정하지 않는다 - "~로 보입니다", "~일 가능성이 있습니다"처럼 표현한다.',
+        kind === 'proposal' ? '3) 다음 달 예산·운영 방향은 검토 제안으로만 표현하고, 확정된 지시처럼 말하지 않는다.' : '3) 실적 해석에 집중하고, 다음 달 예산 조정은 검토 제안으로만 언급한다.',
+        '4) 반드시 JSON 배열로만 응답한다. 각 항목은 한 문장(80자 내외)의 한국어 문자열이다. 코드블록·설명 없이 순수 JSON 배열만 출력한다.',
+        '5) 3~5개 문장을 작성한다.',
+        '6) byMedia 배열에 있는 실제 매체명(platform)과 그 매체의 구체적인 수치(광고비·ROAS·CPA 등)를 문장에 그대로 인용한다 - "일부 매체는", "전반적으로" 같이 뭉뚱그리지 말고 어느 매체의 어떤 수치인지 명시한다.',
+        '7) 매체 간 비교(예: A매체가 B매체보다 ROAS가 높음)가 가능하면 실제 수치 차이를 근거로 언급한다.',
+      ].join('\n');
+      const userPrompt = `${kind === 'proposal' ? '다음 달 제안서용 인사이트를' : '월간 보고서용 인사이트를'} 아래 데이터를 근거로 작성하세요.\n\n${dataBlock}`;
+      try {
+        const raw = await callAiInsights(systemPrompt, userPrompt);
+        const cleaned = raw.trim().replace(/^```json\s*|```$/g, '').replace(/^```\s*|```$/g, '');
+        let parsed;
+        try { parsed = JSON.parse(cleaned); } catch { return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' }); }
+        if (!Array.isArray(parsed)) return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' });
+        return sendJson(res, 200, { insights: parsed.map(x => cleanText(String(x), 200)).filter(Boolean) });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 인사이트 생성에 실패했습니다.' });
+      }
+    }
+
+    // ── AI 이미지 생성 (콘텐츠 > 이미지 제작) ────────────────────────────
+    // callExternalImageAi/imageAiStatus는 이미 구현되어 있었지만, 실제로 호출하는
+    // API 라우트가 없어서 IMAGE_AI_API_KEY를 설정해도 항상 404가 나던 상태였습니다.
+    // ── 날씨 시즌 광고 캘린더 ──────────────────────────────────────────
+    if (req.method === 'GET' && pathname === '/api/weather/status') {
+      return sendJson(res, 200, { configured: weatherApiConfigured() });
+    }
+    if (req.method === 'GET' && pathname === '/api/weather/suggestions') {
+      if (!weatherApiConfigured()) return sendJson(res, 400, { error: '날씨 API가 아직 연결되지 않았습니다(WEATHER_API_KEY 미설정).', configured: false });
+      const q = new URL(req.url, 'http://x').searchParams;
+      const region = cleanText(q.get('region') || '서울', 60);
+      const industry = q.get('industry') || null;
+      try {
+        const weather = await fetchWeather(region);
+        const tenantId = await getCurrentTenantId();
+        const rulesRes = await pgPool.query('SELECT * FROM weather_creative_rules WHERE tenant_id=$1', [tenantId]);
+        const matched = matchWeatherRules(weather, rulesRes.rows, industry);
+        return sendJson(res, 200, { weather, matched });
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '날씨 정보를 가져오지 못했습니다.' });
+      }
+    }
+    if (pathname.startsWith('/api/weather-rules')) {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (req.method === 'GET' && pathname === '/api/weather-rules') {
+        const rows = await pgPool.query('SELECT * FROM weather_creative_rules WHERE tenant_id=$1 ORDER BY created_at DESC', [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/weather-rules') {
+        const body = await readJson(req);
+        const condition = cleanText(body.condition || '', 20);
+        if (!['rain', 'snow', 'hot', 'cold', 'clear', 'clouds'].includes(condition)) return sendJson(res, 400, { error: '올바른 날씨 조건을 선택하세요.' });
+        const recommendedMessage = cleanText(body.recommendedMessage || '', 300);
+        if (!recommendedMessage) return sendJson(res, 400, { error: '추천 메시지를 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO weather_creative_rules (tenant_id, condition, temp_min, temp_max, industry, recommended_message, recommended_tags, enabled)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,true) RETURNING *`,
+          [tenantId, condition, body.tempMin ?? null, body.tempMax ?? null, cleanText(body.industry || '', 60) || null, recommendedMessage, Array.isArray(body.tags) ? body.tags : []]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const ruleMatch = pathname.match(/^\/api\/weather-rules\/([^/]+)$/);
+      if (req.method === 'DELETE' && ruleMatch) {
+        await pgPool.query('DELETE FROM weather_creative_rules WHERE id=$1 AND tenant_id=$2', [ruleMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'PATCH' && ruleMatch) {
+        const body = await readJson(req);
+        await pgPool.query('UPDATE weather_creative_rules SET enabled=$3 WHERE id=$1 AND tenant_id=$2', [ruleMatch[1], tenantId, Boolean(body.enabled)]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+    if (pathname.startsWith('/api/season-events')) {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (req.method === 'GET' && pathname === '/api/season-events') {
+        const rows = await pgPool.query('SELECT * FROM season_events WHERE tenant_id=$1 ORDER BY date ASC', [tenantId]);
+        return sendJson(res, 200, rows.rows);
+      }
+      if (req.method === 'POST' && pathname === '/api/season-events') {
+        const body = await readJson(req);
+        const title = cleanText(body.title || '', 120);
+        if (!title) return sendJson(res, 400, { error: '일정명을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO season_events (tenant_id, date, title, type, region, severity, recommendation, label, tone, subtitle, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'예정') RETURNING *`,
+          [tenantId, body.date || new Date().toISOString().slice(0, 10), title, cleanText(body.type || 'season', 20),
+           cleanText(body.region || '', 60) || null, cleanText(body.severity || '', 20) || null, cleanText(body.recommendation || '', 300) || null,
+           cleanText(body.label || '', 20), cleanText(body.tone || '#2563eb', 20), cleanText(body.subtitle || '', 200)]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const eventMatch = pathname.match(/^\/api\/season-events\/([^/]+)$/);
+      if (req.method === 'PATCH' && eventMatch) {
+        const body = await readJson(req);
+        await pgPool.query('UPDATE season_events SET status=$3 WHERE id=$1 AND tenant_id=$2', [eventMatch[1], tenantId, body.status || '예정']);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && eventMatch) {
+        await pgPool.query('DELETE FROM season_events WHERE id=$1 AND tenant_id=$2', [eventMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/images/ai-status') {
+      return sendJson(res, 200, imageAiStatus());
+    }
+    if (req.method === 'POST' && pathname === '/api/images/generate') {
+      if (!imageAiConfigured()) return sendJson(res, 400, { error: 'AI 이미지 생성이 아직 연결되지 않았습니다(IMAGE_AI_PROVIDER 미설정).', configured: false });
+      const body = await readJson(req);
+      const plan = {
+        visualType: cleanText(body.visualType || '', 60), subject: cleanText(body.subject || '', 200),
+        background: cleanText(body.background || '', 200), mainText: cleanText(body.mainText || '', 100),
+        ratio: cleanText(body.ratio || '1:1', 10), extraPrompt: cleanText(body.extraPrompt || '', 500),
+      };
+      try {
+        const result = await callExternalImageAi(plan);
+        return sendJson(res, 200, { generator: IMAGE_AI_PROVIDER, images: result.images, prompt: result.prompt });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 이미지 생성에 실패했습니다.' });
+      }
+    }
+
+    // ── AI 광고 문구 생성 (AI 자동화 > 광고 문구 자동 생성) ───────────────
+    // 마찬가지로 callExternalAdCopyAi/adCopyAiStatus는 구현되어 있었지만 호출할
+    // 라우트가 없었습니다. 미설정 시에는 프론트가 템플릿 기반으로 대체하므로
+    // 여기서는 "미설정"만 정직하게 응답하면 됩니다.
+    if (req.method === 'GET' && pathname === '/api/ad-copy/ai-status') {
+      return sendJson(res, 200, adCopyAiStatus());
+    }
+    if (req.method === 'POST' && pathname === '/api/ad-copy/generate') {
+      if (!adCopyAiConfigured()) return sendJson(res, 400, { error: '광고 문구 AI가 아직 연결되지 않았습니다(AD_COPY_AI_PROVIDER 미설정).', configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), channel: cleanText(body.channel || '', 60), productName: cleanText(body.productName || '', 120),
+        objective: cleanText(body.objective || '', 60), targetAudience: cleanText(body.targetAudience || '', 200), keyBenefit: cleanText(body.keyBenefit || '', 300),
+        hookType: cleanText(body.hookType || '', 60), tone: cleanText(body.tone || '', 60), cta: cleanText(body.cta || '', 40),
+        variantCount: Math.min(Math.max(Number(body.variantCount) || 3, 1), 10),
+      };
+      try {
+        const variants = await callExternalAdCopyAi(brief);
+        return sendJson(res, 200, { generator: AD_COPY_AI_PROVIDER, variants });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 광고 문구 생성에 실패했습니다.' });
+      }
+    }
+
+    // ── 콘텐츠 제작(광고 제작/영상 대본/문서) AI 생성 - ChatGPT/Claude 공용 디스패처 재사용 ──
+    // 예전엔 이 3개 화면이 완전히 수동 편집기였습니다(AI 호출 코드 자체가 없었음).
+    // AI_INSIGHTS_PROVIDER/AI_INSIGHTS_API_KEY를 그대로 재사용하므로 별도 키 설정이
+    // 필요 없습니다 - 이미 등록하신 ChatGPT 키로 바로 작동합니다.
+    async function callContentAiJson(systemPrompt, userPrompt) {
+      const raw = await callAiInsights(systemPrompt, userPrompt);
+      const cleaned = raw.trim().replace(/^```json\s*|```$/g, '').replace(/^```\s*|```$/g, '');
+      return JSON.parse(cleaned);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/ad/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 광고 제작이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), channel: cleanText(body.channel || '', 60), objective: cleanText(body.objective || '', 60),
+        target: cleanText(body.target || '', 200), keyBenefit: cleanText(body.keyBenefit || '', 300), hookType: cleanText(body.hookType || '', 60),
+      };
+      const systemPrompt = [
+        '당신은 광고 소재 기획을 돕는 카피라이터입니다.',
+        '1) 제공된 브리프 정보만 근거로 쓰고, 없는 제품 정보를 지어내지 않는다.',
+        '2) 과장·의료광고성 표현, 확정적 효과 보장 문구는 쓰지 않는다.',
+        '3) 반드시 JSON으로만 응답한다. 형식: {"hooks":["...","...","..."],"copyVariants":[{"label":"","angle":"","headline":"","description":"","body":"","cta":""}]}',
+        '4) hooks는 3개, copyVariants는 3개 작성한다.',
+      ].join('\n');
+      const userPrompt = `아래 브리프로 광고 후킹 문구와 카피 시안을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        return sendJson(res, 200, { hooks: parsed.hooks || [], copyVariants: parsed.copyVariants || [] });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 광고 제작에 실패했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/video-script/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 영상 대본 생성이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), videoType: cleanText(body.videoType || '', 60), targetSeconds: Number(body.targetSeconds) || 30,
+        targetAudience: cleanText(body.targetAudience || '', 200), keyMessage: cleanText(body.keyMessage || '', 300), cta: cleanText(body.cta || '', 60),
+      };
+      const systemPrompt = [
+        '당신은 짧은 영상 광고 대본을 쓰는 카피라이터입니다.',
+        '1) 제공된 브리프만 근거로 쓰고, 없는 제품 정보를 지어내지 않는다.',
+        '2) 장면은 0초부터 targetSeconds까지 순서대로 이어지게 나누고, 장면 간 시간이 겹치지 않게 한다.',
+        '3) 반드시 JSON 배열로만 응답한다. 각 항목 형식: {"startSecond":0,"endSecond":3,"purpose":"hook|problem|solution|benefit|proof|cta|other","narration":"","caption":"","visual":""}',
+        '4) 4~6개 장면으로 나눈다. 마지막 장면의 purpose는 반드시 "cta"이고 narration에 제공된 cta 문구를 반영한다.',
+      ].join('\n');
+      const userPrompt = `아래 브리프로 영상 대본 장면을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        const scenes = Array.isArray(parsed) ? parsed : [];
+        return sendJson(res, 200, { scenes });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 영상 대본 생성에 실패했습니다.' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/content/document/generate') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 문서 생성이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const brief = {
+        advertiserName: cleanText(body.advertiserName || '', 120), documentType: cleanText(body.documentType || '기획서', 60), topic: cleanText(body.topic || '', 300),
+      };
+      const systemPrompt = [
+        '당신은 마케팅 업무 문서 초안을 쓰는 보조 작성자입니다.',
+        '1) 제공된 정보만 근거로 쓰고, 없는 실적 수치를 지어내지 않는다 - 수치가 필요한 부분은 "(실제 데이터 확인 필요)"라고 표시한다.',
+        '2) 반드시 JSON 배열로만 응답한다. 각 항목 형식: {"type":"h1|h2|paragraph|checklist|callout","title":"","text":""}',
+        '3) 5~8개 블록으로 구성한다. 첫 블록은 type h1으로 문서 제목을 담는다.',
+      ].join('\n');
+      const userPrompt = `아래 정보로 "${brief.documentType}" 문서 초안을 작성하세요.\n${JSON.stringify(brief)}`;
+      try {
+        const parsed = await callContentAiJson(systemPrompt, userPrompt);
+        const blocks = Array.isArray(parsed) ? parsed : [];
+        return sendJson(res, 200, { blocks });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 문서 생성에 실패했습니다.' });
+      }
+    }
+
+    if (pathname.startsWith('/api/references') || pathname.startsWith('/api/reference-')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      // 커넥터별 지원 현황(진짜 상태) 조회 - 화면에서 "준비중"/"API 권한 필요" 등을 표시하는 데 씁니다.
+      if (req.method === 'GET' && pathname === '/api/references/connectors/status') {
+        const status = Object.entries(REFERENCE_CONNECTORS).map(([key, c]) => ({
+          key, platform: c.platform, label: c.label, referenceType: c.referenceType,
+          implemented: c.implemented, capabilities: c.capabilities,
+        }));
+        return sendJson(res, 200, { connectors: status });
+      }
+
+      // 실시간 검색(아직 저장은 안 함) - 검색 결과를 보고 사용자가 골라서 저장합니다.
+      if (req.method === 'POST' && pathname === '/api/references/search') {
+        const body = await readJson(req);
+        const connectorKey = cleanText(body.connector || '', 40);
+        const connector = REFERENCE_CONNECTORS[connectorKey];
+        if (!connector) return sendJson(res, 400, { error: `알 수 없는 커넥터입니다: ${connectorKey}` });
+        const result = await connector.search({
+          query: cleanText(body.query || '', 200),
+          country: cleanText(body.country || '', 10),
+          adType: cleanText(body.adType || '', 20),
+          igUserId: cleanText(body.igUserId || '', 60),
+          limit: Number(body.limit) || 25,
+        });
+        // 이미 저장된 레퍼런스는 검색 결과에 표시해서, 사용자가 "이미 수집됨"을 바로 알 수 있게 합니다.
+        if (result.items.length) {
+          const externalIds = result.items.map(i => i.externalId).filter(Boolean);
+          const existing = externalIds.length
+            ? await pgPool.query(`SELECT external_id FROM references_store WHERE tenant_id=$1 AND platform=$2 AND external_id = ANY($3::text[])`, [tenantId, connector.platform, externalIds])
+            : { rows: [] };
+          const existingSet = new Set(existing.rows.map(r => r.external_id));
+          for (const item of result.items) item.alreadySaved = existingSet.has(item.externalId);
+        }
+        // apiFetch는 HTTP 상태가 200이 아니면 응답 본문의 message를 무시하고 res.statusText로
+        // 대체해버려서, 항상 200으로 응답하고 성공/실패 여부는 body.status 필드로 구분합니다.
+        return sendJson(res, 200, { ...result, platform: connector.platform, referenceType: connector.referenceType });
+      }
+
+      // 검색 결과(또는 수동 입력)를 실제로 저장합니다.
+      if (req.method === 'POST' && pathname === '/api/references') {
+        const body = await readJson(req);
+        const item = body.item || {};
+        const referenceType = cleanText(body.referenceType || item.referenceType || '', 30) || 'ORGANIC_CONTENT';
+        const platform = cleanText(body.platform || item.platform || '', 30);
+        if (!platform) return sendJson(res, 400, { error: 'platform이 필요합니다.' });
+        const canonicalUrl = item.canonicalUrl ? item.canonicalUrl.split('?')[0] : null;
+        const capturedAt = item.capturedAt || item.publishedAt || new Date().toISOString();
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO references_store (
+              tenant_id, advertiser_id, competitor_id, reference_type, platform, source_type, external_id, url, canonical_url,
+              title, body, headline, description, cta, hook_types, author_id, author_name, author_followers,
+              thumbnail_url, media_url, media_type, content_type, ad_status, ad_started_at,
+              published_at, views, likes, comments, shares, saves, available_metrics, raw_text, transcript, raw_metadata,
+              first_seen_at, last_seen_at, created_by
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
+            RETURNING id`,
+            [
+              tenantId, body.advertiserId || null, body.competitorId || null, referenceType, platform, body.sourceType || 'collected',
+              item.externalId || null, item.url || null, canonicalUrl,
+              item.title || null, item.body || null, item.headline || null, item.description || null, item.cta || null,
+              item.hookTypes || [],
+              item.authorId || null, item.authorName || null, item.authorFollowers ?? null,
+              item.thumbnailUrl || null, item.mediaUrl || null, item.mediaType || null, item.contentType || null,
+              item.adStatus || null, item.adStartedAt || null, item.publishedAt || null,
+              item.views ?? null, item.likes ?? null, item.comments ?? null, item.shares ?? null, item.saves ?? null,
+              item.availableMetrics || [], item.rawText || null, item.transcript || null,
+              item.rawMetadata ? JSON.stringify(item.rawMetadata) : null,
+              capturedAt, capturedAt, body.createdBy || 'admin',
+            ]
+          );
+          await addLog(tenantId, 'reference_saved', { platform, referenceType });
+          return sendJson(res, 201, { id: insert.rows[0].id });
+        } catch (err) {
+          if (String(err?.code) === '23505') return sendJson(res, 409, { error: '이미 수집된 레퍼런스입니다.' });
+          return sendJson(res, 500, { error: err instanceof Error ? err.message : '저장에 실패했습니다.' });
+        }
+      }
+
+      // URL 직접 저장 - 가능한 경우 메타데이터(og:title 등)를 가져와 채웁니다.
+      if (req.method === 'POST' && pathname === '/api/references/url') {
+        const body = await readJson(req);
+        const url = cleanText(body.url || '', 2000);
+        if (!url) return sendJson(res, 400, { error: 'url이 필요합니다.' });
+        let title = body.title || null, thumbnailUrl = body.thumbnailUrl || null, siteName = null, description = body.description || null;
+        try {
+          const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+          const html = await resp.text();
+          const og = (prop) => html.match(new RegExp(`<meta[^>]+property=["']og:${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))?.[1]
+            || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:${prop}["']`, 'i'))?.[1] || null;
+          title = title || og('title') || html.match(/<title>([^<]+)<\/title>/i)?.[1] || null;
+          thumbnailUrl = thumbnailUrl || og('image');
+          description = description || og('description');
+          siteName = og('site_name');
+        } catch (err) {
+          console.error('[reference-url 메타데이터 조회 실패]', err?.message || err);
+          // 메타데이터를 못 가져와도 URL 자체는 저장할 수 있게 계속 진행합니다(사용자가 직접 입력 가능).
+        }
+        try {
+          const insert = await pgPool.query(
+            `INSERT INTO references_store (tenant_id, advertiser_id, reference_type, platform, source_type, url, canonical_url, title, description, thumbnail_url, published_at, created_by)
+             VALUES ($1,$2,$3,$4,'manual_url',$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+            [tenantId, body.advertiserId || null, body.referenceType || 'ORGANIC_CONTENT', siteName || 'manual', url, url.split('?')[0], title, description, thumbnailUrl, body.publishedAt || null, body.createdBy || 'admin']
+          );
+          return sendJson(res, 201, { id: insert.rows[0].id, title, thumbnailUrl, description });
+        } catch (err) {
+          if (String(err?.code) === '23505') return sendJson(res, 409, { error: '이미 수집된 레퍼런스입니다.' });
+          return sendJson(res, 500, { error: err instanceof Error ? err.message : '저장에 실패했습니다.' });
+        }
+      }
+
+      // 목록 조회 (필터 다수 지원)
+      if (req.method === 'GET' && pathname === '/api/references') {
+        const requester = await resolveRequestUser(req);
+        if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['r.tenant_id = $1']; const params = [tenantId];
+        const add = (sql, val) => { params.push(val); clauses.push(sql.replace('?', `$${params.length}`)); };
+        if (q.get('referenceType')) add('r.reference_type = ?', q.get('referenceType'));
+        if (q.get('platform')) add('r.platform = ?', q.get('platform'));
+        if (q.get('advertiserId')) add('r.advertiser_id = ?', q.get('advertiserId'));
+        if (q.get('status')) add('r.status = ?', q.get('status'));
+        if (q.get('contentType')) add('r.content_type = ?', q.get('contentType'));
+        if (q.get('from')) add('r.published_at >= ?', q.get('from'));
+        if (q.get('to')) add('r.published_at <= ?', q.get('to'));
+        if (q.get('query')) { const kw = `%${q.get('query')}%`; params.push(kw, kw); clauses.push(`(r.title ILIKE $${params.length - 1} OR r.body ILIKE $${params.length})`); }
+        if (q.get('minViews')) add('r.views >= ?', Number(q.get('minViews')));
+        if (q.get('minLikes')) add('r.likes >= ?', Number(q.get('minLikes')));
+        if (q.get('minComments')) add('r.comments >= ?', Number(q.get('minComments')));
+        if (q.get('minFollowers')) add('r.author_followers >= ?', Number(q.get('minFollowers')));
+        if (q.get('collectionId')) { params.push(q.get('collectionId')); clauses.push(`r.id IN (SELECT reference_id FROM reference_collection_items WHERE collection_id = $${params.length})`); }
+        if (q.get('competitorId')) add('r.competitor_id = ?', q.get('competitorId'));
+        if (q.get('hasCompetitor') === 'true') clauses.push('r.competitor_id IS NOT NULL');
+        if (q.get('tag')) { params.push(q.get('tag')); clauses.push(`r.id IN (SELECT tl.reference_id FROM reference_tag_links tl JOIN reference_tags t ON t.id=tl.tag_id WHERE t.name = $${params.length})`); }
+        // 권한 분리: 광고주 범위가 제한된 팀원에게는 그 범위(+전사 공통, advertiser_id NULL)만 보여줍니다.
+        if (!requester.isOwner && requester.advertiserIds) {
+          params.push(requester.advertiserIds); clauses.push(`(r.advertiser_id = ANY($${params.length}::uuid[]) OR r.advertiser_id IS NULL)`);
+        }
+        const sortMap = { latest: 'r.published_at DESC NULLS LAST', views: 'r.views DESC NULLS LAST', likes: 'r.likes DESC NULLS LAST', comments: 'r.comments DESC NULLS LAST' };
+        const sort = sortMap[q.get('sort')] || 'r.collected_at DESC';
+        const limit = Math.min(Number(q.get('limit')) || 60, 200);
+        const rows = await pgPool.query(
+          `SELECT r.*, a.name as advertiser_name,
+             COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
+           FROM references_store r
+           LEFT JOIN advertisers a ON a.id = r.advertiser_id
+           LEFT JOIN reference_tag_links tl ON tl.reference_id = r.id
+           LEFT JOIN reference_tags t ON t.id = tl.tag_id
+           WHERE ${clauses.join(' AND ')}
+           GROUP BY r.id, a.name
+           ORDER BY ${sort} LIMIT ${limit}`, params);
+        // 계정 규모 대비 반응(팔로워 대비 조회/좋아요/댓글 비율)을 AI 없이 서버에서 직접 계산합니다.
+        const items = rows.rows.map(r => {
+          const followers = r.author_followers ? Number(r.author_followers) : null;
+          const ratio = (v) => (followers && v != null) ? Number(v) / followers : null;
+          return { ...r, viewFollowerRatio: ratio(r.views), likeFollowerRatio: ratio(r.likes), commentFollowerRatio: ratio(r.comments) };
+        });
+        return sendJson(res, 200, { items });
+      }
+
+      // 요약 KPI: 오늘 수집 / 이번 주 수집 / 저장한 레퍼런스 / 등록 키워드(수집 규칙 기준)
+      if (req.method === 'GET' && pathname === '/api/references/summary') {
+        const [today, week, total, rules] = await Promise.all([
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND collected_at >= CURRENT_DATE`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND collected_at >= CURRENT_DATE - INTERVAL '7 days'`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM references_store WHERE tenant_id=$1 AND status IN ('saved','used_in_production')`, [tenantId]),
+          pgPool.query(`SELECT count(*) FROM reference_collection_rules WHERE tenant_id=$1 AND is_active=true`, [tenantId]),
+        ]);
+        return sendJson(res, 200, {
+          todayCollected: Number(today.rows[0].count), weekCollected: Number(week.rows[0].count),
+          savedReferences: Number(total.rows[0].count), activeKeywordRules: Number(rules.rows[0].count),
+        });
+      }
+
+      // 상세 조회
+      const detailMatch = pathname.match(/^\/api\/references\/([^/]+)$/);
+      if (req.method === 'GET' && detailMatch) {
+        const r = await pgPool.query(
+          `SELECT r.*, a.name as advertiser_name, COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
+           FROM references_store r LEFT JOIN advertisers a ON a.id=r.advertiser_id
+           LEFT JOIN reference_tag_links tl ON tl.reference_id=r.id LEFT JOIN reference_tags t ON t.id=tl.tag_id
+           WHERE r.id=$1 AND r.tenant_id=$2 GROUP BY r.id, a.name`, [detailMatch[1], tenantId]);
+        if (!r.rows.length) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        const collections = await pgPool.query(`SELECT c.id, c.name FROM reference_collections c JOIN reference_collection_items ci ON ci.collection_id=c.id WHERE ci.reference_id=$1`, [detailMatch[1]]);
+        return sendJson(res, 200, { ...r.rows[0], collections: collections.rows });
+      }
+
+      // 수정 (상태/즐겨찾기/광고주/메모/태그)
+      if (req.method === 'PATCH' && detailMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [detailMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.status !== undefined) set('status', body.status);
+        if (body.isFavorite !== undefined) set('is_favorite', !!body.isFavorite);
+        if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.competitorId !== undefined) set('competitor_id', body.competitorId || null);
+        if (body.note !== undefined) set('note', body.note);
+        if (body.hookTypes !== undefined) set('hook_types', body.hookTypes || []);
+        if (body.lastSeenAt !== undefined) set('last_seen_at', body.lastSeenAt);
+        if (!sets.length && !body.tags) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        if (sets.length) await pgPool.query(`UPDATE references_store SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $2`, params);
+        if (Array.isArray(body.tags)) {
+          await pgPool.query(`DELETE FROM reference_tag_links WHERE reference_id = $1`, [detailMatch[1]]);
+          for (const name of body.tags) {
+            const t = await pgPool.query(`INSERT INTO reference_tags (tenant_id, name) VALUES ($1,$2) ON CONFLICT (tenant_id, name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tenantId, name]);
+            await pgPool.query(`INSERT INTO reference_tag_links (reference_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [detailMatch[1], t.rows[0].id]);
+          }
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 삭제
+      if (req.method === 'DELETE' && detailMatch) {
+        await pgPool.query(`DELETE FROM references_store WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // "이 레퍼런스로 제작" 사용 이력 기록
+      const usageMatch = pathname.match(/^\/api\/references\/([^/]+)\/usage$/);
+      if (req.method === 'POST' && usageMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`INSERT INTO reference_usage (reference_id, used_for, reference_scope, created_by) VALUES ($1,$2,$3,$4)`,
+          [usageMatch[1], body.usedFor || '', body.referenceScope || null, body.createdBy || 'admin']);
+        await pgPool.query(`UPDATE references_store SET status='used_in_production', updated_at=now() WHERE id=$1 AND status NOT IN ('used_in_production')`, [usageMatch[1]]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 태그 목록
+      if (req.method === 'GET' && pathname === '/api/reference-tags') {
+        const r = await pgPool.query(`SELECT id, name FROM reference_tags WHERE tenant_id=$1 ORDER BY name`, [tenantId]);
+        return sendJson(res, 200, { tags: r.rows });
+      }
+
+      // 컬렉션 CRUD
+      if (req.method === 'GET' && pathname === '/api/reference-collections') {
+        const r = await pgPool.query(
+          `SELECT c.*, count(ci.reference_id) as item_count FROM reference_collections c
+           LEFT JOIN reference_collection_items ci ON ci.collection_id=c.id
+           WHERE c.tenant_id=$1 GROUP BY c.id ORDER BY c.updated_at DESC`, [tenantId]);
+        return sendJson(res, 200, { collections: r.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/reference-collections') {
+        const body = await readJson(req);
+        if (!body.name?.trim()) return sendJson(res, 400, { error: '컬렉션 이름이 필요합니다.' });
+        const r = await pgPool.query(`INSERT INTO reference_collections (tenant_id, advertiser_id, name, description, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+          [tenantId, body.advertiserId || null, body.name.trim(), body.description || null, body.createdBy || 'admin']);
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      const collectionMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)$/);
+      if (req.method === 'PATCH' && collectionMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`UPDATE reference_collections SET name=COALESCE($3,name), description=COALESCE($4,description), updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+          [collectionMatch[1], tenantId, body.name || null, body.description ?? null]);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && collectionMatch) {
+        await pgPool.query(`DELETE FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const collectionItemsMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items$/);
+      if (req.method === 'POST' && collectionItemsMatch) {
+        const body = await readJson(req);
+        await pgPool.query(`INSERT INTO reference_collection_items (collection_id, reference_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [collectionItemsMatch[1], body.referenceId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const collectionItemMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items\/([^/]+)$/);
+      if (req.method === 'DELETE' && collectionItemMatch) {
+        await pgPool.query(`DELETE FROM reference_collection_items WHERE collection_id=$1 AND reference_id=$2`, [collectionItemMatch[1], collectionItemMatch[2]]);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // 수집 규칙 CRUD
+      if (req.method === 'GET' && pathname === '/api/reference-collection-rules') {
+        const r = await pgPool.query(`SELECT rr.*, a.name as advertiser_name FROM reference_collection_rules rr LEFT JOIN advertisers a ON a.id=rr.advertiser_id WHERE rr.tenant_id=$1 ORDER BY rr.created_at DESC`, [tenantId]);
+        return sendJson(res, 200, { rules: r.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/reference-collection-rules') {
+        const body = await readJson(req);
+        if (!body.name?.trim()) return sendJson(res, 400, { error: '수집 이름이 필요합니다.' });
+        const r = await pgPool.query(
+          `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+          [tenantId, body.advertiserId || null, body.name.trim(), body.contentKind || 'BOTH', body.platforms || [], body.keywords || [], body.excludeKeywords || [],
+           body.language || null, body.country || null, body.dateRangeDays || 30, JSON.stringify(body.minMetrics || {}), body.mode || 'manual', body.createdBy || 'admin']);
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      const ruleMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)$/);
+      if (req.method === 'PATCH' && ruleMatch) {
+        const body = await readJson(req);
+        const sets = []; const params = [ruleMatch[1], tenantId];
+        const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+        if (body.name !== undefined) set('name', body.name);
+        if (body.isActive !== undefined) set('is_active', !!body.isActive);
+        if (body.keywords !== undefined) set('keywords', body.keywords);
+        if (body.minMetrics !== undefined) set('min_metrics', JSON.stringify(body.minMetrics));
+        if (!sets.length) return sendJson(res, 400, { error: '변경할 값이 없습니다.' });
+        await pgPool.query(`UPDATE reference_collection_rules SET ${sets.join(', ')}, updated_at=now() WHERE id=$1 AND tenant_id=$2`, params);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && ruleMatch) {
+        await pgPool.query(`DELETE FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+      // 수집 규칙 복제
+      const ruleDuplicateMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/duplicate$/);
+      if (req.method === 'POST' && ruleDuplicateMatch) {
+        const r = await pgPool.query(
+          `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
+           SELECT tenant_id, advertiser_id, name || ' (복제)', content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by
+           FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2 RETURNING id`, [ruleDuplicateMatch[1], tenantId]);
+        if (!r.rows.length) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        return sendJson(res, 201, { id: r.rows[0].id });
+      }
+      // 규칙을 지금 즉시 1회 실행 (수동 트리거 - 백그라운드 자동 스케줄러는 별도 자동화 단계에서 연결)
+      const ruleRunMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/run$/);
+      if (req.method === 'POST' && ruleRunMatch) {
+        const rule = await pgPool.query(`SELECT * FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleRunMatch[1], tenantId]);
+        if (!rule.rows.length) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        const rr = rule.rows[0];
+        const results = {};
+        for (const key of (rr.platforms?.length ? rr.platforms : Object.keys(REFERENCE_CONNECTORS))) {
+          const connector = REFERENCE_CONNECTORS[key];
+          if (!connector) continue;
+          if (!connector.implemented) { results[key] = { status: 'connector_unimplemented', saved: 0 }; continue; }
+          let saved = 0;
+          for (const keyword of (rr.keywords?.length ? rr.keywords : [''])) {
+            const search = await connector.search({ query: keyword, limit: 25 });
+            for (const item of search.items) {
+              try {
+                await pgPool.query(
+                  `INSERT INTO references_store (tenant_id, advertiser_id, reference_type, platform, source_type, external_id, url, canonical_url, title, body, author_name, author_followers, thumbnail_url, media_type, content_type, published_at, views, likes, comments, shares, saves, available_metrics, raw_metadata, created_by)
+                   VALUES ($1,$2,$3,$4,'collected',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT DO NOTHING`,
+                  [tenantId, rr.advertiser_id, connector.referenceType, connector.platform, item.externalId, item.url, item.canonicalUrl, item.title, item.body,
+                   item.authorName, item.authorFollowers ?? null, item.thumbnailUrl, item.mediaType, item.contentType, item.publishedAt,
+                   item.views ?? null, item.likes ?? null, item.comments ?? null, item.shares ?? null, item.saves ?? null, item.availableMetrics || [],
+                   item.rawMetadata ? JSON.stringify(item.rawMetadata) : null, 'rule:' + rr.name]
+                );
+                saved++;
+              } catch { /* 중복 등은 건너뜁니다 */ }
+            }
+            results[key] = { status: search.status, saved, message: search.message };
+          }
+        }
+        await pgPool.query(`UPDATE reference_collection_rules SET last_collected_at=now(), last_collected_count=$3 WHERE id=$1 AND tenant_id=$2`,
+          [ruleRunMatch[1], tenantId, Object.values(results).reduce((a, r) => a + (r.saved || 0), 0)]);
+        return sendJson(res, 200, { results });
+      }
+
+      return sendJson(res, 404, { error: 'Not found' });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
+      const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
+      const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
+      // (2026-09) 예전엔 여기에 dailyRows(키워드 × 날짜 단위 원본, 90일이면 키워드 2,000개
+      // 기준 최대 18만 행)까지 같이 내려줬는데, 이 화면 어디서도 실제로 쓰지 않는 완전히
+      // 낭비되는 데이터였습니다. 90일 이상 조회 시 심하게 느려지고 렉 걸리던 원인 중
+      // 가장 큰 부분이라 제거했습니다 - rows(키워드별로 이미 합산된 값)만으로 충분합니다.
+      return sendJson(res, 200, { rows, connectedKeywordChannels, keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS, meta:metricMeta(db,filters) });
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/funnel') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); const source=filterMetricRows(db.dailyMetrics,filters);
+      const rows=groupMetrics(source,r=>r.channel,r=>({channel:r.channel,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/metrics/status') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); return sendJson(res,200,{rows:metricConnectionStatus(db,filters),meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/integrations/sync-validation') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true; const db=(await pgReadDb(tenantId, filters)); let rows=db.syncValidationLogs||[];
+      const totalBeforeFilter = rows.length;
+      if(filters.advertiserId)rows=rows.filter(r=>String(r.advertiserId)===filters.advertiserId);if(filters.channels.length)rows=rows.filter(r=>filters.channels.includes(String(r.channel)));
+      const limit=Math.min(200,Math.max(1,Number(filters.query.get('limit')||50)));
+      console.log(`[Sync 검증 로그 조회] tenantId=${tenantId}, DB에 ${totalBeforeFilter}건 → 필터 후 ${rows.length}건 (advertiserId=${filters.advertiserId||'전체'}, channels=${filters.channels.join(',')||'전체'})`);
+      const names=advertiserNameMap(db);return sendJson(res,200,{rows:rows.slice(0,limit).map(r=>({...r,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId)}))});
+    }
+    // 진단 전용: 네이버 '전환 유형별 상세' 리포트(AD_CONVERSION_DETAIL)를 실제로 한 번 요청해서
+    // 실제 응답 컬럼 구조를 로그로 확인합니다. 저장은 전혀 하지 않아 위험이 없고, 매 동기화마다
+    // 자동 실행되지 않고 이 버튼을 눌렀을 때만 실행됩니다(보고서 생성은 시간이 걸릴 수 있음).
+    if (req.method === 'POST' && pathname === '/api/integrations/naver-conversion-report-probe') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const tenantId = await getCurrentTenantId();
+      const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+      if (!account || account.status !== 'connected' || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되어 있지 않습니다.' });
+      const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+      const until = new Date().toISOString().slice(0, 10);
+      const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - 6);
+      const since = sinceDate.toISOString().slice(0, 10);
+      try {
+        const rows = await naverFetchDailyMetricsViaReport(credentials, since, until, { probeOnly: true });
+        return sendJson(res, 200, { ok: true, message: '리포트를 요청했습니다. Railway 로그의 [naver-report-sample]을 확인하세요.', sampleRowCount: rows.length });
+      } catch (error) {
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+
+    if (req.method === 'GET' && pathname === '/api/daily-metrics') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const rows=decorateRows(filterMetricRows(db.dailyMetrics,filters),db).sort((a,b)=>String(a.date).localeCompare(String(b.date)));return sendJson(res,200,{rows,meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/creative-metrics') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const names=advertiserNameMap(db);const source=filterMetricRows(db.creativeDailyMetrics,filters);const grouped=new Map();for(const row of source){const key=`${row.advertiserId}|${row.channel}|${row.adId}`;const cur=grouped.get(key)||{advertiserId:row.advertiserId,advertiserName:names.get(String(row.advertiserId))||String(row.advertiserId),channel:row.channel,campaignId:row.campaignId||'',campaignName:row.campaignName||'',campaignType:row.campaignType||'',adId:row.adId,adName:row.adName,thumbnailUrl:row.thumbnailUrl||null,mediaType:row.mediaType||null,carouselImages:row.carouselImages||null,title:row.title||'',body:row.body||'',description:row.description||'',cta:row.cta||'',impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,revenue:0};cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);grouped.set(key,cur)}return sendJson(res,200,{rows:Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend),meta:metricMeta(db,filters)});
+    }
+    if (req.method === 'GET' && pathname === '/api/keyword-metrics') {
+      const tenantId = await getCurrentTenantId(); const filters=await parseMetricQuery(); if(!filters)return true;const db=(await pgReadDb(tenantId, filters));const source=filterMetricRows(db.keywordDailyMetrics,filters);const names=advertiserNameMap(db);const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);const connectedKeywordChannels=[...new Set(metricConnectionStatus(db,filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];return sendJson(res,200,{rows,connectedKeywordChannels,keywordCapableChannels:KEYWORD_CAPABLE_CHANNELS,meta:metricMeta(db,filters)});
+    }
+
+    // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
+    if (req.method === 'GET' && pathname === '/api/campaigns') {
+      const tenantId = await getCurrentTenantId();
+      const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id = $1`, [tenantId]);
+      const metaAccRes = await pgPool.query(`SELECT advertiser_id, account_id FROM media_accounts WHERE tenant_id=$1 AND channel='meta' AND status='connected'`, [tenantId]);
+      const naverAccRes = await pgPool.query(`SELECT advertiser_id, account_id, api_key_encrypted, secret_key_encrypted FROM media_accounts WHERE tenant_id=$1 AND channel='naver' AND status='connected'`, [tenantId]);
+      const advNameMap = new Map(advRes.rows.map(a => [a.id, a.name]));
+      const campaigns = [];
+      if (metaConfigured()) {
+        for (const acc of metaAccRes.rows) {
+          if (!acc.account_id) continue;
+          try {
+            const rows = await metaListCampaigns(acc.account_id);
+            for (const c of rows) {
+              campaigns.push({
+                id: c.id, advertiserId: acc.advertiser_id, platform: 'meta', name: c.name,
+                accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`, budget: Number(c.daily_budget || c.lifetime_budget || 0),
+                budgetType: c.daily_budget ? 'daily' : 'total',
+                startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
+                status: metaCampaignStatus(c.effective_status || c.status),
+                lastSyncedAt: new Date().toISOString(),
+                capability: { upload: false, toggle: false, schedule: false }, // 읽기 전용 토큰(ads_read) 기준
+              });
+            }
+          } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
+        }
+      }
+      for (const acc of naverAccRes.rows) {
+        const apiKey = decryptSecret(acc.api_key_encrypted), secretKey = decryptSecret(acc.secret_key_encrypted);
+        if (!apiKey || !secretKey) continue;
+        try {
+          const credentials = { customerId: acc.account_id, apiKey, secretKey };
+          const rows = await naverFetchCampaigns(credentials);
+          for (const c of rows) {
+            campaigns.push({
+              id: c.nccCampaignId, advertiserId: acc.advertiser_id, platform: 'naver', name: c.name,
+              accountName: `${advNameMap.get(acc.advertiser_id) || ''} 네이버`, budget: Number(c.dailyBudget || 0),
+              budgetType: c.useDailyBudget === false ? 'total' : 'daily',
+              startAt: c.regTm || new Date().toISOString(), endAt: undefined,
+              status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
+              lastSyncedAt: new Date().toISOString(),
+              capability: { upload: false, toggle: true, schedule: false }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF가 가능합니다.
+            });
+          }
+        } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
+      }
+      return sendJson(res, 200, campaigns);
+    }
+    if (req.method === 'PUT' && pathname === '/api/campaigns') {
+      // 캠페인 ON/OFF처럼 실제 계정에 변경을 가하는 쓰기 작업이라, 소재 재등록 센터와
+      // 동일하게 campaign.edit 권한과 광고주 접근 범위를 반드시 검사합니다.
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const body = await readJson(req);
+      const campaignId = cleanText(body.id || '', 120);
+      const channel = cleanText(body.channel || '', 20);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const targetStatus = body.status === 'on' ? 'on' : body.status === 'off' ? 'off' : '';
+      if (!campaignId || !channel || !advertiserId || !targetStatus) return sendJson(res, 400, { error: 'id, channel, advertiserId, status(on|off)가 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      if (denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
+
+      if (channel === 'meta') {
+        // 현재 META_ACCESS_TOKEN은 ads_read 권한 기준으로 연결되어 있어(GET /api/campaigns의
+        // capability.toggle=false 참고), 실제 캠페인 상태 변경(ads_management 권한 필요)은
+        // 아직 지원하지 않습니다. 가짜로 성공 처리하지 않고 정직하게 안내합니다.
+        return sendJson(res, 400, { error: 'Meta는 현재 조회 전용 권한(ads_read)으로 연결되어 있어 ON/OFF 변경을 지원하지 않습니다. ads_management 권한이 있는 토큰으로 재연결하면 사용할 수 있습니다.' });
+      }
+
+      if (channel === 'naver') {
+        const tenantId = await getCurrentTenantId();
+        const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+        if (!account || account.status !== 'connected' || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되어 있지 않습니다.' });
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        try {
+          await naverApiRequest('PUT', `/ncc/campaigns/${campaignId}`, { fields: 'userLock' }, credentials, { nccCampaignId: campaignId, userLock: targetStatus === 'off' });
+          addLog({ action: 'campaign_toggle', advertiserId, channel, campaignId, result: 'success', data: { targetStatus } });
+          return sendJson(res, 200, { ok: true, status: targetStatus });
+        } catch (error) {
+          addLog({ action: 'campaign_toggle', advertiserId, channel, campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, 502, { error: error instanceof Error ? `네이버에서 상태 변경을 거부했습니다: ${error.message}` : '캠페인 상태 변경에 실패했습니다.' });
+        }
+      }
+
+      return sendJson(res, 400, { error: `${channel} 매체는 아직 ON/OFF 변경을 지원하지 않습니다.` });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/funnels/channels') {
+      const tenantId = await getCurrentTenantId();
+      const db = await pgReadDb(tenantId);
+      const byChannel = new Map();
+      for (const m of db.dailyMetrics) {
+        const cur = byChannel.get(m.channel) || { spend: 0, impressions: 0, clicks: 0, leads: 0, purchases: 0, purchaseValue: 0 };
+        cur.spend += m.spend || 0; cur.impressions += m.impressions || 0; cur.clicks += m.clicks || 0;
+        cur.leads += m.dbCount || 0; cur.purchases += m.purchases || 0; cur.purchaseValue += m.revenue || 0;
+        byChannel.set(m.channel, cur);
+      }
+      const rows = Array.from(byChannel.entries()).map(([platform, v]) => ({
+        platform, status: 'connected',
+        values: { spend: v.spend, impressions: v.impressions, clicks: v.clicks, leads: v.leads, purchases: v.purchases, purchaseValue: v.purchaseValue },
+      }));
+      return sendJson(res, 200, rows);
+    }
+
+    // ---- 광고 캘린더 (schedule-slots, PostgreSQL) --------------------------------------
+    if (req.method === 'GET' && pathname === '/api/schedule-slots') {
+      const tenantId = await getCurrentTenantId();
+      const r = await pgPool.query(`SELECT id, data FROM schedule_slots WHERE tenant_id=$1`, [tenantId]);
+      return sendJson(res, 200, r.rows.map(row => ({ ...(row.data || {}), id: row.id })));
+    }
+    const slotMatch = pathname.match(/^\/api\/schedule-slots\/([^/]+)$/);
+    if (slotMatch && req.method === 'PUT') {
+      const id = decodeURIComponent(slotMatch[1]);
+      const body = await readJson(req);
+      const tenantId = await getCurrentTenantId();
+      const saved = { ...body, id };
+      await pgPool.query(
+        `INSERT INTO schedule_slots (id, tenant_id, data) VALUES ($1,$2,$3)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [id, tenantId, JSON.stringify(saved)]
+      );
+      return sendJson(res, 200, saved);
+    }
+    if (slotMatch && req.method === 'DELETE') {
+      const id = decodeURIComponent(slotMatch[1]);
+      const tenantId = await getCurrentTenantId();
+      await pgPool.query(`DELETE FROM schedule_slots WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ---- 데이터 수집 현황 -----------------------------------------------------------
+    if (req.method === 'GET' && pathname === '/api/integrations/status') {
+      const tenantId = await getCurrentTenantId();
+      // 예전에는 pgReadDb(성과 4개 테이블 + 검증로그 + 활동로그 전체)를 통째로 읽었는데,
+      // 이 화면에 필요한 건 광고주와 매체 계정뿐입니다. 관련 없는 테이블(예: sync_validation_logs)의
+      // 스키마 문제 때문에 이 API 전체가 500으로 죽어 화면이 텅 비어 보이던 문제도 함께 없앱니다.
+      const r = await pgPool.query(
+        `SELECT a.id AS advertiser_id, a.name AS advertiser_name,
+                m.channel, m.last_synced_at, m.last_row_count, m.last_sync_error
+         FROM advertisers a JOIN media_accounts m ON m.advertiser_id = a.id
+         WHERE a.tenant_id = $1 AND m.status = 'connected'
+         ORDER BY a.name, m.channel`,
+        [tenantId]
+      );
+      const rows = r.rows.map(row => {
+        const active = activeBackgroundSyncs.get(`${row.advertiser_id}|${row.channel}`);
+        return {
+          advertiserId: row.advertiser_id, advertiserName: row.advertiser_name, channel: row.channel,
+          lastSyncedAt: row.last_synced_at || null,
+          rowCount: row.last_row_count || 0,
+          error: row.last_sync_error || null,
+          syncing: Boolean(active),
+          syncStartedAt: active?.startedAt || null,
+          syncDays: active?.days || null,
+          syncProgress: active?.progress || null,
+        };
+      });
+      console.log(`[데이터 수집 현황] tenantId=${tenantId}, 연결된 매체 ${rows.length}행`);
+      return sendJson(res, 200, { rows });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/integrations/google-sheets') {
+      const payload = await readJson(req); const url = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
+      if (!url) throw new Error('GOOGLE_SHEETS_WEBHOOK_URL 환경변수를 설정하거나 환경설정에 Apps Script URL을 입력하세요.');
+      const result = await forwardWebhook(url, payload); return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === 'POST' && pathname === '/api/integrations/notion') {
+      const payload = await readJson(req);
+      if (process.env.NOTION_WEBHOOK_URL) { const result = await forwardWebhook(process.env.NOTION_WEBHOOK_URL, payload); return sendJson(res, 200, { ok: true, result }); }
+      const result = await createNotionPage(payload); return sendJson(res, 200, result);
+    }
+    return sendJson(res, 404, { error: 'API 경로를 찾을 수 없습니다.' });
+  } catch (error) {
+    return sendJson(res, 500, { error: error instanceof Error ? error.message : '처리에 실패했습니다.' });
+  }
+}
+
+// ============================================================
+// 자동 동기화 스케줄러
+// ------------------------------------------------------------
+// 새 동기화 로직을 따로 만들지 않고, 이미 검증된 handleApi의 '/api/integrations/sync'
+// 경로를 내부적으로 그대로 호출합니다(실제 HTTP 요청 없이, 가짜 req/res로 흉내).
+// 이렇게 하면 수동 동기화와 자동 동기화가 항상 완전히 같은 코드로 동작합니다.
+// ============================================================
+const EventEmitter = (await import('node:events')).EventEmitter;
+
+/** handleApi를 실제 HTTP 요청 없이 내부에서 호출합니다. */
+async function callApiInternally(method, pathname, bodyObj) {
+  const now = Math.floor(Date.now() / 1000);
+  const internalToken = signToken({ sub: ADMIN_USER.id, email: ADMIN_USER.email, role: ADMIN_USER.role, iat: now, exp: now + 300 });
+  const req = new EventEmitter();
+  req.method = method;
+  req.url = pathname;
+  req.headers = { authorization: `Bearer ${internalToken}`, 'content-type': 'application/json' };
+  process.nextTick(() => { req.emit('data', Buffer.from(JSON.stringify(bodyObj || {}))); req.emit('end'); });
+
+  let statusCode = 0; let responseBody = null;
+  const res = {
+    writeHead(status) { statusCode = status; },
+    end(body) { try { responseBody = body ? JSON.parse(body) : null; } catch { responseBody = body; } },
+    getHeader() { return undefined; },
+    setHeader() {},
+  };
+  await handleApi(req, res, pathname);
+  return { status: statusCode, body: responseBody };
+}
+
+/** 지금 이 순간 연결되어 있는 모든 Meta/네이버 계정을 최근 N일 기준으로 자동 동기화합니다. */
+/** 화면에서 "자동 동기화 상태"를 보여줄 수 있도록, 가장 최근 실행 결과를 메모리에 기록해둡니다. */
+let autoSyncStatus = { lastRunAt: null, lastResult: null };
+
+/** 프라미스가 정해진 시간 안에 끝나지 않으면 강제로 실패 처리합니다(매체 API가 응답 없이 멈추는 경우 대비). */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} - ${ms / 1000}초 내에 응답이 없어 건너뜁니다.`)), ms)),
+  ]);
+}
+
+async function runScheduledSyncForAllAccounts(days = 3) {
+  if (!pgPool) { console.log('[자동 동기화] DATABASE_URL이 없어 건너뜁니다.'); return; }
+  const accounts = await pgPool.query(
+    `SELECT m.tenant_id, m.advertiser_id, m.channel, a.name as advertiser_name
+     FROM media_accounts m JOIN advertisers a ON a.id = m.advertiser_id
+     WHERE m.status='connected' AND m.channel IN ('meta','naver')
+     ORDER BY m.channel, a.name`
+  );
+  console.log(`[자동 동기화] 시작 - 연결된 계정 ${accounts.rows.length}개(meta ${accounts.rows.filter(r => r.channel === 'meta').length}, naver ${accounts.rows.filter(r => r.channel === 'naver').length}), 최근 ${days}일 기준`);
+  let success = 0, failed = 0;
+  for (const row of accounts.rows) {
+    const label = `${row.channel} · ${row.advertiser_name}`;
+    try {
+      // 계정 하나가 응답 없이 멈춰도(예: 매체 API 타임아웃) 여기서 3분 뒤 강제로 다음 계정으로 넘어갑니다.
+      // 이게 없으면 순서대로 도는 나머지 계정들이 전부 시도조차 되지 않고 멈춰버립니다.
+      const result = await withTimeout(
+        callApiInternally('POST', '/api/integrations/sync', { advertiserId: row.advertiser_id, channel: row.channel, days }),
+        180_000,
+        label
+      );
+      if (result.status === 200 && result.body?.ok) { success++; console.log(`[자동 동기화 성공] ${label}`); }
+      else { failed++; console.error(`[자동 동기화 실패] ${label}:`, result.body?.error || `HTTP ${result.status}`); }
+    } catch (error) {
+      failed++;
+      console.error(`[자동 동기화 예외] ${label}:`, error?.message || error);
+    }
+    // 매체 API에 요청이 한꺼번에 몰리지 않도록 계정 사이에 약간의 간격을 둡니다.
+    await new Promise(r => setTimeout(r, 800));
+  }
+  console.log(`[자동 동기화] 완료 - 성공 ${success}개, 실패 ${failed}개 (총 ${accounts.rows.length}개 중)`);
+  const result = { total: accounts.rows.length, success, failed };
+  const runAt = new Date().toISOString();
+  autoSyncStatus = { lastRunAt: runAt, lastResult: result };
+  // 서버 재시작(배포 등)에도 이력이 남도록 DB에도 저장합니다. tenant가 여러 개일 수 있으니
+  // 이번에 실제로 계정을 동기화한 tenant들에 대해서만 기록합니다.
+  const tenantIds = [...new Set(accounts.rows.map(r => r.tenant_id))];
+  if (tenantIds.length) {
+    await pgPool.query(
+      `UPDATE tenants SET auto_sync_last_run_at = $2, auto_sync_last_result = $3::jsonb WHERE id = ANY($1::uuid[])`,
+      [tenantIds, runAt, JSON.stringify(result)]
+    ).catch(err => console.error('[자동 동기화] 이력 DB 저장 실패:', err?.message || err));
+  }
+}
+
+/** 매일 07:00, 09:00, 14:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
+const AUTO_SYNC_HOURS_KST = [7, 9, 14, 17, 19];
+let lastAutoSyncKey = '';
+function scheduleAutoSync() {
   setInterval(() => {
     const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
     const get = (type) => parts.find(p => p.type === type)?.value;
     const hour = Number(get('hour')); const minute = Number(get('minute'));
     const dateKey = `${get('year')}-${get('month')}-${get('day')}-${hour}`;
-    if (minute === 0 && REFERENCE_WORKER_HOURS_KST.includes(hour) && lastReferenceWorkerKey !== dateKey) {
-      lastReferenceWorkerKey = dateKey;
-      console.log(`[레퍼런스 수집 Worker] 예약 시각 도달: 한국시간 ${hour}시`);
-      runReferenceWorkerCycle().catch(error => console.error('[레퍼런스 수집 Worker] 처리되지 않은 오류:', error?.message || error));
+    // 같은 시각(예: 07시)에 여러 번 실행되지 않도록, 그 시각의 첫 1분(0분)에만 실행하고 키로 중복을 막습니다.
+    if (minute === 0 && AUTO_SYNC_HOURS_KST.includes(hour) && lastAutoSyncKey !== dateKey) {
+      lastAutoSyncKey = dateKey;
+      console.log(`[자동 동기화] 예약 시각 도달: 한국시간 ${hour}시`);
+      runScheduledSyncForAllAccounts().catch(error => console.error('[자동 동기화] 처리되지 않은 오류:', error?.message || error));
     }
   }, 60_000);
-  console.log(`[레퍼런스 수집 Worker] 스케줄러 시작 - 매일 한국시간 ${REFERENCE_WORKER_HOURS_KST.join(', ')}시에 자동 실행됩니다.`);
+  console.log(`[자동 동기화] 스케줄러 시작 - 매일 한국시간 ${AUTO_SYNC_HOURS_KST.join(', ')}시에 자동 실행됩니다.`);
 }
-if (pgPool) scheduleReferenceWorker();
+if (pgPool) scheduleAutoSync();
 
-server.listen(PORT, '0.0.0.0', () => console.log(`[HOWTOM Content Studio] listening on :${PORT}`));
-process.on('SIGTERM', async () => { try { await pgPool?.end(); } catch {} server.close(() => process.exit(0)); });
+http.createServer(async (req,res)=>{
+  let pathname;
+  try {
+    pathname = decodeURIComponent((req.url || '/').split('?')[0]);
+  } catch {
+    // 브라우저 확장 프로그램이나 외부에서 잘못 인코딩된 URL(예: %E0%A4%A)을 보내면
+    // decodeURIComponent가 예외를 던집니다. 이 예외가 콜백 밖으로 나가면 Node.js가
+    // 처리되지 않은 예외로 보고 서버 프로세스 전체를 종료시킵니다. 여기서 잡아서
+    // 400 응답만 주고 서버는 계속 살아있게 합니다.
+    res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('잘못된 요청 주소입니다.');
+    return;
+  }
+  if (pathname.startsWith('/api/')) return handleApi(req, res, pathname);
+  let file = path.join(root, pathname === '/' ? 'index.html' : pathname);
+  if (!file.startsWith(root)) { res.writeHead(403, SECURITY_HEADERS); return res.end('Forbidden'); }
+  if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(root,'index.html');
+  fs.readFile(file,(err,buf)=>{
+    if(err){
+      const message = `<!doctype html><html lang="ko"><meta charset="utf-8"><title>HOWTOM 유니버스 실행 오류</title><body style="font-family:system-ui;padding:40px;line-height:1.7"><h1>HOWTOM 유니버스 화면 파일을 찾지 못했습니다.</h1><p><code>dist/index.html</code>이 없거나 손상됐습니다.</p><p>ZIP을 완전히 압축 해제한 뒤 다시 실행하거나, 인터넷 연결 후 <code>npm run setup</code>을 실행해주세요.</p></body></html>`;
+      res.writeHead(503,{...SECURITY_HEADERS,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});
+      return res.end(message);
+    }
+    res.writeHead(200,{...SECURITY_HEADERS,'Content-Type':types[path.extname(file)] || 'application/octet-stream','Cache-Control':'no-store, no-cache, must-revalidate, max-age=0', 'Pragma':'no-cache', 'Expires':'0'});
+    res.end(buf);
+  });
+}).listen(port,'0.0.0.0',()=>{
+  console.log(`HOWTOM 유니버스: http://localhost:${port}`);
+  if (isPublicRuntime) console.log('[보안] 공개 실행 환경: /api 데이터 엔드포인트는 로그인 토큰을 요구합니다.');
+});
