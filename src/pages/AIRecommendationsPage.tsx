@@ -39,7 +39,22 @@ export function AIRecommendationsPage(){
   const error=campaign.error||creative.error||keyword.error;
   const loading=campaign.loading||creative.loading||keyword.loading;
   function updateParam(key:string,value:string){const next=new URLSearchParams(params);if(value)next.set(key,value);else next.delete(key);setParams(next,{replace:true})}
-  async function handleDeepDive(){if(!recommendations.length)return;setAiStatus('loading');setAiError('');try{const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',recommendations.slice(0,10));const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')}catch(error){if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');setAiError(error.message);return}setAiStatus('error');setAiError(error instanceof Error?error.message:'AI 분석 요청에 실패했습니다.')}}
+  async function handleDeepDive(){
+    if(!recommendations.length)return;setAiStatus('loading');setAiError('');
+    try{
+      // 캠페인·소재·키워드 점수가 비슷하면 전체를 우선순위로만 정렬해 상위 10개를 뽑을 때
+      // 한 유형(예: 캠페인)이 상위를 독점하고 다른 유형은 AI에게 아예 전달되지 않는
+      // 문제가 있었습니다. 유형별로 최소 개수를 보장해 고르게 섞어서 보냅니다.
+      const byType=(t:'campaign'|'creative'|'keyword')=>recommendations.filter(r=>r.targetType===t).slice(0,4);
+      const balanced=[...byType('campaign'),...byType('creative'),...byType('keyword')].sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,12);
+      const sample=balanced.length?balanced:recommendations.slice(0,10);
+      const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample);
+      const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')
+    }catch(error){
+      if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');setAiError(error.message);return}
+      setAiStatus('error');setAiError(error instanceof Error?error.message:'AI 분석 요청에 실패했습니다.')
+    }
+  }
   return <div>
     <PageHeader title="AI 추천" description="캠페인·소재·키워드의 실제 Metrics API 성과만 사용해 운영 점검 후보를 만듭니다."/>
     <MetricsDateBar/>
