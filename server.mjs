@@ -403,6 +403,38 @@ async function callAnthropic(systemPrompt, userPrompt) {
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
+// ── AI 추천(인사이트) 전용 provider 스위치 - 광고 문구 자동 생성과 같은 방식입니다.
+// 기존에 ANTHROPIC_API_KEY만 설정해 쓰시던 분들과 호환되도록, AI_INSIGHTS_PROVIDER를
+// 따로 지정 안 하면 기본값은 'anthropic'이고 ANTHROPIC_API_KEY를 그대로 씁니다.
+// ChatGPT만 우선 쓰고 싶으면 AI_INSIGHTS_PROVIDER=openai + AI_INSIGHTS_API_KEY만 넣으면 됩니다.
+const AI_INSIGHTS_PROVIDER = process.env.AI_INSIGHTS_PROVIDER || 'anthropic';
+const AI_INSIGHTS_API_KEY = process.env.AI_INSIGHTS_API_KEY || '';
+const AI_INSIGHTS_MODEL = process.env.AI_INSIGHTS_MODEL || 'gpt-4o-mini';
+function aiInsightsConfigured() {
+  if (AI_INSIGHTS_PROVIDER === 'anthropic') return anthropicConfigured();
+  if (AI_INSIGHTS_PROVIDER === 'openai') return Boolean(AI_INSIGHTS_API_KEY);
+  return false;
+}
+async function callAiInsights(systemPrompt, userPrompt) {
+  if (AI_INSIGHTS_PROVIDER === 'openai') {
+    if (!AI_INSIGHTS_API_KEY) throw new Error('AI_INSIGHTS_API_KEY가 설정되지 않았습니다.');
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${AI_INSIGHTS_API_KEY}` },
+      body: JSON.stringify({
+        model: AI_INSIGHTS_MODEL,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        max_tokens: 2000,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI API HTTP ${res.status}`);
+    return data.choices?.[0]?.message?.content || '';
+  }
+  return callAnthropic(systemPrompt, userPrompt);
+}
+
+
 /**
  * Meta 그래프 API 호출. 에러코드 2("Service temporarily unavailable")나 4(rate limit) 같은
  * Meta 쪽의 일시적인 문제는 몇 초 대기 후 최대 3번까지 자동으로 재시도합니다.
@@ -3923,7 +3955,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── AI 심층 분석 (인사이트 > AI 추천) ────────────────────────────────
     if (req.method === 'POST' && pathname === '/api/ai/recommendations') {
-      if (!anthropicConfigured()) return sendJson(res, 400, { error: 'ANTHROPIC_API_KEY가 설정되지 않았습니다.', configured: false });
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 추천이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
       const body = await readJson(req);
       const userPrompt = cleanText(body.prompt || '', 8000);
       if (!userPrompt) return sendJson(res, 400, { error: 'prompt가 필요합니다.' });
@@ -3939,13 +3971,47 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         '{"executiveSummary":"전체 요약(2~3문장)","findings":[{"title":"","description":"","evidenceIds":[],"confidence":"low|medium|high"}],"actions":[{"priority":1,"action":"","reason":"","targetType":""}],"cautions":["..."]}',
       ].join('\n');
       try {
-        const raw = await callAnthropic(systemPrompt, userPrompt);
+        const raw = await callAiInsights(systemPrompt, userPrompt);
         const cleaned = raw.trim().replace(/^```json\s*|```$/g, '');
         let parsed;
         try { parsed = JSON.parse(cleaned); } catch { return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' }); }
         return sendJson(res, 200, parsed);
       } catch (err) {
         return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 분석 요청에 실패했습니다.' });
+      }
+    }
+
+    // ── AI 기반 월간 보고서/다음달 제안서 인사이트 (규칙 기반 문구 대신 AI가 작성) ──
+    if (req.method === 'POST' && pathname === '/api/ai/report-insights') {
+      if (!aiInsightsConfigured()) return sendJson(res, 400, { error: `AI 추천이 아직 연결되지 않았습니다(${AI_INSIGHTS_PROVIDER === 'openai' ? 'AI_INSIGHTS_API_KEY' : 'ANTHROPIC_API_KEY'} 미설정).`, configured: false });
+      const body = await readJson(req);
+      const kind = body.kind === 'proposal' ? 'proposal' : 'report'; // 'report' | 'proposal'
+      const advertiserName = cleanText(body.advertiserName || '', 120);
+      const current = body.current || {}; const previous = body.previous || {};
+      const mediaTable = Array.isArray(body.mediaTable) ? body.mediaTable.slice(0, 20) : [];
+      if (!advertiserName || !mediaTable.length) return sendJson(res, 400, { error: '보고서 데이터가 부족합니다. 먼저 보고서를 생성하세요.' });
+      // 화면 계산 숫자를 AI에게 그대로 주고, 그 숫자를 근거로만 문장을 쓰게 합니다 - 숫자를
+      // 새로 만들거나 다르게 계산하면 화면에 보이는 KPI와 모순되는 문장이 나올 수 있습니다.
+      const dataBlock = JSON.stringify({ advertiserName, thisMonth: current, previousMonth: previous, byMedia: mediaTable }, null, 0);
+      const systemPrompt = [
+        '당신은 광고 성과 데이터를 바탕으로 짧은 한국어 인사이트 문장을 쓰는 보조 마케팅 분석가입니다.',
+        '반드시 아래 규칙을 지키세요.',
+        '1) 사용자가 제공한 JSON 데이터에 있는 숫자만 사용한다 - 새로운 숫자를 만들거나 다시 계산하지 않는다.',
+        '2) 근거 없는 원인을 확정하지 않는다 - "~로 보입니다", "~일 가능성이 있습니다"처럼 표현한다.',
+        kind === 'proposal' ? '3) 다음 달 예산·운영 방향은 검토 제안으로만 표현하고, 확정된 지시처럼 말하지 않는다.' : '3) 실적 해석에 집중하고, 다음 달 예산 조정은 검토 제안으로만 언급한다.',
+        '4) 반드시 JSON 배열로만 응답한다. 각 항목은 한 문장(60자 내외)의 한국어 문자열이다. 코드블록·설명 없이 순수 JSON 배열만 출력한다.',
+        '5) 3~5개 문장을 작성한다.',
+      ].join('\n');
+      const userPrompt = `${kind === 'proposal' ? '다음 달 제안서용 인사이트를' : '월간 보고서용 인사이트를'} 아래 데이터를 근거로 작성하세요.\n\n${dataBlock}`;
+      try {
+        const raw = await callAiInsights(systemPrompt, userPrompt);
+        const cleaned = raw.trim().replace(/^```json\s*|```$/g, '').replace(/^```\s*|```$/g, '');
+        let parsed;
+        try { parsed = JSON.parse(cleaned); } catch { return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' }); }
+        if (!Array.isArray(parsed)) return sendJson(res, 502, { error: 'AI 응답 형식이 올바르지 않습니다.' });
+        return sendJson(res, 200, { insights: parsed.map(x => cleanText(String(x), 200)).filter(Boolean) });
+      } catch (err) {
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : 'AI 인사이트 생성에 실패했습니다.' });
       }
     }
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { apiFetch } from '../../hooks/useApi';
 import { Link } from 'react-router-dom';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -104,8 +105,10 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [data, setData] = useState<MonthlyReportData | null>(null);
   const [insights, setInsights] = useState<string[]>([]);
+  const [aiInsightLoading, setAiInsightLoading] = useState(false);
   const [proposal, setProposal] = useState<NextMonthProposalData | null>(null);
   const [proposalInsights, setProposalInsights] = useState<string[]>([]);
+  const [aiProposalLoading, setAiProposalLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'report' | 'proposal'>(focusMode === 'proposal' ? 'proposal' : 'report');
   const [pdfStatus, setPdfStatus] = useState('');
   const [showValidation, setShowValidation] = useState(false);
@@ -222,6 +225,36 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
   const regenerateInsights = () => {
     if (!data) return;
     setInsights(generateMonthlyInsights(data));
+  };
+  const regenerateInsightsWithAi = async () => {
+    if (!data) return;
+    setAiInsightLoading(true);
+    try {
+      const result = await apiFetch<{ insights: string[] }>('/ai/report-insights', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'report', advertiserName: data.advertiserName, current: data.current, previous: data.previous, mediaTable: data.mediaTable }),
+      });
+      if (result.insights?.length) setInsights(result.insights);
+    } catch (e) {
+      setPdfStatus(e instanceof Error ? e.message : 'AI 인사이트 생성에 실패했습니다.');
+    } finally {
+      setAiInsightLoading(false);
+    }
+  };
+  const regenerateProposalInsightsWithAi = async () => {
+    if (!proposal) return;
+    setAiProposalLoading(true);
+    try {
+      const result = await apiFetch<{ insights: string[] }>('/ai/report-insights', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'proposal', advertiserName: proposal.advertiserName, current: data?.current, previous: data?.previous, mediaTable: data?.mediaTable }),
+      });
+      if (result.insights?.length) setProposalInsights(result.insights);
+    } catch (e) {
+      setPdfStatus(e instanceof Error ? e.message : 'AI 인사이트 생성에 실패했습니다.');
+    } finally {
+      setAiProposalLoading(false);
+    }
   };
 
   const generateProposal = () => {
@@ -618,6 +651,7 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
               <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>퍼포먼스 마케터 Insight 편집</h4>
               <button className="btn secondary sm" onClick={regenerateInsights}><RefreshCw size={13} /> 자동 문구 다시 생성</button>
+              <button className="btn secondary sm" onClick={() => void regenerateInsightsWithAi()} disabled={aiInsightLoading} title="화면에 표시된 숫자를 근거로 AI가 자연어 인사이트를 작성합니다."><RefreshCw size={13} /> {aiInsightLoading ? 'AI 작성 중...' : 'AI로 다시 쓰기'}</button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {insights.map((line, i) => (
@@ -647,7 +681,7 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
       {proposal && viewMode === 'proposal' && (
         <>
           <div className="proposal-insight-editor">
-            <div className="proposal-insight-head"><div><h4>퍼포먼스 마케터 다음달 제안 편집</h4><p>각 문구는 제안서 PDF의 페이지별 하단 제안 영역에 자동으로 반복 배치됩니다.</p></div><button className="btn secondary sm" onClick={regenerateProposalInsights}><RefreshCw size={13}/> 자동 제안 다시 생성</button></div>
+            <div className="proposal-insight-head"><div><h4>퍼포먼스 마케터 다음달 제안 편집</h4><p>각 문구는 제안서 PDF의 페이지별 하단 제안 영역에 자동으로 반복 배치됩니다.</p></div><button className="btn secondary sm" onClick={regenerateProposalInsights}><RefreshCw size={13}/> 자동 제안 다시 생성</button><button className="btn secondary sm" onClick={() => void regenerateProposalInsightsWithAi()} disabled={aiProposalLoading} title="화면에 표시된 숫자를 근거로 AI가 자연어 제안을 작성합니다."><RefreshCw size={13}/> {aiProposalLoading?'AI 작성 중...':'AI로 다시 쓰기'}</button></div>
             {proposalInsights.map((line, index) => <div className="proposal-insight-row" key={index}><textarea rows={2} value={line} onChange={event => updateProposalInsight(index, event.target.value)}/></div>)}
           </div>
           <div ref={proposalPagesRef} className="monthly-pages-preview">
