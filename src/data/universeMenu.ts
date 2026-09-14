@@ -87,7 +87,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'content-references', label: '레퍼런스', path: '/content/references', icon: 'link' },
       { key: 'content-productions', label: '제작물 보관함 ↗', path: contentStudioPath('library'), icon: 'folder', external: true },
       { key: 'content-templates', label: '템플릿', path: '/content/templates', icon: 'settings' },
-      { key: 'content-studio', label: '콘텐츠 제작소(블로그) ↗', path: CONTENT_STUDIO_URL, icon: 'palette', external: true },
+      { key: 'content-studio', label: '블로그 제작 ↗', path: contentStudioPath('production/blog'), icon: 'palette', external: true },
     ],
   },
   {
