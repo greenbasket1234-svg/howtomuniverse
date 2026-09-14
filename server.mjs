@@ -2136,11 +2136,99 @@ function getFeatureLimit(sub, feature) {
 async function getMonthlyUsage(advertiserId, feature, date = new Date()) {
   const monthStart = new Date(date.getFullYear(), date.getMonth(), 1).toISOString();
   const nextMonthStart = new Date(date.getFullYear(), date.getMonth() + 1, 1).toISOString();
+  // pending(예약 중)도 카운트에 포함해야, 동시에 들어온 두 번째 요청이 "아직 안 끝났으니
+  // 반영 안 됐다"고 착각해서 한도를 넘겨 승인하는 걸 막을 수 있습니다. failed는 제외합니다.
   const res = await pgPool.query(
-    'SELECT COALESCE(SUM(quantity),0) as total FROM usage_events WHERE advertiser_id = $1 AND feature = $2 AND created_at >= $3 AND created_at < $4',
+    `SELECT COALESCE(SUM(quantity),0) as total FROM usage_events
+     WHERE advertiser_id = $1 AND feature = $2 AND status IN ('confirmed','pending')
+       AND created_at >= $3 AND created_at < $4`,
     [advertiserId, feature, monthStart, nextMonthStart]
   );
   return Number(res.rows[0].total) || 0;
+}
+
+/**
+ * 원자적 사용량 예약. 아래 순서를 하나의 트랜잭션 + advisory lock으로 묶어서,
+ * "잔여 1건에서 동시 요청 2건이 둘 다 통과"하는 경쟁 상태를 막습니다:
+ *   1) 같은 sourceId(=idempotency key)로 이미 예약/확정된 게 있으면 그 기존 레코드를
+ *      그대로 반환합니다(재시도 안전 - 사용량이 중복으로 깎이지 않습니다).
+ *   2) 없으면 advisory lock으로 "이 광고주의 이 기능" 요청을 직렬화한 뒤, 지금까지의
+ *      사용량(confirmed+pending)을 다시 계산해서 한도 안이면 status='pending'으로
+ *      즉시 기록(예약)하고, 넘으면 예약하지 않고 거절합니다.
+ * 외부 AI 호출은 이 함수가 반환한 뒤(잠금이 풀린 뒤)에 실행해야 합니다 - 오래 걸리는
+ * 외부 호출 동안 DB 커넥션/락을 붙들고 있지 않기 위해서입니다.
+ */
+async function reserveUsage(tenantId, advertiserId, feature, action, sourceId, quantity = 1) {
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
+    if (sourceId) {
+      const existing = await client.query(
+        `SELECT * FROM usage_events WHERE advertiser_id=$1 AND feature=$2 AND action=$3 AND source_id=$4 LIMIT 1`,
+        [advertiserId, feature, action, sourceId]
+      );
+      if (existing.rows.length) {
+        await client.query('COMMIT');
+        return { reserved: true, replayed: true, event: existing.rows[0], check: null };
+      }
+    }
+    // 같은 광고주+기능에 대한 동시 요청을 직렬화합니다(advisory lock은 트랜잭션 종료 시 자동 해제).
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`usage:${advertiserId}:${feature}`]);
+    const subRes = await client.query('SELECT * FROM advertiser_subscriptions WHERE advertiser_id = $1', [advertiserId]);
+    let sub = subRes.rows[0];
+    if (!sub) {
+      const renewsAt = new Date(); renewsAt.setMonth(renewsAt.getMonth() + 1);
+      const insertSub = await client.query(
+        `INSERT INTO advertiser_subscriptions (tenant_id, advertiser_id, plan_name, status, entitlements, renews_at, note)
+         VALUES ($1,$2,'미설정','active',$3,$4,'구독 상품이 아직 지정되지 않았습니다.') RETURNING *`,
+        [tenantId, advertiserId, JSON.stringify({ blogEnabled: true }), renewsAt.toISOString()]
+      );
+      sub = insertSub.rows[0];
+    }
+    const limit = getFeatureLimit(sub, feature);
+    const statusOk = ['trial', 'active'].includes(sub.status);
+    const enabled = feature !== 'blog' || sub.entitlements?.blogEnabled !== false;
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
+    const usedRes = await client.query(
+      `SELECT COALESCE(SUM(quantity),0) as total FROM usage_events
+       WHERE advertiser_id=$1 AND feature=$2 AND status IN ('confirmed','pending') AND created_at >= $3 AND created_at < $4`,
+      [advertiserId, feature, monthStart, nextMonthStart]
+    );
+    const used = Number(usedRes.rows[0].total) || 0;
+    const check = {
+      allowed: statusOk && enabled && (limit == null || used + quantity <= limit),
+      subscription: sub, limit: limit ?? undefined, used, remaining: limit == null ? undefined : Math.max(0, limit - used),
+      reason: !statusOk ? `구독 상태(${sub.status})로는 이용할 수 없습니다.` : !enabled ? '기능 사용 안 함' : (limit != null && used + quantity > limit) ? '이번 달 사용 한도 초과' : '',
+    };
+    if (!check.allowed) {
+      await client.query('COMMIT'); // 아무것도 안 만들었으니 그냥 커밋(=advisory lock 해제)
+      return { reserved: false, replayed: false, event: null, check };
+    }
+    const insertEvent = await client.query(
+      `INSERT INTO usage_events (tenant_id, advertiser_id, subscription_id, feature, action, quantity, source_id, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
+      [tenantId, advertiserId, sub.id, feature, action, quantity, sourceId || null]
+    );
+    await client.query('COMMIT');
+    return { reserved: true, replayed: false, event: insertEvent.rows[0], check };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+/** 외부 생성이 성공적으로 끝났을 때 - pending을 confirmed로 확정합니다(딱 한 번만). */
+async function confirmUsageReservation(eventId) {
+  if (!eventId) return;
+  await pgPool.query(`UPDATE usage_events SET status='confirmed' WHERE id=$1 AND status='pending'`, [eventId]);
+}
+/** 외부 생성이 확실히 실패했을 때 - 예약을 반환합니다(한도 집계에서 제외). */
+async function refundUsageReservation(eventId) {
+  if (!eventId) return;
+  await pgPool.query(`UPDATE usage_events SET status='failed' WHERE id=$1 AND status='pending'`, [eventId]);
 }
 async function canUseFeatureCheck(tenantId, advertiserId, feature) {
   const sub = await ensureAdvertiserSubscription(tenantId, advertiserId);
@@ -2337,13 +2425,22 @@ async function handleApi(req, res, pathname) {
 
     // ---- PostgreSQL 마이그레이션 (SaaS 전환 1단계) --------------------------------------
     // 원본 JSON 파일은 전혀 건드리지 않습니다. 몇 번을 실행해도 안전합니다(ON CONFLICT 처리).
+    // 스키마 변경·데이터 복사가 일어나는 매우 민감한 작업이라, 관리자(owner 또는
+    // admin.system.manage 권한)만 실행할 수 있도록 제한합니다 - 예전엔 인증 확인 자체가
+    // 없어서 로그인 없이도 누구나 호출할 수 있었습니다.
     if (req.method === 'GET' && pathname === '/api/admin/migration-status') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (denyUnlessPermitted(res, requester, 'admin.system.manage')) return true;
       return sendJson(res, 200, {
         databaseConfigured: Boolean(pgPool),
         encryptionKeyConfigured: Boolean(ENCRYPTION_KEY),
       });
     }
     if (req.method === 'POST' && pathname === '/api/admin/migrate-to-postgres') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      if (denyUnlessPermitted(res, requester, 'admin.system.manage')) return true;
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       if (!ENCRYPTION_KEY) return sendJson(res, 400, { error: 'SECRET_ENCRYPTION_KEY가 설정되지 않았습니다(64자 16진수).' });
       try {
@@ -4642,15 +4739,20 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
     if (req.method === 'GET' && pathname === '/api/campaigns') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
-      const advRes = await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id = $1`, [tenantId]);
+      const advRes = requester.isOwner || !requester.advertiserIds
+        ? await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id = $1`, [tenantId])
+        : await pgPool.query(`SELECT id, name FROM advertisers WHERE tenant_id = $1 AND id::text = ANY($2::text[])`, [tenantId, requester.advertiserIds]);
+      const scopedAdvertiserIds = new Set(advRes.rows.map(a => a.id));
       const metaAccRes = await pgPool.query(`SELECT advertiser_id, account_id FROM media_accounts WHERE tenant_id=$1 AND channel='meta' AND status='connected'`, [tenantId]);
       const naverAccRes = await pgPool.query(`SELECT advertiser_id, account_id, api_key_encrypted, secret_key_encrypted FROM media_accounts WHERE tenant_id=$1 AND channel='naver' AND status='connected'`, [tenantId]);
       const advNameMap = new Map(advRes.rows.map(a => [a.id, a.name]));
       const campaigns = [];
       if (metaConfigured()) {
         for (const acc of metaAccRes.rows) {
-          if (!acc.account_id) continue;
+          if (!acc.account_id || !scopedAdvertiserIds.has(acc.advertiser_id)) continue;
           try {
             const rows = await metaListCampaigns(acc.account_id);
             for (const c of rows) {
@@ -4668,6 +4770,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         }
       }
       for (const acc of naverAccRes.rows) {
+        if (!scopedAdvertiserIds.has(acc.advertiser_id)) continue;
         const apiKey = decryptSecret(acc.api_key_encrypted), secretKey = decryptSecret(acc.secret_key_encrypted);
         if (!apiKey || !secretKey) continue;
         try {
@@ -4772,17 +4875,21 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ---- 데이터 수집 현황 -----------------------------------------------------------
     if (req.method === 'GET' && pathname === '/api/integrations/status') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       // 예전에는 pgReadDb(성과 4개 테이블 + 검증로그 + 활동로그 전체)를 통째로 읽었는데,
       // 이 화면에 필요한 건 광고주와 매체 계정뿐입니다. 관련 없는 테이블(예: sync_validation_logs)의
       // 스키마 문제 때문에 이 API 전체가 500으로 죽어 화면이 텅 비어 보이던 문제도 함께 없앱니다.
+      const scopeClause = (requester.isOwner || !requester.advertiserIds) ? '' : 'AND a.id::text = ANY($2::text[])';
+      const params = (requester.isOwner || !requester.advertiserIds) ? [tenantId] : [tenantId, requester.advertiserIds];
       const r = await pgPool.query(
         `SELECT a.id AS advertiser_id, a.name AS advertiser_name,
                 m.channel, m.last_synced_at, m.last_row_count, m.last_sync_error
          FROM advertisers a JOIN media_accounts m ON m.advertiser_id = a.id
-         WHERE a.tenant_id = $1 AND m.status = 'connected'
+         WHERE a.tenant_id = $1 AND m.status = 'connected' ${scopeClause}
          ORDER BY a.name, m.channel`,
-        [tenantId]
+        params
       );
       const rows = r.rows.map(row => {
         const active = activeBackgroundSyncs.get(`${row.advertiser_id}|${row.channel}`);

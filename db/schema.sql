@@ -121,14 +121,22 @@ CREATE TABLE IF NOT EXISTS usage_events (
   feature TEXT NOT NULL, -- 'blog' | 'video-script' | 'document' | 'ad-creation' | 'ai-generation'
   action TEXT NOT NULL,  -- 'create' | 'complete' | 'generate' | 'publish' | 'export'
   quantity INTEGER NOT NULL DEFAULT 1,
-  source_id TEXT, -- 같은 결과물에 대해 중복 집계되지 않도록(recordUsageOnce와 동일한 dedupe 기준)
+  source_id TEXT, -- 같은 결과물에 대해 중복 집계되지 않도록(recordUsageOnce와 동일한 dedupe 기준) - 재시도 idempotency 키로도 씁니다.
   provider TEXT,
   provider_cost NUMERIC,
   ai_cost NUMERIC,
+  -- 'pending'(예약, 외부 생성 호출 중) | 'confirmed'(생성 성공, 확정) | 'failed'(명확한 실패, 한도에서 제외).
+  -- 월 사용량 집계 시 confirmed+pending만 카운트합니다 - pending까지 카운트해야 동시 요청이
+  -- 잔여 한도를 넘겨 둘 다 승인되는 경쟁 상태를 막을 수 있습니다.
+  status TEXT NOT NULL DEFAULT 'confirmed',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_advertiser_feature ON usage_events(advertiser_id, feature, created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_tenant ON usage_events(tenant_id, created_at DESC);
+ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'confirmed';
+-- 같은 idempotency 키(source_id)로 같은 기능에 중복 예약이 동시에 들어가는 걸 DB 레벨에서
+-- 막습니다(애플리케이션 코드의 경쟁 상태 창을 없앱니다) - source_id가 있는 행에만 적용됩니다.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_dedupe ON usage_events(advertiser_id, feature, action, source_id) WHERE source_id IS NOT NULL;
 
 
 -- ============================================================
