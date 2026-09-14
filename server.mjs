@@ -3938,6 +3938,93 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     }
 
     // ── 사용량 기록/조회 (구독 한도 집계의 유일한 원본) ───────────────────
+    // ── AI 자동화 - 서버 저장, 팀 전체 공유. 실제 예약 실행은 scheduleAutomationRules()가
+    // 담당합니다(이 블록은 규칙 등록·조회·수동 실행·이력 조회만 담당). ────────────────
+    if (pathname.startsWith('/api/automation/')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+
+      if (req.method === 'GET' && pathname === '/api/automation/rules') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const type = q.get('type');
+        const clauses = ['tenant_id=$1']; const params = [tenantId];
+        if (type) { params.push(type); clauses.push(`type=$${params.length}`); }
+        if (!requester.isOwner && requester.advertiserIds) { params.push([...requester.advertiserIds, null]); clauses.push(`(advertiser_id = ANY($${params.length}::uuid[]) OR advertiser_id IS NULL)`); }
+        const rows = await pgPool.query(`SELECT * FROM automation_rules WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'POST' && pathname === '/api/automation/rules') {
+        const body = await readJson(req);
+        const type = cleanText(body.type || '', 20);
+        if (!['report', 'ad-copy', 'notification', 'workflow'].includes(type)) return sendJson(res, 400, { error: 'type은 report, ad-copy, notification, workflow 중 하나여야 합니다.' });
+        const advertiserId = cleanText(body.advertiserId || '', 120) || null;
+        if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+        const name = cleanText(body.name || '', 200);
+        if (!name) return sendJson(res, 400, { error: '규칙 이름을 입력하세요.' });
+        const insert = await pgPool.query(
+          `INSERT INTO automation_rules (tenant_id, type, advertiser_id, name, config, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [tenantId, type, advertiserId, name, JSON.stringify(body.config || {}), body.enabled !== false]
+        );
+        return sendJson(res, 201, insert.rows[0]);
+      }
+      const ruleMatch = pathname.match(/^\/api\/automation\/rules\/([^/]+)$/);
+      if (ruleMatch && req.method === 'PATCH') {
+        const id = ruleMatch[1]; const body = await readJson(req);
+        const cur = await pgPool.query('SELECT advertiser_id FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        if (!cur.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        if (cur.rows[0].advertiser_id && !canAccessAdvertiser(requester, cur.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        const sets = ['updated_at=now()']; const params = [];
+        if (body.name !== undefined) { params.push(cleanText(body.name, 200)); sets.push(`name=$${params.length}`); }
+        if (body.config !== undefined) { params.push(JSON.stringify(body.config)); sets.push(`config=$${params.length}`); }
+        if (body.enabled !== undefined) { params.push(Boolean(body.enabled)); sets.push(`enabled=$${params.length}`); }
+        params.push(tenantId, id);
+        const updated = await pgPool.query(`UPDATE automation_rules SET ${sets.join(', ')} WHERE tenant_id=$${params.length - 1} AND id=$${params.length} RETURNING *`, params);
+        return sendJson(res, 200, updated.rows[0]);
+      }
+      if (ruleMatch && req.method === 'DELETE') {
+        const id = ruleMatch[1];
+        const cur = await pgPool.query('SELECT advertiser_id FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        if (!cur.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        if (cur.rows[0].advertiser_id && !canAccessAdvertiser(requester, cur.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        await pgPool.query('DELETE FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        return sendJson(res, 200, { ok: true });
+      }
+      const runNowMatch = pathname.match(/^\/api\/automation\/rules\/([^/]+)\/run$/);
+      if (runNowMatch && req.method === 'POST') {
+        const id = runNowMatch[1];
+        const rule = await pgPool.query('SELECT * FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        if (!rule.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        if (rule.rows[0].advertiser_id && !canAccessAdvertiser(requester, rule.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        try {
+          const result = await runAutomationRule(rule.rows[0], 'manual');
+          return sendJson(res, 200, result);
+        } catch (error) {
+          return sendJson(res, error?.status || 502, { error: error?.message || '자동화 실행에 실패했습니다.' });
+        }
+      }
+      if (req.method === 'GET' && pathname === '/api/automation/runs') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const clauses = ['tenant_id=$1']; const params = [tenantId];
+        if (q.get('ruleId')) { params.push(q.get('ruleId')); clauses.push(`rule_id=$${params.length}`); }
+        if (!requester.isOwner && requester.advertiserIds) { params.push([...requester.advertiserIds, null]); clauses.push(`(advertiser_id = ANY($${params.length}::uuid[]) OR advertiser_id IS NULL)`); }
+        const rows = await pgPool.query(`SELECT * FROM automation_runs WHERE ${clauses.join(' AND ')} ORDER BY started_at DESC LIMIT 200`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      if (req.method === 'GET' && pathname === '/api/automation/notifications') {
+        const clauses = ['tenant_id=$1']; const params = [tenantId];
+        if (!requester.isOwner && requester.advertiserIds) { params.push([...requester.advertiserIds, null]); clauses.push(`(advertiser_id = ANY($${params.length}::uuid[]) OR advertiser_id IS NULL)`); }
+        const rows = await pgPool.query(`SELECT * FROM automation_notifications WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 200`, params);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      const notifReadMatch = pathname.match(/^\/api\/automation\/notifications\/([^/]+)\/read$/);
+      if (notifReadMatch && req.method === 'PATCH') {
+        await pgPool.query('UPDATE automation_notifications SET read_at=now() WHERE tenant_id=$1 AND id=$2', [tenantId, notifReadMatch[1]]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
     if (pathname === '/api/usage-events' || pathname === '/api/usage-events/check') {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const requester = await resolveRequestUser(req);
@@ -5010,6 +5097,136 @@ async function runScheduledSyncForAllAccounts(days = 3) {
   }
 }
 
+/**
+ * 자동화 규칙 하나를 실제로 실행합니다. 실행 시작/종료를 항상 automation_runs에
+ * 기록해서, "실행 기록" 화면이 실제 서버에서 벌어진 일을 보여주게 합니다.
+ * trigger는 'scheduled'(서버 스케줄러가 예약 시각에 자동 실행) 또는 'manual'(사용자가
+ * 화면에서 "지금 실행" 버튼을 눌러 즉시 실행)입니다.
+ */
+async function runAutomationRule(rule, trigger) {
+  const tenantId = rule.tenant_id;
+  const runInsert = await pgPool.query(
+    `INSERT INTO automation_runs (tenant_id, rule_id, rule_type, rule_name, advertiser_id, trigger, status) VALUES ($1,$2,$3,$4,$5,$6,'running') RETURNING id`,
+    [tenantId, rule.id, rule.type, rule.name, rule.advertiser_id, trigger]
+  );
+  const runId = runInsert.rows[0].id;
+  try {
+    let result;
+    if (rule.type === 'ad-copy') {
+      result = await runAdCopyAutomationRule(rule);
+    } else if (rule.type === 'notification') {
+      result = await runNotificationAutomationRule(rule);
+    } else if (rule.type === 'report') {
+      // 보고서 자동 생성의 서버 사이드 계산 로직은 다음 단계에서 완성됩니다 - 지금은
+      // 안전하게 "아직 지원 예정"으로 실패 처리하고, 화면에서 수동 생성은 그대로 가능합니다.
+      throw Object.assign(new Error('보고서 자동 생성의 서버 실행은 아직 준비 중입니다. 화면에서 수동으로 생성해주세요.'), { status: 501 });
+    } else if (rule.type === 'workflow') {
+      throw Object.assign(new Error('작업 흐름의 서버 실행은 아직 준비 중입니다.'), { status: 501 });
+    } else {
+      throw new Error(`알 수 없는 자동화 유형: ${rule.type}`);
+    }
+    await pgPool.query(`UPDATE automation_runs SET status='success', result=$2, finished_at=now() WHERE id=$1`, [runId, JSON.stringify(result || {})]);
+    await pgPool.query(`UPDATE automation_rules SET last_run_at=now() WHERE id=$1`, [rule.id]);
+    return { runId, status: 'success', result };
+  } catch (error) {
+    await pgPool.query(`UPDATE automation_runs SET status='failed', error=$2, finished_at=now() WHERE id=$1`, [runId, error?.message || String(error)]);
+    await pgPool.query(`UPDATE automation_rules SET last_run_at=now() WHERE id=$1`, [rule.id]);
+    throw error;
+  }
+}
+
+/** 광고 문구 자동 생성 - 이미 있는 AI 인프라(callExternalAdCopyAi)를 그대로 재사용합니다. */
+async function runAdCopyAutomationRule(rule) {
+  if (!adCopyAiConfigured()) throw Object.assign(new Error('광고 문구 AI가 아직 연결되지 않았습니다.'), { status: 400 });
+  const cfg = rule.config || {};
+  const advRes = rule.advertiser_id ? await pgPool.query('SELECT name FROM advertisers WHERE id=$1', [rule.advertiser_id]) : { rows: [] };
+  const brief = {
+    advertiserName: advRes.rows[0]?.name || cfg.advertiserName || '', channel: cfg.channel || '', objective: cfg.objective || '',
+    target: cfg.targetAudience || '', keyBenefit: cfg.keyBenefit || '', hookType: cfg.hookType || '',
+  };
+  const variants = await callExternalAdCopyAi(brief);
+  // 생성된 결과는 규칙 담당자가 확인할 수 있도록 알림으로 남깁니다(광고 제작 화면에
+  // 자동으로 새 프로젝트를 만들지는 않습니다 - 사람이 검토 후 반영하는 걸 기본으로 합니다).
+  await pgPool.query(
+    `INSERT INTO automation_notifications (tenant_id, rule_id, advertiser_id, title, message, recipient, channels)
+     VALUES ($1,$2,$3,$4,$5,'content_manager','{internal}')`,
+    [rule.tenant_id, rule.id, rule.advertiser_id, `[자동생성] ${rule.name} 광고 문구 ${variants.length}건`, `자동화 규칙 "${rule.name}"이 새 광고 문구 시안을 생성했습니다. 검토 후 광고 제작에 반영해주세요.`]
+  );
+  return { variantCount: variants.length };
+}
+
+/** 알림 자동화 - 조건 감시 로직의 1차 버전입니다. 예산 소진율(budget_pacing)만 우선
+ * 지원하고, 나머지 트리거 타입은 다음 단계에서 이어서 구현합니다. */
+async function runNotificationAutomationRule(rule) {
+  const cfg = rule.config || {};
+  if (cfg.triggerType !== 'budget_pacing' || !rule.advertiser_id) {
+    return { skipped: true, reason: '이 트리거 타입은 서버 자동 감시가 아직 준비 중입니다.' };
+  }
+  const tenantId = rule.tenant_id;
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const spendRes = await pgPool.query(
+    `SELECT COALESCE(SUM(spend),0) as total FROM (
+       SELECT spend FROM campaign_daily_metrics WHERE advertiser_id=$1 AND date >= $2
+     ) t`, [rule.advertiser_id, monthStart]
+  ).catch(() => ({ rows: [{ total: 0 }] }));
+  const spent = Number(spendRes.rows[0]?.total) || 0;
+  const budgetRes = await pgPool.query('SELECT monthly_budget FROM advertisers WHERE id=$1', [rule.advertiser_id]);
+  const budget = Number(budgetRes.rows[0]?.monthly_budget) || 0;
+  const pacing = budget > 0 ? (spent / budget) * 100 : 0;
+  const threshold = Number(cfg.threshold) || 90;
+  if (pacing >= threshold) {
+    await pgPool.query(
+      `INSERT INTO automation_notifications (tenant_id, rule_id, advertiser_id, title, message, recipient, channels)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [tenantId, rule.id, rule.advertiser_id, `[예산 경고] ${rule.name}`, `이번 달 예산 소진율이 ${pacing.toFixed(1)}%에 도달했습니다(기준 ${threshold}%).`, cfg.recipient || 'admin', cfg.channels || ['internal']]
+    );
+    return { triggered: true, pacing };
+  }
+  return { triggered: false, pacing };
+}
+
+/**
+ * AI 자동화 스케줄러 - 매분 깨어나서 "지금이 실행 시각인 규칙"이 있는지 확인합니다.
+ * 광고 문구(cadence: weekly/monthly + time)와 알림(항상 매시 정각에 조건 재확인)을
+ * 지원합니다. 같은 분에 중복 실행되지 않도록 규칙별 lastAutomationRunKey로 막습니다.
+ */
+const lastAutomationRunKeys = new Map();
+function scheduleAutomationRules() {
+  setInterval(async () => {
+    if (!pgPool) return;
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+      const get = (type) => parts.find(p => p.type === type)?.value;
+      const hour = Number(get('hour')); const minute = Number(get('minute'));
+      const dayOfMonth = Number(get('day')); const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      const weekday = weekdayMap[get('weekday')];
+      const dateKey = `${get('year')}-${get('month')}-${get('day')}-${hour}-${minute}`;
+      const timeNow = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+
+      const rules = await pgPool.query(`SELECT * FROM automation_rules WHERE enabled = true AND type IN ('ad-copy','notification')`);
+      for (const rule of rules.rows) {
+        if (lastAutomationRunKeys.get(rule.id) === dateKey) continue; // 이 분에 이미 처리함
+        const cfg = rule.config || {};
+        let due = false;
+        if (rule.type === 'ad-copy') {
+          if (cfg.cadence === 'monthly' && cfg.dayOfMonth === dayOfMonth && cfg.time === timeNow) due = true;
+          if (cfg.cadence === 'weekly' && cfg.weekday === weekday && cfg.time === timeNow) due = true;
+        } else if (rule.type === 'notification') {
+          // 알림 조건은 예약 시각이 아니라 "주기적으로 계속 감시"하는 성격이라, 정각(0분)마다 재확인합니다.
+          if (minute === 0) due = true;
+        }
+        if (!due) continue;
+        lastAutomationRunKeys.set(rule.id, dateKey);
+        runAutomationRule(rule, 'scheduled').catch(error => console.error(`[AI 자동화] 규칙 실행 실패(${rule.id}):`, error?.message || error));
+      }
+    } catch (error) {
+      console.error('[AI 자동화] 스케줄러 오류:', error?.message || error);
+    }
+  }, 60_000);
+  console.log('[AI 자동화] 스케줄러 시작 - 매분 예약 시각을 확인합니다.');
+}
+
 /** 매일 07:00, 09:00, 14:00, 17:00, 19:00(한국 시간)에 자동 동기화를 실행합니다. */
 const AUTO_SYNC_HOURS_KST = [7, 9, 14, 17, 19];
 let lastAutoSyncKey = '';
@@ -5029,6 +5246,7 @@ function scheduleAutoSync() {
   console.log(`[자동 동기화] 스케줄러 시작 - 매일 한국시간 ${AUTO_SYNC_HOURS_KST.join(', ')}시에 자동 실행됩니다.`);
 }
 if (pgPool) scheduleAutoSync();
+if (pgPool) scheduleAutomationRules();
 
 http.createServer(async (req,res)=>{
   let pathname;

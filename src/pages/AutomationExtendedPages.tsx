@@ -2,64 +2,288 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../hooks/useApi';
 import { Link } from 'react-router-dom';
 import { useAdvertisers } from '../hooks/useAdvertisers';
-import { loadAutomationJobs } from '../automation/automationStore';
-import { checkReportReadiness, deleteReportAutomationConfig, generateReportsNow, loadReportAutomationConfigs, nextReportRun, previousMonthKey, upsertReportAutomationConfig, type ReportAutomationConfig } from '../automation/report/reportAutomation';
-import { deleteAdCopyAutomationConfig, generateAdCopyNow, loadAdCopyAutomationConfigs, upsertAdCopyAutomationConfig, type AdCopyAutomationConfig, type AdCopyProvider } from '../automation/adCopy/adCopyAutomation';
-import { deleteNotificationRule, loadInternalNotifications, loadNotificationRules, markNotificationRead, testNotificationRule, upsertNotificationRule } from '../automation/notifications/notificationEngine';
-import type { NotificationRule, NotificationTriggerType } from '../automation/notifications/notificationTypes';
-import { deleteWorkflow, loadWorkflows, runWorkflowNow, upsertWorkflow, validateWorkflow } from '../automation/workflow/workflowEngine';
-import type { AutomationWorkflow, WorkflowStepType } from '../automation/workflow/workflowTypes';
-import { loadExecutionRuns } from '../automation/execution/executionStore';
-import type { ExtendedAutomationRun } from '../automation/execution/executionTypes';
+import { automationApi, type AutomationRule, type AutomationRun, type AutomationNotification } from '../automation/automationApi';
+import { checkReportReadiness, generateReportsNow, previousMonthKey } from '../automation/report/reportAutomation';
 
-const nowIso = () => new Date().toISOString();
-const uid = (p:string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
-const fmt = (value?:string) => { if(!value)return '-'; const d=new Date(value); return Number.isNaN(+d)?'-':`${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
-const statusLabel:Record<string,string>={success:'성공',failed:'실패',blocked:'보류',running:'실행 중',queued:'대기',skipped:'건너뜀'};
+const fmt = (value?: string | null) => { if (!value) return '-'; const d = new Date(value); return Number.isNaN(+d) ? '-' : `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const statusLabel: Record<string, string> = { success: '성공', failed: '실패', running: '실행 중' };
 
-function useRevision(){const [r,setR]=useState(0);useEffect(()=>{const f=()=>setR(x=>x+1);window.addEventListener('howtom-automation-updated',f);return()=>window.removeEventListener('howtom-automation-updated',f)},[]);return [r,()=>setR(x=>x+1)] as const}
-function Header({title,desc,action}:{title:string;desc:string;action?:React.ReactNode}){return <><div className="auto28-head"><div><h1>{title}</h1><p>{desc}</p></div>{action}</div><div className="auto28-note"><b>Pre-Revenue 운영 모드</b><span>지금은 브라우저 안에서 설정·수동 실행·검토·기록까지 구현합니다. 24시간 백그라운드 실행, GPT/Claude API, 네이버웍스·이메일 발송은 서버 연동 이후 활성화합니다.</span></div></>}
-function Pill({children,tone='gray'}:{children:React.ReactNode;tone?:string}){return <span className={`auto28-pill ${tone}`}>{children}</span>}
-function Kpis({items}:{items:{label:string;value:string|number;sub?:string}[]}){return <div className="auto28-kpis">{items.map(x=><div className="auto28-kpi" key={x.label}><span>{x.label}</span><strong>{x.value}</strong>{x.sub&&<small>{x.sub}</small>}</div>)}</div>}
-
-export function ReportAutomationPage(){
- const [rev,bump]=useRevision(); const [editing,setEditing]=useState<ReportAutomationConfig|null>(null); const configs=useMemo(()=>loadReportAutomationConfigs(),[rev]); const runs=useMemo(()=>loadExecutionRuns().filter(x=>x.type==='report'),[rev]); const month=previousMonthKey();
- const ready=configs.filter(c=>checkReportReadiness(c.advertiserName,month,c.requireActualData).ready).length; const next=configs.filter(c=>c.enabled).map(c=>nextReportRun(c)).sort((a,b)=>+a-+b)[0];
- return <div className="auto28-page"><Header title="보고서 자동 생성" desc="기존 월간 보고서·다음달 제안서 생성기를 재사용해 자동화 초안을 만들고 검토 상태로 연결합니다." action={<button className="btn primary" onClick={()=>setEditing(newReportConfig())}>+ 자동화 추가</button>}/>
- <Kpis items={[{label:'활성 자동화',value:configs.filter(x=>x.enabled).length},{label:'데이터 준비 완료',value:ready},{label:'최근 생성 성공',value:runs.filter(x=>x.status==='success').length},{label:'보류/실패',value:runs.filter(x=>x.status==='blocked'||x.status==='failed').length},{label:'다음 생성',value:next?fmt(next.toISOString()):'-'}]}/>
- <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>광고주별 보고서 자동화</h3><p>자동화가 만든 결과도 기존 저장된 월간 보고서·다음달 제안서에 저장됩니다.</p></div></div><div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>광고주</th><th>보고서</th><th>실행 일정</th><th>대상 월</th><th>데이터 준비</th><th>상태</th><th>작업</th></tr></thead><tbody>{configs.length===0?<tr><td colSpan={7}>등록된 자동화가 없습니다.</td></tr>:configs.map(c=>{const r=checkReportReadiness(c.advertiserName,month,c.requireActualData);return <tr key={c.configId}><td><b>{c.advertiserName}</b></td><td>{c.types.map(t=>t==='monthly'?'월간 보고서':'다음달 제안서').join(' · ')}</td><td>매월 {c.dayOfMonth}일 {c.time}</td><td>{month}</td><td>{r.ready?<Pill tone="green">준비 완료</Pill>:<Pill tone="amber">보류</Pill>}<small>{r.ready?r.periodLabel:r.reasons[0]}</small></td><td><Pill tone={c.enabled?'green':'gray'}>{c.enabled?'ON':'중지'}</Pill></td><td><div className="auto28-actions"><button className="btn secondary mini" onClick={()=>{generateReportsNow(c,month);bump()}}>지금 생성</button><button className="btn secondary mini" onClick={()=>setEditing(c)}>수정</button><button className="btn secondary mini" onClick={()=>{if(confirm('삭제할까요?')){deleteReportAutomationConfig(c.configId);bump()}}}>삭제</button></div></td></tr>})}</tbody></table></div></section>
- <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>최근 실행 결과</h3><p>데이터 부족은 실패가 아니라 보류로 구분합니다.</p></div><Link to="/automation/execution-logs">전체 실행 기록</Link></div>{runs.slice(0,5).map(r=><RunRow key={r.runId} run={r}/>)}</section>
- {editing&&<ReportConfigModal value={editing} onClose={()=>setEditing(null)} onSave={c=>{upsertReportAutomationConfig(c);setEditing(null);bump()}}/>}</div>
+function useRules(type: AutomationRule['type']) {
+  const [rules, setRules] = useState<AutomationRule[]>([]);
+  const reload = async () => { try { setRules(await automationApi.rules.list(type)); } catch { setRules([]); } };
+  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  return { rules, reload };
 }
-function newReportConfig():ReportAutomationConfig{const stamp=nowIso();return{configId:uid('report'),advertiserId:'',advertiserName:'',types:['monthly','proposal'],dayOfMonth:1,time:'08:00',sourcePeriod:'previous_month',requireActualData:true,draftOnly:true,notifyOnFailure:true,enabled:true,createdAt:stamp,updatedAt:stamp}}
-function ReportConfigModal({value,onClose,onSave}:{value:ReportAutomationConfig;onClose:()=>void;onSave:(v:ReportAutomationConfig)=>void}){const [v,setV]=useState(value);const [advs]=useAdvertisers();return <Modal title="보고서 자동화 설정" onClose={onClose}><div className="auto28-form"><label>광고주<select value={v.advertiserId} onChange={e=>{const a=advs.find(x=>x.id===e.target.value);setV({...v,advertiserId:e.target.value,advertiserName:a?.name||''})}}>{advs.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>실행일<input type="number" min="1" max="28" value={v.dayOfMonth} onChange={e=>setV({...v,dayOfMonth:Math.max(1,Math.min(28,Number(e.target.value)||1))})}/></label><label>실행 시각<input type="time" value={v.time} onChange={e=>setV({...v,time:e.target.value})}/></label><div><span className="auto28-label">보고서 유형</span><div className="auto28-checks"><label><input type="checkbox" checked={v.types.includes('monthly')} onChange={e=>setV({...v,types:e.target.checked?[...v.types,'monthly']:v.types.filter(x=>x!=='monthly')})}/>월간 보고서</label><label><input type="checkbox" checked={v.types.includes('proposal')} onChange={e=>setV({...v,types:e.target.checked?[...v.types,'proposal']:v.types.filter(x=>x!=='proposal')})}/>다음달 제안서</label></div></div><label className="span-2"><input type="checkbox" checked={v.requireActualData} onChange={e=>setV({...v,requireActualData:e.target.checked})}/> 실제 저장 데이터가 있을 때만 생성</label><label><input type="checkbox" checked={v.enabled} onChange={e=>setV({...v,enabled:e.target.checked})}/> 자동화 ON</label></div><ModalActions onClose={onClose} onSave={()=>{if(!v.types.length){alert('보고서 유형을 하나 이상 선택하세요.');return;}onSave(v)}}/></Modal>}
-
-export function AdCopyAutomationPage(){
- const [rev,bump]=useRevision();const [editing,setEditing]=useState<AdCopyAutomationConfig|null>(null);const [running,setRunning]=useState<string|null>(null);
- const configs=useMemo(()=>loadAdCopyAutomationConfigs(),[rev]);const runs=useMemo(()=>loadExecutionRuns().filter(x=>x.type==='ad-copy'),[rev]);
- const [aiStatus,setAiStatus]=useState<{configured:boolean;provider:string|null}|null>(null);
- useEffect(()=>{ apiFetch<{configured:boolean;provider:string|null}>('/ad-copy/ai-status').then(setAiStatus).catch(()=>setAiStatus({configured:false,provider:null})); },[rev]);
- async function runNow(c:AdCopyAutomationConfig){ setRunning(c.configId); try{ await generateAdCopyNow(c); } finally { setRunning(null); bump(); } }
- return <div className="auto28-page"><Header title="광고 문구 자동 생성" desc="광고주·매체·목표·후킹·CTA를 구조화해 콘텐츠 제작 프로젝트에 광고 문구 초안을 저장합니다." action={<button className="btn primary" onClick={()=>setEditing(newCopyConfig())}>+ 생성 규칙 추가</button>}/><Kpis items={[{label:'활성 규칙',value:configs.filter(x=>x.enabled).length},{label:'템플릿 생성 가능',value:configs.filter(x=>x.provider==='template').length},{label:'AI API 연결',value:aiStatus==null?'확인 중':aiStatus.configured?`연결됨(${aiStatus.provider})`:'미연동',sub:aiStatus?.configured?undefined:'AD_COPY_AI_PROVIDER 서버 설정 필요'},{label:'최근 초안 생성',value:runs.filter(x=>x.status==='success').length}]}/>
- <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>광고 문구 생성 규칙</h3><p>템플릿 방식은 서버 연결 없이 항상 동작하고, OpenAI·Claude는 서버에 연결되면 바로 실제 AI로 생성됩니다.</p></div><Link to="/content/productions">제작물 보관함</Link></div><div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>광고주</th><th>매체</th><th>목적</th><th>생성 방식</th><th>주기</th><th>상태</th><th>작업</th></tr></thead><tbody>{configs.length===0?<tr><td colSpan={7}>등록된 생성 규칙이 없습니다.</td></tr>:configs.map(c=><tr key={c.configId}><td><b>{c.advertiserName}</b><small>{c.productName}</small></td><td>{c.channel}</td><td>{c.objective}</td><td>{c.provider==='template'?<Pill tone="blue">템플릿</Pill>:aiStatus?.configured?<Pill tone="green">{c.provider==='openai'?'OpenAI':'Claude'} 연결됨</Pill>:<Pill tone="amber">{c.provider==='openai'?'OpenAI':'Claude'} 미연동</Pill>}</td><td>{c.cadence==='manual'?'수동':c.cadence==='weekly'?`매주 ${['일','월','화','수','목','금','토'][c.weekday??1]} ${c.time}`:`매월 ${c.dayOfMonth||1}일 ${c.time}`}</td><td><Pill tone={c.enabled?'green':'gray'}>{c.enabled?'ON':'중지'}</Pill></td><td><div className="auto28-actions"><button className="btn secondary mini" disabled={running===c.configId} onClick={()=>runNow(c)}>{running===c.configId?'생성 중...':'지금 생성'}</button><button className="btn secondary mini" onClick={()=>setEditing(c)}>수정</button><button className="btn secondary mini" onClick={()=>{if(confirm('삭제할까요?')){deleteAdCopyAutomationConfig(c.configId);bump()}}}>삭제</button></div></td></tr>)}</tbody></table></div></section>
- <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>최근 생성 기록</h3><p>생성 결과는 ContentProject 초안으로 저장되고 AI 원가는 0원으로 기록됩니다.</p></div></div>{runs.slice(0,5).map(r=><RunRow key={r.runId} run={r}/>)}</section>{editing&&<AdCopyConfigModal value={editing} onClose={()=>setEditing(null)} onSave={c=>{upsertAdCopyAutomationConfig(c);setEditing(null);bump()}}/>}</div>
+function useRuns(ruleType?: string) {
+  const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const reload = async () => { try { setRuns(await automationApi.runs.list()); } catch { setRuns([]); } };
+  useEffect(() => { void reload(); }, []);
+  return { runs: ruleType ? runs.filter(r => r.rule_type === ruleType) : runs, reload };
 }
-function newCopyConfig():AdCopyAutomationConfig{const stamp=nowIso();return{configId:uid('copy'),advertiserId:'',advertiserName:'',channel:'메타',objective:'전환',productName:'',cta:'더 알아보기',provider:'template',cadence:'manual',weekday:1,dayOfMonth:1,time:'09:00',variantCount:3,saveAsDraft:true,enabled:true,createdAt:stamp,updatedAt:stamp}}
-function AdCopyConfigModal({value,onClose,onSave}:{value:AdCopyAutomationConfig;onClose:()=>void;onSave:(v:AdCopyAutomationConfig)=>void}){const [v,setV]=useState(value);const [advs]=useAdvertisers();return <Modal title="광고 문구 자동 생성 설정" onClose={onClose}><div className="auto28-form"><label>광고주<select value={v.advertiserId} onChange={e=>{const a=advs.find(x=>x.id===e.target.value);setV({...v,advertiserId:e.target.value,advertiserName:a?.name||''})}}>{advs.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>매체<select value={v.channel} onChange={e=>setV({...v,channel:e.target.value})}>{['메타','네이버','구글 검색','유튜브','당근','카카오','틱톡'].map(x=><option key={x}>{x}</option>)}</select></label><label>상품/서비스<input value={v.productName} onChange={e=>setV({...v,productName:e.target.value})}/></label><label>캠페인 목적<input value={v.objective} onChange={e=>setV({...v,objective:e.target.value})}/></label><label>타겟<input value={v.targetAudience||''} onChange={e=>setV({...v,targetAudience:e.target.value})}/></label><label>핵심 혜택<input value={v.keyBenefit||''} onChange={e=>setV({...v,keyBenefit:e.target.value})}/></label><label>후킹 유형<input value={v.hookType||''} onChange={e=>setV({...v,hookType:e.target.value})}/></label><label>CTA<input value={v.cta||''} onChange={e=>setV({...v,cta:e.target.value})}/></label><label>생성 Provider<select value={v.provider} onChange={e=>setV({...v,provider:e.target.value as AdCopyProvider})}><option value="template">템플릿/규칙 기반</option><option value="openai">OpenAI (미연동)</option><option value="claude">Claude (미연동)</option></select></label><label>생성 개수<input type="number" min="1" max="5" value={v.variantCount} onChange={e=>setV({...v,variantCount:Number(e.target.value)||3})}/></label><label>주기<select value={v.cadence} onChange={e=>setV({...v,cadence:e.target.value as any})}><option value="manual">수동</option><option value="weekly">매주</option><option value="monthly">매월</option></select></label><label>실행 시각<input type="time" value={v.time} onChange={e=>setV({...v,time:e.target.value})}/></label>{v.cadence==='weekly'&&<label>요일<select value={v.weekday} onChange={e=>setV({...v,weekday:Number(e.target.value)})}>{['일','월','화','수','목','금','토'].map((x,i)=><option key={i} value={i}>{x}</option>)}</select></label>}{v.cadence==='monthly'&&<label>실행일<input type="number" min="1" max="28" value={v.dayOfMonth||1} onChange={e=>setV({...v,dayOfMonth:Number(e.target.value)||1})}/></label>}<label><input type="checkbox" checked={v.enabled} onChange={e=>setV({...v,enabled:e.target.checked})}/> 규칙 ON</label></div><ModalActions onClose={onClose} onSave={()=>onSave(v)}/></Modal>}
 
-const triggerLabels:Record<NotificationTriggerType,string>={performance_anomaly:'성과 이상',kpi_miss:'KPI 미달',budget_pacing:'예산 소진',data_collection_failed:'데이터 수집 실패',automation_failed:'자동화 실패',review_required:'검토 요청',manual:'수동'};
-export function NotificationAutomationPage(){const [rev,bump]=useRevision();const [editing,setEditing]=useState<NotificationRule|null>(null);const rules=useMemo(()=>loadNotificationRules(),[rev]);const notices=useMemo(()=>loadInternalNotifications(),[rev]);return <div className="auto28-page"><Header title="알림 자동화" desc="성과 이상·데이터 수집 실패·검토 요청 등 조건이 발생했을 때 내부 담당자에게 알림을 생성합니다." action={<button className="btn primary" onClick={()=>setEditing(newNotificationRule())}>+ 알림 규칙</button>}/><Kpis items={[{label:'활성 규칙',value:rules.filter(x=>x.enabled).length},{label:'읽지 않은 내부 알림',value:notices.filter(x=>!x.read).length},{label:'네이버웍스',value:'미연동'},{label:'이메일',value:'미연동'}]}/><div className="auto28-two"><section className="card auto28-card"><div className="auto28-cardhead"><div><h3>알림 규칙</h3><p>동일 이벤트는 설정한 시간 동안 중복 생성하지 않습니다.</p></div></div>{rules.length===0?<div className="auto28-empty">등록된 규칙이 없습니다.</div>:rules.map(r=><div className="auto28-listrow" key={r.ruleId}><div><b>{r.name}</b><small>{triggerLabels[r.triggerType]} · {r.advertiserName||'전체 광고주'} · 중복 방지 {r.dedupeHours}시간</small></div><div className="auto28-actions"><Pill tone={r.enabled?'green':'gray'}>{r.enabled?'ON':'중지'}</Pill><button className="btn secondary mini" onClick={()=>{testNotificationRule(r);bump()}}>테스트</button><button className="btn secondary mini" onClick={()=>setEditing(r)}>수정</button><button className="btn secondary mini" onClick={()=>{deleteNotificationRule(r.ruleId);bump()}}>삭제</button></div></div>)}</section><section className="card auto28-card"><div className="auto28-cardhead"><div><h3>내부 알림함</h3><p>네이버웍스·이메일은 서버 연동 전까지 실제 발송하지 않습니다.</p></div></div>{notices.length===0?<div className="auto28-empty">생성된 내부 알림이 없습니다.</div>:notices.slice(0,8).map(n=><div className={`auto28-notice ${n.read?'read':''}`} key={n.notificationId}><div><b>{n.title}</b><small>{n.message}</small><time>{fmt(n.createdAt)}</time></div><button className="btn secondary mini" onClick={()=>{markNotificationRead(n.notificationId,!n.read);bump()}}>{n.read?'읽지 않음':'읽음'}</button></div>)}</section></div>{editing&&<NotificationRuleModal value={editing} onClose={()=>setEditing(null)} onSave={r=>{upsertNotificationRule(r);setEditing(null);bump()}}/>}</div>}
-function newNotificationRule():NotificationRule{const stamp=nowIso();return{ruleId:uid('notice-rule'),name:'자동화 실패 알림',triggerType:'automation_failed',recipient:'admin',channels:['internal'],dedupeHours:24,enabled:true,createdAt:stamp,updatedAt:stamp}}
-function NotificationRuleModal({value,onClose,onSave}:{value:NotificationRule;onClose:()=>void;onSave:(v:NotificationRule)=>void}){const [v,setV]=useState(value);const [advs]=useAdvertisers();return <Modal title="알림 자동화 규칙" onClose={onClose}><div className="auto28-form"><label className="span-2">규칙 이름<input value={v.name} onChange={e=>setV({...v,name:e.target.value})}/></label><label>트리거<select value={v.triggerType} onChange={e=>setV({...v,triggerType:e.target.value as NotificationTriggerType})}>{Object.entries(triggerLabels).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label><label>광고주<select value={v.advertiserId||''} onChange={e=>{const a=advs.find(x=>x.id===e.target.value);setV({...v,advertiserId:e.target.value||undefined,advertiserName:a?.name})}}><option value="">전체 광고주</option>{advs.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>수신 대상<select value={v.recipient} onChange={e=>setV({...v,recipient:e.target.value as any})}><option value="advertiser_manager">광고주 담당자</option><option value="admin">관리자</option><option value="content_manager">콘텐츠 담당자</option><option value="all">전체</option></select></label><label>중복 방지 시간<input type="number" min="1" value={v.dedupeHours} onChange={e=>setV({...v,dedupeHours:Number(e.target.value)||24})}/></label><div className="span-2"><span className="auto28-label">알림 채널</span><div className="auto28-checks"><label><input type="checkbox" checked={v.channels.includes('internal')} onChange={e=>setV({...v,channels:e.target.checked?[...v.channels,'internal']:v.channels.filter(x=>x!=='internal')})}/>HOWTOM 내부</label><label><input type="checkbox" checked={v.channels.includes('naverworks')} onChange={e=>setV({...v,channels:e.target.checked?[...v.channels,'naverworks']:v.channels.filter(x=>x!=='naverworks')})}/>네이버웍스 (미구현)</label><label><input type="checkbox" checked={v.channels.includes('email')} onChange={e=>setV({...v,channels:e.target.checked?[...v.channels,'email']:v.channels.filter(x=>x!=='email')})}/>이메일 (미구현)</label></div></div><label><input type="checkbox" checked={v.enabled} onChange={e=>setV({...v,enabled:e.target.checked})}/> 규칙 ON</label></div><ModalActions onClose={onClose} onSave={()=>onSave(v)}/></Modal>}
+function Header({ title, desc, action }: { title: string; desc: string; action?: React.ReactNode }) {
+  return <><div className="auto28-head"><div><h1>{title}</h1><p>{desc}</p></div>{action}</div>
+    <div className="auto28-note"><b>서버 자동화 적용됨</b><span>규칙은 서버 DB에 저장되어 팀 전체가 공유하고, 서버 스케줄러가 예약 시각에 자동으로 실행합니다.</span></div></>;
+}
+function Pill({ children, tone = 'gray' }: { children: React.ReactNode; tone?: string }) { return <span className={`auto28-pill ${tone}`}>{children}</span>; }
+function Kpis({ items }: { items: { label: string; value: string | number; sub?: string }[] }) {
+  return <div className="auto28-kpis">{items.map(x => <div className="auto28-kpi" key={x.label}><span>{x.label}</span><strong>{x.value}</strong>{x.sub && <small>{x.sub}</small>}</div>)}</div>;
+}
+function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  return <div className="modal-backdrop"><div className={`modal-card auto28-modal ${wide ? 'wide' : ''}`}><div className="modal-head"><h3>{title}</h3><button className="icon-btn" onClick={onClose}>×</button></div>{children}</div></div>;
+}
+function ModalActions({ onClose, onSave }: { onClose: () => void; onSave?: () => void }) {
+  return <div className="modal-actions"><button className="btn secondary" onClick={onClose}>닫기</button>{onSave && <button className="btn primary" onClick={onSave}>저장</button>}</div>;
+}
+function RunRow({ run }: { run: AutomationRun }) {
+  return <div className="auto28-listrow"><div><b>{run.rule_name || run.rule_type}</b><small>{fmt(run.started_at)} · {run.trigger === 'manual' ? '수동 실행' : '예약 실행'}</small></div><Pill tone={run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'gray'}>{statusLabel[run.status] || run.status}</Pill></div>;
+}
 
-const stepLabels:Record<WorkflowStepType,string>={data_sync:'데이터 동기화',data_validation:'데이터 품질 검사',report_generation:'보고서 생성',ad_copy_generation:'광고 문구 생성',notification:'내부 알림',approval:'담당자 승인',wait:'대기'};
-export function WorkflowsPage(){const [rev,bump]=useRevision();const [editing,setEditing]=useState<AutomationWorkflow|null>(null);const rows=useMemo(()=>loadWorkflows(),[rev]);return <div className="auto28-page"><Header title="작업 흐름" desc="여러 자동화 작업을 순서대로 연결하고 승인 단계를 포함해 안전하게 실행합니다." action={<button className="btn primary" onClick={()=>setEditing(newWorkflow())}>+ 작업 흐름</button>}/><Kpis items={[{label:'작업 흐름',value:rows.length},{label:'활성',value:rows.filter(x=>x.status==='active').length},{label:'승인 포함',value:rows.filter(x=>x.steps.some(s=>s.type==='approval')).length},{label:'그래픽 노드 편집',value:'후순위',sub:'현재 세로형 Step Builder'}]}/><section className="card auto28-card">{rows.length===0?<div className="auto28-empty">등록된 작업 흐름이 없습니다.</div>:rows.map(w=>{const errors=validateWorkflow(w);return <div className="auto28-workflow" key={w.workflowId}><div className="auto28-cardhead"><div><h3>{w.name}</h3><p>{w.advertiserName||'공통'} · {w.steps.length}단계 · {errors.length?errors[0]:'검증 정상'}</p></div><div className="auto28-actions"><Pill tone={w.status==='active'?'green':'gray'}>{w.status==='active'?'ON':w.status}</Pill><button className="btn secondary mini" onClick={async()=>{await runWorkflowNow(w);bump()}}>지금 실행</button><button className="btn secondary mini" onClick={()=>setEditing(w)}>수정</button><button className="btn secondary mini" onClick={()=>{deleteWorkflow(w.workflowId);bump()}}>삭제</button></div></div><div className="auto28-steps">{w.steps.map((s,i)=><div className="auto28-step" key={s.stepId}><i>{i+1}</i><div><b>{s.name}</b><small>{stepLabels[s.type]}</small></div>{i<w.steps.length-1&&<span>↓</span>}</div>)}</div></div>})}</section>{editing&&<WorkflowModal value={editing} onClose={()=>setEditing(null)} onSave={w=>{upsertWorkflow(w);setEditing(null);bump()}}/>}</div>}
-function newWorkflow():AutomationWorkflow{const stamp=nowIso();return{workflowId:uid('wf'),name:'월간 보고 업무',triggerType:'manual',steps:[{stepId:uid('step'),type:'data_sync',name:'광고 데이터 동기화',config:{}},{stepId:uid('step'),type:'data_validation',name:'데이터 품질 검사',config:{}},{stepId:uid('step'),type:'approval',name:'담당자 승인',config:{}}],status:'draft',createdAt:stamp,updatedAt:stamp}}
-function WorkflowModal({value,onClose,onSave}:{value:AutomationWorkflow;onClose:()=>void;onSave:(v:AutomationWorkflow)=>void}){const [v,setV]=useState(value);const [advs]=useAdvertisers();const reportConfigs=loadReportAutomationConfigs();const copyConfigs=loadAdCopyAutomationConfigs();const addStep=(type:WorkflowStepType)=>setV({...v,steps:[...v.steps,{stepId:uid('step'),type,name:stepLabels[type],config:type==='report_generation'?{configId:reportConfigs[0]?.configId||''}:type==='ad_copy_generation'?{configId:copyConfigs[0]?.configId||''}:{}}]});return <Modal title="작업 흐름 편집" onClose={onClose} wide><div className="auto28-form"><label className="span-2">이름<input value={v.name} onChange={e=>setV({...v,name:e.target.value})}/></label><label>광고주<select value={v.advertiserId||''} onChange={e=>{const a=advs.find(x=>x.id===e.target.value);setV({...v,advertiserId:e.target.value||undefined,advertiserName:a?.name})}}><option value="">공통</option>{advs.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>상태<select value={v.status} onChange={e=>setV({...v,status:e.target.value as any})}><option value="draft">초안</option><option value="active">ON</option><option value="paused">일시중지</option></select></label></div><div className="auto28-step-editor">{v.steps.map((s,i)=><div className="auto28-stepedit" key={s.stepId}><i>{i+1}</i><select value={s.type} onChange={e=>{const type=e.target.value as WorkflowStepType;setV({...v,steps:v.steps.map(x=>x.stepId===s.stepId?{...x,type,name:stepLabels[type],config:{}}:x)})}}>{Object.entries(stepLabels).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select><input value={s.name} onChange={e=>setV({...v,steps:v.steps.map(x=>x.stepId===s.stepId?{...x,name:e.target.value}:x)})}/>{s.type==='report_generation'&&<select value={String(s.config.configId||'')} onChange={e=>setV({...v,steps:v.steps.map(x=>x.stepId===s.stepId?{...x,config:{configId:e.target.value}}:x)})}><option value="">보고서 설정 선택</option>{reportConfigs.map(c=><option key={c.configId} value={c.configId}>{c.advertiserName}</option>)}</select>}{s.type==='ad_copy_generation'&&<select value={String(s.config.configId||'')} onChange={e=>setV({...v,steps:v.steps.map(x=>x.stepId===s.stepId?{...x,config:{configId:e.target.value}}:x)})}><option value="">문구 설정 선택</option>{copyConfigs.map(c=><option key={c.configId} value={c.configId}>{c.advertiserName} · {c.channel}</option>)}</select>}<button className="btn secondary mini" onClick={()=>setV({...v,steps:v.steps.filter(x=>x.stepId!==s.stepId)})}>삭제</button></div>)}</div><div className="auto28-step-buttons">{Object.entries(stepLabels).map(([k,l])=><button className="btn secondary mini" key={k} onClick={()=>addStep(k as WorkflowStepType)}>+ {l}</button>)}</div><div className="auto28-validation">{validateWorkflow(v).length?validateWorkflow(v).map(x=><p key={x}>⚠ {x}</p>):<p>✓ 작업 흐름 구조가 정상입니다.</p>}</div><ModalActions onClose={onClose} onSave={()=>onSave(v)}/></Modal>}
+// ── 보고서 자동 생성 ──────────────────────────────────────────────────────
+export function ReportAutomationPage() {
+  const { rules, reload } = useRules('report');
+  const { runs } = useRuns('report');
+  const [editing, setEditing] = useState<AutomationRule | 'new' | null>(null);
+  const month = previousMonthKey();
+  const ready = rules.filter(r => checkReportReadiness(r.config.advertiserName, month, r.config.requireActualData).ready).length;
+  return <div className="auto28-page">
+    <Header title="보고서 자동 생성" desc="정해진 날짜·시각에 월간 보고서·다음달 제안서 초안을 자동으로 만듭니다." action={<button className="btn primary" onClick={() => setEditing('new')}>+ 자동화 추가</button>} />
+    <Kpis items={[{ label: '활성 자동화', value: rules.filter(x => x.enabled).length }, { label: '데이터 준비 완료', value: ready }, { label: '최근 생성 성공', value: runs.filter(x => x.status === 'success').length }, { label: '보류/실패', value: runs.filter(x => x.status === 'failed').length }]} />
+    <div className="auto28-note"><b>서버 자동 실행 준비 중</b><span>규칙은 서버에 저장되지만, 정해진 시각의 자동 생성은 아직 준비 중입니다 - 지금은 "지금 생성" 버튼으로 수동 생성해주세요.</span></div>
+    <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>광고주별 보고서 자동화</h3><p>자동화가 만든 결과도 기존 저장된 월간 보고서·다음달 제안서에 저장됩니다.</p></div></div>
+      <div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>광고주</th><th>보고서</th><th>실행 일정</th><th>대상 월</th><th>데이터 준비</th><th>상태</th><th>작업</th></tr></thead><tbody>
+        {rules.length === 0 ? <tr><td colSpan={7}>등록된 자동화가 없습니다.</td></tr> : rules.map(r => { const rd = checkReportReadiness(r.config.advertiserName, month, r.config.requireActualData); return (
+          <tr key={r.id}><td><b>{r.config.advertiserName || '-'}</b></td><td>{(r.config.types || []).map((t: string) => t === 'monthly' ? '월간 보고서' : '다음달 제안서').join(' · ')}</td><td>매월 {r.config.dayOfMonth}일 {r.config.time}</td><td>{month}</td>
+          <td>{rd.ready ? <Pill tone="green">준비 완료</Pill> : <Pill tone="amber">보류</Pill>}<small>{rd.ready ? rd.periodLabel : rd.reasons[0]}</small></td><td><Pill tone={r.enabled ? 'green' : 'gray'}>{r.enabled ? 'ON' : '중지'}</Pill></td>
+          <td><div className="auto28-actions"><button className="btn secondary mini" onClick={() => { generateReportsNow({ configId: r.id, advertiserId: r.config.advertiserId, advertiserName: r.config.advertiserName, types: r.config.types, dayOfMonth: r.config.dayOfMonth, time: r.config.time, sourcePeriod: 'previous_month', requireActualData: r.config.requireActualData, draftOnly: r.config.draftOnly, notifyOnFailure: r.config.notifyOnFailure, enabled: r.enabled, createdAt: r.created_at, updatedAt: r.updated_at }, month); }}>지금 생성</button>
+          <button className="btn secondary mini" onClick={() => setEditing(r)}>수정</button><button className="btn secondary mini" onClick={() => { if (confirm('삭제할까요?')) automationApi.rules.remove(r.id).then(reload); }}>삭제</button></div></td></tr>
+        ); })}
+      </tbody></table></div></section>
+    <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>최근 실행 결과</h3></div><Link to="/automation/execution-logs">전체 실행 기록</Link></div>{runs.slice(0, 5).map(r => <RunRow key={r.id} run={r} />)}</section>
+    {editing && <ReportRuleModal value={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+  </div>;
+}
+function ReportRuleModal({ value, onClose, onSaved }: { value: AutomationRule | null; onClose: () => void; onSaved: () => void }) {
+  const [advs] = useAdvertisers();
+  const c = value?.config || {};
+  const [advertiserId, setAdvertiserId] = useState(c.advertiserId || advs[0]?.id || '');
+  const [types, setTypes] = useState<string[]>(c.types || ['monthly', 'proposal']);
+  const [dayOfMonth, setDayOfMonth] = useState(c.dayOfMonth || 1);
+  const [time, setTime] = useState(c.time || '08:00');
+  const [requireActualData, setRequireActualData] = useState(c.requireActualData !== false);
+  const [enabled, setEnabled] = useState(value?.enabled !== false);
+  const save = async () => {
+    if (!types.length) { alert('보고서 유형을 하나 이상 선택하세요.'); return; }
+    const adv = advs.find(a => a.id === advertiserId);
+    const config = { advertiserId, advertiserName: adv?.name || '', types, dayOfMonth, time, requireActualData, draftOnly: true, notifyOnFailure: true };
+    if (value) await automationApi.rules.update(value.id, { name: `${adv?.name} 보고서 자동화`, config, enabled });
+    else await automationApi.rules.create({ type: 'report', advertiserId, name: `${adv?.name} 보고서 자동화`, config, enabled });
+    onSaved(); onClose();
+  };
+  return <Modal title="보고서 자동화 설정" onClose={onClose}><div className="auto28-form">
+    <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+    <label>실행일<input type="number" min="1" max="28" value={dayOfMonth} onChange={e => setDayOfMonth(Math.max(1, Math.min(28, Number(e.target.value) || 1)))} /></label>
+    <label>실행 시각<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+    <div><span className="auto28-label">보고서 유형</span><div className="auto28-checks">
+      <label><input type="checkbox" checked={types.includes('monthly')} onChange={e => setTypes(e.target.checked ? [...types, 'monthly'] : types.filter(x => x !== 'monthly'))} />월간 보고서</label>
+      <label><input type="checkbox" checked={types.includes('proposal')} onChange={e => setTypes(e.target.checked ? [...types, 'proposal'] : types.filter(x => x !== 'proposal'))} />다음달 제안서</label>
+    </div></div>
+    <label className="span-2"><input type="checkbox" checked={requireActualData} onChange={e => setRequireActualData(e.target.checked)} /> 실제 저장 데이터가 있을 때만 생성</label>
+    <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 자동화 ON</label>
+  </div><ModalActions onClose={onClose} onSave={save} /></Modal>;
+}
 
-export function ExecutionLogsPage(){const [rev]=useRevision();const runs=useMemo(()=>loadExecutionRuns(),[rev]);const [type,setType]=useState('all');const [status,setStatus]=useState('all');const [selected,setSelected]=useState<ExtendedAutomationRun|null>(null);const filtered=runs.filter(r=>(type==='all'||r.type===type)&&(status==='all'||r.status===status));return <div className="auto28-page"><Header title="실행 기록" desc="데이터 수집·캠페인·보고서·광고 문구·알림·작업 흐름 실행을 한 곳에서 추적합니다."/><Kpis items={[{label:'전체 실행',value:runs.length},{label:'성공',value:runs.filter(x=>x.status==='success').length},{label:'실패',value:runs.filter(x=>x.status==='failed').length},{label:'보류',value:runs.filter(x=>x.status==='blocked').length},{label:'Correlation 추적',value:runs.filter(x=>x.correlationId).length}]}/><section className="card auto28-card"><div className="auto28-filters"><select value={type} onChange={e=>setType(e.target.value)}><option value="all">전체 유형</option>{['data','campaign','report','ad-copy','notification','workflow'].map(x=><option key={x} value={x}>{x}</option>)}</select><select value={status} onChange={e=>setStatus(e.target.value)}><option value="all">전체 결과</option>{['success','failed','blocked','running','queued','skipped'].map(x=><option key={x} value={x}>{statusLabel[x]}</option>)}</select></div><div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>실행 시각</th><th>작업</th><th>광고주</th><th>유형</th><th>결과</th><th>소요</th><th>묶음 ID</th></tr></thead><tbody>{filtered.length===0?<tr><td colSpan={7}>실행 기록이 없습니다.</td></tr>:filtered.map(r=><tr key={r.runId} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td>{fmt(r.startedAt)}</td><td><b>{r.jobName}</b><small>{r.runId}</small></td><td>{r.advertiserName||'-'}</td><td>{r.type||'-'}</td><td><Pill tone={r.status==='success'?'green':r.status==='failed'?'red':r.status==='blocked'?'amber':'gray'}>{statusLabel[r.status]||r.status}</Pill></td><td>{r.durationMs!=null?`${(r.durationMs/1000).toFixed(1)}초`:'-'}</td><td>{r.correlationId||'-'}</td></tr>)}</tbody></table></div></section>{selected&&<RunDetail run={selected} onClose={()=>setSelected(null)}/>}</div>}
+// ── 광고 문구 자동 생성 ────────────────────────────────────────────────────
+export function AdCopyAutomationPage() {
+  const { rules, reload } = useRules('ad-copy');
+  const { runs, reload: reloadRuns } = useRuns('ad-copy');
+  const [editing, setEditing] = useState<AutomationRule | 'new' | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<{ configured: boolean; provider: string | null } | null>(null);
+  useEffect(() => { apiFetch<{ configured: boolean; provider: string | null }>('/ad-copy/ai-status').then(setAiStatus).catch(() => setAiStatus({ configured: false, provider: null })); }, []);
+  const runNow = async (r: AutomationRule) => {
+    setRunning(r.id);
+    try { await automationApi.rules.runNow(r.id); } catch (e) { alert(e instanceof Error ? e.message : '실행에 실패했습니다.'); }
+    finally { setRunning(null); void reload(); void reloadRuns(); }
+  };
+  const cadenceLabel = (c: Record<string, any>) => c.cadence === 'manual' ? '수동' : c.cadence === 'weekly' ? `매주 ${['일', '월', '화', '수', '목', '금', '토'][c.weekday ?? 1]} ${c.time}` : `매월 ${c.dayOfMonth || 1}일 ${c.time}`;
+  return <div className="auto28-page">
+    <Header title="광고 문구 자동 생성" desc="정해진 주기마다 광고 문구 시안을 AI로 생성하고 알림으로 전달합니다." action={<button className="btn primary" onClick={() => setEditing('new')}>+ 생성 규칙 추가</button>} />
+    <Kpis items={[{ label: '활성 규칙', value: rules.filter(x => x.enabled).length }, { label: 'AI API 연결', value: aiStatus == null ? '확인 중' : aiStatus.configured ? `연결됨(${aiStatus.provider})` : '미연동', sub: aiStatus?.configured ? undefined : 'AD_COPY_AI_PROVIDER 서버 설정 필요' }, { label: '최근 생성 성공', value: runs.filter(x => x.status === 'success').length }]} />
+    <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>광고 문구 생성 규칙</h3><p>생성 결과는 알림으로 전달됩니다 - 검토 후 광고 제작 화면에 직접 반영해주세요.</p></div><Link to="/automation/execution-logs">실행 기록</Link></div>
+      <div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>광고주</th><th>매체</th><th>목적</th><th>주기</th><th>상태</th><th>작업</th></tr></thead><tbody>
+        {rules.length === 0 ? <tr><td colSpan={6}>등록된 생성 규칙이 없습니다.</td></tr> : rules.map(r => (
+          <tr key={r.id}><td><b>{r.config.advertiserName || '-'}</b><small>{r.config.productName}</small></td><td>{r.config.channel}</td><td>{r.config.objective}</td><td>{cadenceLabel(r.config)}</td><td><Pill tone={r.enabled ? 'green' : 'gray'}>{r.enabled ? 'ON' : '중지'}</Pill></td>
+          <td><div className="auto28-actions"><button className="btn secondary mini" disabled={running === r.id} onClick={() => runNow(r)}>{running === r.id ? '생성 중...' : '지금 생성'}</button><button className="btn secondary mini" onClick={() => setEditing(r)}>수정</button><button className="btn secondary mini" onClick={() => { if (confirm('삭제할까요?')) automationApi.rules.remove(r.id).then(reload); }}>삭제</button></div></td></tr>
+        ))}
+      </tbody></table></div></section>
+    <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>최근 생성 기록</h3></div></div>{runs.slice(0, 5).map(r => <RunRow key={r.id} run={r} />)}</section>
+    {editing && <AdCopyRuleModal value={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+  </div>;
+}
+function AdCopyRuleModal({ value, onClose, onSaved }: { value: AutomationRule | null; onClose: () => void; onSaved: () => void }) {
+  const [advs] = useAdvertisers();
+  const c = value?.config || {};
+  const [advertiserId, setAdvertiserId] = useState(c.advertiserId || advs[0]?.id || '');
+  const [channel, setChannel] = useState(c.channel || '메타');
+  const [productName, setProductName] = useState(c.productName || '');
+  const [objective, setObjective] = useState(c.objective || '전환');
+  const [targetAudience, setTargetAudience] = useState(c.targetAudience || '');
+  const [keyBenefit, setKeyBenefit] = useState(c.keyBenefit || '');
+  const [hookType, setHookType] = useState(c.hookType || '');
+  const [cta, setCta] = useState(c.cta || '더 알아보기');
+  const [cadence, setCadence] = useState(c.cadence || 'manual');
+  const [weekday, setWeekday] = useState(c.weekday ?? 1);
+  const [dayOfMonth, setDayOfMonth] = useState(c.dayOfMonth || 1);
+  const [time, setTime] = useState(c.time || '09:00');
+  const [enabled, setEnabled] = useState(value?.enabled !== false);
+  const save = async () => {
+    const adv = advs.find(a => a.id === advertiserId);
+    const config = { advertiserId, advertiserName: adv?.name || '', channel, productName, objective, targetAudience, keyBenefit, hookType, cta, cadence, weekday, dayOfMonth, time };
+    if (value) await automationApi.rules.update(value.id, { name: `${adv?.name} 광고문구 자동화`, config, enabled });
+    else await automationApi.rules.create({ type: 'ad-copy', advertiserId, name: `${adv?.name} 광고문구 자동화`, config, enabled });
+    onSaved(); onClose();
+  };
+  return <Modal title="광고 문구 자동 생성 설정" onClose={onClose}><div className="auto28-form">
+    <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+    <label>매체<select value={channel} onChange={e => setChannel(e.target.value)}>{['메타', '네이버', '구글 검색', '유튜브', '당근', '카카오', '틱톡'].map(x => <option key={x}>{x}</option>)}</select></label>
+    <label>상품/서비스<input value={productName} onChange={e => setProductName(e.target.value)} /></label>
+    <label>캠페인 목적<input value={objective} onChange={e => setObjective(e.target.value)} /></label>
+    <label>타겟<input value={targetAudience} onChange={e => setTargetAudience(e.target.value)} /></label>
+    <label>핵심 혜택<input value={keyBenefit} onChange={e => setKeyBenefit(e.target.value)} /></label>
+    <label>후킹 유형<input value={hookType} onChange={e => setHookType(e.target.value)} /></label>
+    <label>CTA<input value={cta} onChange={e => setCta(e.target.value)} /></label>
+    <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="manual">수동</option><option value="weekly">매주</option><option value="monthly">매월</option></select></label>
+    <label>실행 시각<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+    {cadence === 'weekly' && <label>요일<select value={weekday} onChange={e => setWeekday(Number(e.target.value))}>{['일', '월', '화', '수', '목', '금', '토'].map((x, i) => <option key={i} value={i}>{x}</option>)}</select></label>}
+    {cadence === 'monthly' && <label>실행일<input type="number" min="1" max="28" value={dayOfMonth} onChange={e => setDayOfMonth(Number(e.target.value) || 1)} /></label>}
+    <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 규칙 ON</label>
+  </div><ModalActions onClose={onClose} onSave={save} /></Modal>;
+}
 
-function RunRow({run}:{run:ExtendedAutomationRun}){return <div className="auto28-listrow"><div><b>{run.jobName}</b><small>{fmt(run.startedAt)} · {run.advertiserName||'-'}</small></div><Pill tone={run.status==='success'?'green':run.status==='failed'?'red':run.status==='blocked'?'amber':'gray'}>{statusLabel[run.status]||run.status}</Pill></div>}
-function RunDetail({run,onClose}:{run:ExtendedAutomationRun;onClose:()=>void}){return <Modal title="실행 상세" onClose={onClose} wide><div className="auto28-detailgrid"><div><span>실행 ID</span><b>{run.runId}</b></div><div><span>결과</span><b>{statusLabel[run.status]||run.status}</b></div><div><span>시작</span><b>{fmt(run.startedAt)}</b></div><div><span>묶음 ID</span><b>{run.correlationId||'-'}</b></div></div>{run.error&&<div className="auto28-error"><b>{run.error.code}</b><span>{run.error.message}</span></div>}<div className="auto28-steps">{run.steps?.map((s,i)=><div className="auto28-step" key={s.stepId}><i>{i+1}</i><div><b>{s.name}</b><small>{statusLabel[s.status]||s.status}{s.message?` · ${s.message}`:''}</small></div></div>)||<div className="auto28-empty">단계별 기록이 없습니다.</div>}</div><ModalActions onClose={onClose}/></Modal>}
-function Modal({title,onClose,children,wide=false}:{title:string;onClose:()=>void;children:React.ReactNode;wide?:boolean}){return <div className="modal-backdrop"><div className={`modal-card auto28-modal ${wide?'wide':''}`}><div className="modal-head"><h3>{title}</h3><button className="icon-btn" onClick={onClose}>×</button></div>{children}</div></div>}
-function ModalActions({onClose,onSave}:{onClose:()=>void;onSave?:()=>void}){return <div className="modal-actions"><button className="btn secondary" onClick={onClose}>닫기</button>{onSave&&<button className="btn primary" onClick={onSave}>저장</button>}</div>}
+// ── 알림 자동화 ───────────────────────────────────────────────────────────
+const triggerLabels: Record<string, string> = { performance_anomaly: '성과 이상', kpi_miss: 'KPI 미달', budget_pacing: '예산 소진', data_collection_failed: '데이터 수집 실패', automation_failed: '자동화 실패', review_required: '검토 요청', manual: '수동' };
+export function NotificationAutomationPage() {
+  const { rules, reload } = useRules('notification');
+  const [notices, setNotices] = useState<AutomationNotification[]>([]);
+  const reloadNotices = async () => { try { setNotices(await automationApi.notifications.list()); } catch { setNotices([]); } };
+  useEffect(() => { void reloadNotices(); }, []);
+  const [editing, setEditing] = useState<AutomationRule | 'new' | null>(null);
+  return <div className="auto28-page">
+    <Header title="알림 자동화" desc="성과 이상·예산 소진 등 조건이 발생했을 때 내부 담당자에게 알림을 생성합니다." action={<button className="btn primary" onClick={() => setEditing('new')}>+ 알림 규칙</button>} />
+    <Kpis items={[{ label: '활성 규칙', value: rules.filter(x => x.enabled).length }, { label: '읽지 않은 알림', value: notices.filter(x => !x.read_at).length }, { label: '지원 트리거', value: '예산 소진(우선 지원)' }]} />
+    <div className="auto28-two">
+      <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>알림 규칙</h3><p>지금은 "예산 소진(budget_pacing)" 트리거만 서버가 매시 정각에 실제로 확인합니다. 나머지 트리거는 준비 중입니다.</p></div></div>
+        {rules.length === 0 ? <div className="auto28-empty">등록된 규칙이 없습니다.</div> : rules.map(r => (
+          <div className="auto28-listrow" key={r.id}><div><b>{r.name}</b><small>{triggerLabels[r.config.triggerType] || r.config.triggerType} · {r.config.advertiserName || '전체 광고주'}</small></div>
+          <div className="auto28-actions"><Pill tone={r.enabled ? 'green' : 'gray'}>{r.enabled ? 'ON' : '중지'}</Pill><button className="btn secondary mini" onClick={() => setEditing(r)}>수정</button><button className="btn secondary mini" onClick={() => { if (confirm('삭제할까요?')) automationApi.rules.remove(r.id).then(reload); }}>삭제</button></div></div>
+        ))}
+      </section>
+      <section className="card auto28-card"><div className="auto28-cardhead"><div><h3>알림함</h3><p>네이버웍스·이메일은 서버 연동 전까지 실제 발송하지 않습니다.</p></div></div>
+        {notices.length === 0 ? <div className="auto28-empty">생성된 알림이 없습니다.</div> : notices.slice(0, 8).map(n => (
+          <div className={`auto28-notice ${n.read_at ? 'read' : ''}`} key={n.id}><div><b>{n.title}</b><small>{n.message}</small><time>{fmt(n.created_at)}</time></div>
+          {!n.read_at && <button className="btn secondary mini" onClick={() => automationApi.notifications.markRead(n.id).then(reloadNotices)}>읽음</button>}</div>
+        ))}
+      </section>
+    </div>
+    {editing && <NotificationRuleModal value={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+  </div>;
+}
+function NotificationRuleModal({ value, onClose, onSaved }: { value: AutomationRule | null; onClose: () => void; onSaved: () => void }) {
+  const [advs] = useAdvertisers();
+  const c = value?.config || {};
+  const [name, setName] = useState(value?.name || '예산 소진 경고');
+  const [advertiserId, setAdvertiserId] = useState(c.advertiserId || '');
+  const [triggerType, setTriggerType] = useState(c.triggerType || 'budget_pacing');
+  const [threshold, setThreshold] = useState(c.threshold ?? 90);
+  const [recipient, setRecipient] = useState(c.recipient || 'admin');
+  const [enabled, setEnabled] = useState(value?.enabled !== false);
+  const save = async () => {
+    const adv = advs.find(a => a.id === advertiserId);
+    const config = { advertiserId: advertiserId || undefined, advertiserName: adv?.name, triggerType, threshold, recipient, channels: ['internal'], dedupeHours: 24 };
+    if (value) await automationApi.rules.update(value.id, { name, config, enabled });
+    else await automationApi.rules.create({ type: 'notification', advertiserId: advertiserId || undefined, name, config, enabled });
+    onSaved(); onClose();
+  };
+  return <Modal title="알림 자동화 규칙" onClose={onClose}><div className="auto28-form">
+    <label className="span-2">규칙 이름<input value={name} onChange={e => setName(e.target.value)} /></label>
+    <label>트리거<select value={triggerType} onChange={e => setTriggerType(e.target.value)}>{Object.entries(triggerLabels).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
+    <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}><option value="">전체 광고주</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+    {triggerType === 'budget_pacing' && <label>예산 소진율 기준(%)<input type="number" min="1" max="200" value={threshold} onChange={e => setThreshold(Number(e.target.value) || 90)} /></label>}
+    <label>수신 대상<select value={recipient} onChange={e => setRecipient(e.target.value)}><option value="advertiser_manager">광고주 담당자</option><option value="admin">관리자</option><option value="content_manager">콘텐츠 담당자</option><option value="all">전체</option></select></label>
+    <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 규칙 ON</label>
+  </div><ModalActions onClose={onClose} onSave={save} /></Modal>;
+}
+
+// ── 작업 흐름(워크플로우) ───────────────────────────────────────────────
+export function WorkflowsPage() {
+  const { rules, reload } = useRules('workflow');
+  const [editing, setEditing] = useState<AutomationRule | 'new' | null>(null);
+  return <div className="auto28-page">
+    <Header title="작업 흐름" desc="여러 자동화 작업을 순서대로 연결합니다." action={<button className="btn primary" onClick={() => setEditing('new')}>+ 작업 흐름</button>} />
+    <Kpis items={[{ label: '작업 흐름', value: rules.length }, { label: '활성', value: rules.filter(x => x.enabled).length }]} />
+    <div className="auto28-note"><b>서버 자동 실행 준비 중</b><span>규칙은 저장되지만, 단계별 자동 실행은 아직 준비 중입니다.</span></div>
+    <section className="card auto28-card">{rules.length === 0 ? <div className="auto28-empty">등록된 작업 흐름이 없습니다.</div> : rules.map(w => (
+      <div className="auto28-workflow" key={w.id}><div className="auto28-cardhead"><div><h3>{w.name}</h3><p>{w.config.advertiserName || '공통'} · {(w.config.steps || []).length}단계</p></div>
+      <div className="auto28-actions"><Pill tone={w.enabled ? 'green' : 'gray'}>{w.enabled ? 'ON' : '중지'}</Pill><button className="btn secondary mini" onClick={() => setEditing(w)}>수정</button><button className="btn secondary mini" onClick={() => { if (confirm('삭제할까요?')) automationApi.rules.remove(w.id).then(reload); }}>삭제</button></div></div>
+      <div className="auto28-steps">{(w.config.steps || []).map((s: any, i: number) => <div className="auto28-step" key={i}><i>{i + 1}</i><div><b>{s.name}</b></div>{i < w.config.steps.length - 1 && <span>↓</span>}</div>)}</div></div>
+    ))}</section>
+    {editing && <WorkflowRuleModal value={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+  </div>;
+}
+const stepLabels: Record<string, string> = { data_sync: '데이터 동기화', data_validation: '데이터 품질 검사', report_generation: '보고서 생성', ad_copy_generation: '광고 문구 생성', notification: '내부 알림', approval: '담당자 승인', wait: '대기' };
+function WorkflowRuleModal({ value, onClose, onSaved }: { value: AutomationRule | null; onClose: () => void; onSaved: () => void }) {
+  const [advs] = useAdvertisers();
+  const c = value?.config || {};
+  const [name, setName] = useState(value?.name || '월간 보고 업무');
+  const [advertiserId, setAdvertiserId] = useState(c.advertiserId || '');
+  const [steps, setSteps] = useState<{ type: string; name: string }[]>(c.steps || [{ type: 'data_sync', name: '광고 데이터 동기화' }]);
+  const [enabled, setEnabled] = useState(value?.enabled !== false);
+  const addStep = (type: string) => setSteps([...steps, { type, name: stepLabels[type] }]);
+  const save = async () => {
+    const adv = advs.find(a => a.id === advertiserId);
+    const config = { advertiserId: advertiserId || undefined, advertiserName: adv?.name, steps };
+    if (value) await automationApi.rules.update(value.id, { name, config, enabled });
+    else await automationApi.rules.create({ type: 'workflow', advertiserId: advertiserId || undefined, name, config, enabled });
+    onSaved(); onClose();
+  };
+  return <Modal title="작업 흐름 편집" onClose={onClose} wide><div className="auto28-form">
+    <label className="span-2">이름<input value={name} onChange={e => setName(e.target.value)} /></label>
+    <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}><option value="">공통</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+  </div>
+    <div className="auto28-step-editor">{steps.map((s, i) => <div className="auto28-stepedit" key={i}><i>{i + 1}</i>
+      <select value={s.type} onChange={e => setSteps(steps.map((x, j) => j === i ? { type: e.target.value, name: stepLabels[e.target.value] } : x))}>{Object.entries(stepLabels).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+      <input value={s.name} onChange={e => setSteps(steps.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+      <button className="btn secondary mini" onClick={() => setSteps(steps.filter((_, j) => j !== i))}>삭제</button></div>)}</div>
+    <div className="auto28-step-buttons">{Object.entries(stepLabels).map(([k, l]) => <button className="btn secondary mini" key={k} onClick={() => addStep(k)}>+ {l}</button>)}</div>
+    <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 작업 흐름 ON</label>
+  <ModalActions onClose={onClose} onSave={save} /></Modal>;
+}
+
+// ── 실행 기록 ────────────────────────────────────────────────────────────
+export function ExecutionLogsPage() {
+  const { runs } = useRuns();
+  const [type, setType] = useState('all');
+  const [status, setStatus] = useState('all');
+  const [selected, setSelected] = useState<AutomationRun | null>(null);
+  const filtered = runs.filter(r => (type === 'all' || r.rule_type === type) && (status === 'all' || r.status === status));
+  return <div className="auto28-page">
+    <Header title="실행 기록" desc="보고서·광고 문구·알림·작업 흐름 실행을 서버 기준으로 추적합니다." />
+    <Kpis items={[{ label: '전체 실행', value: runs.length }, { label: '성공', value: runs.filter(x => x.status === 'success').length }, { label: '실패', value: runs.filter(x => x.status === 'failed').length }]} />
+    <section className="card auto28-card"><div className="auto28-filters">
+      <select value={type} onChange={e => setType(e.target.value)}><option value="all">전체 유형</option>{['report', 'ad-copy', 'notification', 'workflow'].map(x => <option key={x} value={x}>{x}</option>)}</select>
+      <select value={status} onChange={e => setStatus(e.target.value)}><option value="all">전체 결과</option>{['success', 'failed', 'running'].map(x => <option key={x} value={x}>{statusLabel[x]}</option>)}</select>
+    </div>
+      <div className="table-scroll"><table className="data-table auto28-table"><thead><tr><th>실행 시각</th><th>규칙</th><th>유형</th><th>트리거</th><th>결과</th></tr></thead><tbody>
+        {filtered.length === 0 ? <tr><td colSpan={5}>실행 기록이 없습니다.</td></tr> : filtered.map(r => (
+          <tr key={r.id} onClick={() => setSelected(r)} style={{ cursor: 'pointer' }}><td>{fmt(r.started_at)}</td><td><b>{r.rule_name || '-'}</b></td><td>{r.rule_type}</td><td>{r.trigger === 'manual' ? '수동' : '예약'}</td>
+          <td><Pill tone={r.status === 'success' ? 'green' : r.status === 'failed' ? 'red' : 'gray'}>{statusLabel[r.status] || r.status}</Pill></td></tr>
+        ))}
+      </tbody></table></div></section>
+    {selected && <Modal title="실행 상세" onClose={() => setSelected(null)} wide>
+      <div className="auto28-detailgrid"><div><span>실행 ID</span><b>{selected.id}</b></div><div><span>결과</span><b>{statusLabel[selected.status] || selected.status}</b></div><div><span>시작</span><b>{fmt(selected.started_at)}</b></div><div><span>종료</span><b>{fmt(selected.finished_at)}</b></div></div>
+      {selected.error && <div className="auto28-error"><span>{selected.error}</span></div>}
+      {selected.result && <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{JSON.stringify(selected.result, null, 2)}</pre>}
+      <ModalActions onClose={() => setSelected(null)} /></Modal>}
+  </div>;
+}

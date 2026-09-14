@@ -138,6 +138,56 @@ ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT '
 -- 막습니다(애플리케이션 코드의 경쟁 상태 창을 없앱니다) - source_id가 있는 행에만 적용됩니다.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_dedupe ON usage_events(advertiser_id, feature, action, source_id) WHERE source_id IS NOT NULL;
 
+-- ============================================================
+-- AI 자동화 메뉴 전체(보고서 자동생성·광고문구 자동생성·알림 자동화·작업 흐름) -
+-- 예전엔 브라우저 localStorage에만 저장되어 팀 공유가 안 되고, 정해진 시각에
+-- 서버가 알아서 실행하는 게 아니라 화면에 들어가서 버튼을 눌러야만 실행됐습니다.
+-- 서버 스케줄러 + DB 저장으로 전환합니다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS automation_rules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, -- 'report' | 'ad-copy' | 'notification' | 'workflow'
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE CASCADE, -- NULL이면 회사 전체 대상(주로 notification)
+  name TEXT NOT NULL,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb, -- 타입별 세부 설정(주기·조건·단계 등) - 기존 프론트 타입과 최대한 호환되는 구조로 저장합니다.
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  last_run_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_automation_rules_tenant_type ON automation_rules(tenant_id, type);
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  rule_id UUID REFERENCES automation_rules(id) ON DELETE CASCADE,
+  rule_type TEXT NOT NULL,
+  rule_name TEXT,
+  advertiser_id UUID,
+  trigger TEXT NOT NULL DEFAULT 'scheduled', -- 'scheduled' | 'manual'
+  status TEXT NOT NULL DEFAULT 'running', -- 'running' | 'success' | 'failed'
+  result JSONB,
+  error TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_tenant ON automation_runs(tenant_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS automation_notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  rule_id UUID REFERENCES automation_rules(id) ON DELETE SET NULL,
+  advertiser_id UUID REFERENCES advertisers(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT,
+  recipient TEXT,
+  channels TEXT[] NOT NULL DEFAULT '{}',
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_automation_notifications_tenant ON automation_notifications(tenant_id, created_at DESC);
+
 
 -- ============================================================
 -- 오토포스트 Pro 연동 (블로그 자동 생성 - ㈜시온랩스 제휴 API)
