@@ -122,12 +122,12 @@ function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: Automat
       <label>대상 유형<select value={targetType} onChange={e => setTargetType(e.target.value as any)}><option value="campaign">캠페인</option><option value="adset">광고 세트</option><option value="creative">소재(개별 광고)</option>{channel === 'naver' && <option value="keyword">키워드</option>}</select></label>
       <label>{targetTypeLabel[targetType]} ID<input value={targetId} onChange={e => setTargetId(e.target.value)} placeholder={`${targetTypeLabel[targetType]} 관리 화면에서 확인`} /></label>
       <label className="span-2">{targetTypeLabel[targetType]} 이름(선택)<input value={targetName} onChange={e => setTargetName(e.target.value)} /></label>
-      <label>동작<select value={action} onChange={e => setAction(e.target.value as any)}><option value="on">ON</option><option value="off">OFF</option></select></label>
+      <label>도달 시 상태 변경<select value={action} onChange={e => setAction(e.target.value as any)}><option value="on">켜기(ON)로 변경</option><option value="off">끄기(OFF)로 변경</option></select><small className="field-help">예약 시각이 되면 대상을 이 상태로 바꿉니다.</small></label>
       <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
       {cadence === 'weekly' && <div className="span-2"><span className="auto-field-title">요일(복수 선택 가능)</span><div className="auto-weekday-buttons">{WEEKDAYS.map(([label, v]) => <button type="button" key={v} className={weekdays.includes(v) ? 'active' : ''} onClick={() => toggleWeekday(v)}>{label}</button>)}</div></div>}
       {cadence === 'monthly' && <label>매월 실행일<input type="number" min="1" max="28" value={dayOfMonth} onChange={e => setDayOfMonth(Math.max(1, Math.min(28, Number(e.target.value) || 1)))} /></label>}
       <label>실행 시각<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
-      <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 예약 ON</label>
+      <label className="span-2"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 이 예약 자체를 사용함<small className="field-help">체크를 끄면 위에서 정한 상태 변경은 실행되지 않고, 이 예약이 통째로 일시정지됩니다.</small></label>
     </div>
     <div className="modal-actions"><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={save}>저장</button></div>
   </div></div>;
