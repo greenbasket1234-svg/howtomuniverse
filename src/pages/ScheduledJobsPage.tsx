@@ -36,10 +36,24 @@ export function ScheduledJobsPage() {
   const occurrenceRows = withNext.filter(x => x.next).filter(x => scope === 'all' || (scope === 'today' ? todayKey(x.next!) === todayKey(now) : x.next! <= weekEnd)).sort((a, b) => +a.next! - +b.next!);
   const weekDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(now.getDate() + i); return d; });
   const toggle = async (rule: AutomationRule) => { await automationApi.rules.update(rule.id, { enabled: !rule.enabled }); void reload(); };
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
+  const runNow = async (rule: AutomationRule) => {
+    setRunningId(rule.id); setNotice('');
+    try {
+      await automationApi.rules.runNow(rule.id);
+      setNotice(`"${rule.name}" 실행 성공 — 아래 실행 기록(전체 실행 기록 화면)에서도 바로 확인할 수 있습니다.`);
+    } catch (e) {
+      setNotice(`"${rule.name}" 실행 실패: ${e instanceof Error ? e.message : '알 수 없는 오류'}`);
+    } finally {
+      setRunningId(null); void reload();
+    }
+  };
 
   return <div className="automation-engine-page">
     <PageHeader title="예약 작업" description="서버에 저장된 모든 자동화 규칙(보고서·광고문구·알림·작업흐름·캠페인)의 예약 현황을 한 곳에서 봅니다." action={<button className="btn primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={15} /> 캠페인 예약 추가</button>} />
     <div className="automation-pre-revenue-note"><b>서버 스케줄러 연동됨</b><span>여기 표시되는 예약은 실제로 서버가 정해진 시각에 자동 실행합니다(광고문구·캠페인·알림 감시). 보고서·작업흐름은 아직 자동 실행 준비 중입니다.</span></div>
+    {notice && <div className="auto28-note"><span>{notice}</span></div>}
     <div className="card auto-filter-card"><div className="auto-filter-row">
       <div className="segmented"><button className={scope === 'today' ? 'active' : ''} onClick={() => setScope('today')}>오늘</button><button className={scope === 'week' ? 'active' : ''} onClick={() => setScope('week')}>이번 주</button><button className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>전체</button></div>
       <select value={advertiser} onChange={e => setAdvertiser(e.target.value)}><option value="all">전체 광고주</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
@@ -53,6 +67,7 @@ export function ScheduledJobsPage() {
         <tr key={rule.id}><td><b>{rule.name}</b></td><td>{rule.config?.advertiserName || (rule.advertiser_id ? advs.find(a => a.id === rule.advertiser_id)?.name : '전체') || '-'}</td><td>{typeLabel[rule.type]}</td>
         <td>{ruleScheduleSummary(rule)}</td><td>{next ? fmtDateTime(next) : '-'}</td><td><span className={`auto-state ${rule.enabled ? 'active' : 'paused'}`}>{rule.enabled ? 'ON' : '중지'}</span></td>
         <td><div className="row-actions">{rule.type === 'campaign' ? <>
+          <button className="btn secondary mini" disabled={runningId === rule.id} onClick={() => runNow(rule)}>{runningId === rule.id ? '실행 중...' : '지금 실행'}</button>
           <button className="icon-btn" title={rule.enabled ? '일시중지' : '활성화'} onClick={() => toggle(rule)}>{rule.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
           <button className="btn secondary mini" onClick={() => { setEditing(rule); setShowForm(true); }}>수정</button>
           <button className="icon-btn danger" onClick={() => { if (confirm('예약 작업을 삭제할까요?')) automationApi.rules.remove(rule.id).then(reload); }}><Trash2 size={15} /></button>
