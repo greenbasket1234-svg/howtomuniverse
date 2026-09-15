@@ -2411,16 +2411,18 @@ async function pgGetMediaAccountForSync(tenantId, advertiserId, channel) {
  */
 async function toggleAdTargetStatus({ targetType, targetId, channel, advertiserId, targetStatus }) {
   if (channel === 'meta') {
-    // 실제로 Meta Graph API 호출을 시도합니다 - 지금 연결된 토큰이 ads_read 전용이면
-    // Meta가 권한 오류를 그대로 돌려줄 것이고, 나중에 ads_management 권한 토큰으로
-    // 교체되면 별도 코드 수정 없이 바로 작동합니다. 성공을 거짓으로 꾸미지 않습니다.
+    if (targetType === 'keyword') { const e = new Error('Meta 광고는 검색 키워드 단위 ON/OFF 개념이 없습니다(오디언스 타겟팅 방식). 캠페인·광고 세트·소재 단위로만 지원합니다.'); e.status = 400; throw e; }
+    // 캠페인·광고 세트·광고(소재) 전부 Meta Graph API에서 같은 패턴(POST /{id} {status})을
+    // 씁니다. 실제로 API 호출을 시도합니다 - 지금 연결된 토큰이 ads_read 전용이면 Meta가
+    // 권한 오류를 그대로 돌려줄 것이고, 나중에 ads_management 권한 토큰으로 교체되면
+    // 별도 코드 수정 없이 바로 작동합니다. 성공을 거짓으로 꾸미지 않습니다.
     try {
       await metaGraphPost(`/${targetId}`, { status: targetStatus === 'on' ? 'ACTIVE' : 'PAUSED' });
       addLog({ action: 'campaign_toggle', advertiserId, channel, targetType, targetId, result: 'success', data: { targetStatus } });
       return { ok: true, status: targetStatus };
     } catch (error) {
       addLog({ action: 'campaign_toggle', advertiserId, channel, targetType, targetId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
-      const e = new Error(error instanceof Error ? `Meta에서 상태 변경을 거부했습니다: ${error.message} (현재 연결된 토큰에 ads_management 권한이 없으면 이 오류가 납니다)` : '캠페인 상태 변경에 실패했습니다.'); e.status = 502; throw e;
+      const e = new Error(error instanceof Error ? `Meta에서 상태 변경을 거부했습니다: ${error.message} (현재 연결된 토큰에 ads_management 권한이 없으면 이 오류가 납니다)` : '상태 변경에 실패했습니다.'); e.status = 502; throw e;
     }
   }
   if (channel === 'naver') {
@@ -2428,10 +2430,17 @@ async function toggleAdTargetStatus({ targetType, targetId, channel, advertiserI
     const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
     if (!account || account.status !== 'connected' || !account.api_key) { const e = new Error('네이버 계정이 연결되어 있지 않습니다.'); e.status = 400; throw e; }
     const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
-    const path = targetType === 'creative' ? `/ncc/ads/${targetId}` : `/ncc/campaigns/${targetId}`;
-    const idField = targetType === 'creative' ? 'nccAdId' : 'nccCampaignId';
+    // 네이버 검색광고는 캠페인 > 광고그룹(=광고 세트) > 소재/키워드 4단계 전부 같은 방식
+    // (userLock 필드)으로 ON/OFF를 지원합니다.
+    const NAVER_TARGET_MAP = {
+      campaign: { path: 'campaigns', idField: 'nccCampaignId' },
+      adset: { path: 'adgroups', idField: 'nccAdgroupId' },
+      creative: { path: 'ads', idField: 'nccAdId' },
+      keyword: { path: 'keywords', idField: 'nccKeywordId' },
+    };
+    const mapping = NAVER_TARGET_MAP[targetType] || NAVER_TARGET_MAP.campaign;
     try {
-      await naverApiRequest('PUT', path, { fields: 'userLock' }, credentials, { [idField]: targetId, userLock: targetStatus === 'off' });
+      await naverApiRequest('PUT', `/ncc/${mapping.path}/${targetId}`, { fields: 'userLock' }, credentials, { [mapping.idField]: targetId, userLock: targetStatus === 'off' });
       addLog({ action: 'campaign_toggle', advertiserId, channel, targetType, targetId, result: 'success', data: { targetStatus } });
       return { ok: true, status: targetStatus };
     } catch (error) {
@@ -4928,7 +4937,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const body = await readJson(req);
       const targetId = cleanText(body.id || '', 120);
-      const targetType = body.targetType === 'creative' ? 'creative' : 'campaign';
+      const targetType = ['adset', 'creative', 'keyword'].includes(body.targetType) ? body.targetType : 'campaign';
       const channel = cleanText(body.channel || '', 20);
       const advertiserId = cleanText(body.advertiserId || '', 120);
       const targetStatus = body.status === 'on' ? 'on' : body.status === 'off' ? 'off' : '';
@@ -5217,7 +5226,7 @@ async function runNotificationAutomationRule(rule) {
 /** 캠페인 자동 ON/OFF - 이미 검증된 toggleCampaignStatus()를 그대로 재사용합니다. */
 async function runCampaignAutomationRule(rule) {
   const cfg = rule.config || {};
-  const targetType = cfg.targetType === 'creative' ? 'creative' : 'campaign';
+  const targetType = ['adset', 'creative', 'keyword'].includes(cfg.targetType) ? cfg.targetType : 'campaign';
   const targetId = cfg.targetId || cfg.campaignId; // campaignId는 이전 버전과의 호환을 위해 계속 지원합니다.
   if (!targetId || !cfg.channel || !rule.advertiser_id || !cfg.action) {
     throw Object.assign(new Error('캠페인 자동화 설정이 올바르지 않습니다(targetId·channel·advertiserId·action 필요).'), { status: 400 });
@@ -5226,7 +5235,7 @@ async function runCampaignAutomationRule(rule) {
   await pgPool.query(
     `INSERT INTO automation_notifications (tenant_id, rule_id, advertiser_id, title, message, recipient, channels)
      VALUES ($1,$2,$3,$4,$5,'admin','{internal}')`,
-    [rule.tenant_id, rule.id, rule.advertiser_id, `[자동화] ${rule.name}`, `${targetType === 'creative' ? '소재' : '캠페인'} "${cfg.targetName || cfg.campaignName || targetId}"을(를) ${cfg.action === 'on' ? 'ON' : 'OFF'} 처리했습니다.`]
+    [rule.tenant_id, rule.id, rule.advertiser_id, `[자동화] ${rule.name}`, `${{ campaign: '캠페인', adset: '광고 세트', creative: '소재', keyword: '키워드' }[targetType]} "${cfg.targetName || cfg.campaignName || targetId}"을(를) ${cfg.action === 'on' ? 'ON' : 'OFF'} 처리했습니다.`]
   );
   return result;
 }

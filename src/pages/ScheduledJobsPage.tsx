@@ -91,7 +91,8 @@ function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: Automat
   const [advs] = useAdvertisers();
   const c = initial?.config || {};
   const [advertiserId, setAdvertiserId] = useState(c.advertiserId || advs[0]?.id || '');
-  const [targetType, setTargetType] = useState<'campaign' | 'creative'>(c.targetType || 'campaign');
+  const [targetType, setTargetType] = useState<'campaign' | 'adset' | 'creative' | 'keyword'>((['adset', 'creative', 'keyword'].includes(c.targetType) ? c.targetType : 'campaign'));
+  const targetTypeLabel: Record<string, string> = { campaign: '캠페인', adset: '광고 세트', creative: '소재', keyword: '키워드' };
   const [targetId, setTargetId] = useState(c.targetId || c.campaignId || '');
   const [targetName, setTargetName] = useState(c.targetName || c.campaignName || '');
   const [channel, setChannel] = useState(c.channel || 'naver');
@@ -103,7 +104,7 @@ function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: Automat
   const [enabled, setEnabled] = useState(initial?.enabled !== false);
   const toggleWeekday = (v: number) => setWeekdays(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v].sort());
   const save = async () => {
-    if (!targetId) { alert(`${targetType === 'creative' ? '소재' : '캠페인'} ID를 입력하세요.`); return; }
+    if (!targetId) { alert(`${targetTypeLabel[targetType]} ID를 입력하세요.`); return; }
     if (cadence === 'weekly' && weekdays.length === 0) { alert('요일을 하나 이상 선택하세요.'); return; }
     const adv = advs.find(a => a.id === advertiserId);
     const config = { advertiserId, advertiserName: adv?.name, targetType, targetId, targetName, channel, action, cadence, weekdays, dayOfMonth, time };
@@ -117,10 +118,10 @@ function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: Automat
     {channel === 'meta' && <div className="automation-pre-revenue-note"><b>Meta 권한 안내</b><span>현재 연결된 Meta 토큰이 조회 전용(ads_read)이면 예약 시각에 실행이 실패로 기록됩니다. ads_management 권한 토큰으로 재연결하면 별도 설정 없이 바로 작동합니다.</span></div>}
     <div className="auto-modal-grid">
       <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-      <label>매체<select value={channel} onChange={e => setChannel(e.target.value)}><option value="naver">네이버</option><option value="meta">Meta</option></select></label>
-      <label>대상 유형<select value={targetType} onChange={e => setTargetType(e.target.value as any)}><option value="campaign">캠페인</option><option value="creative">소재(개별 광고)</option></select></label>
-      <label>{targetType === 'creative' ? '소재' : '캠페인'} ID<input value={targetId} onChange={e => setTargetId(e.target.value)} placeholder={targetType === 'creative' ? '소재 관리 화면에서 확인' : '캠페인 관리 화면에서 확인'} /></label>
-      <label className="span-2">{targetType === 'creative' ? '소재' : '캠페인'} 이름(선택)<input value={targetName} onChange={e => setTargetName(e.target.value)} /></label>
+      <label>매체<select value={channel} onChange={e => { setChannel(e.target.value); if (e.target.value === 'meta' && targetType === 'keyword') setTargetType('campaign'); }}><option value="naver">네이버</option><option value="meta">Meta</option></select></label>
+      <label>대상 유형<select value={targetType} onChange={e => setTargetType(e.target.value as any)}><option value="campaign">캠페인</option><option value="adset">광고 세트</option><option value="creative">소재(개별 광고)</option>{channel === 'naver' && <option value="keyword">키워드</option>}</select></label>
+      <label>{targetTypeLabel[targetType]} ID<input value={targetId} onChange={e => setTargetId(e.target.value)} placeholder={`${targetTypeLabel[targetType]} 관리 화면에서 확인`} /></label>
+      <label className="span-2">{targetTypeLabel[targetType]} 이름(선택)<input value={targetName} onChange={e => setTargetName(e.target.value)} /></label>
       <label>동작<select value={action} onChange={e => setAction(e.target.value as any)}><option value="on">ON</option><option value="off">OFF</option></select></label>
       <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
       {cadence === 'weekly' && <div className="span-2"><span className="auto-field-title">요일(복수 선택 가능)</span><div className="auto-weekday-buttons">{WEEKDAYS.map(([label, v]) => <button type="button" key={v} className={weekdays.includes(v) ? 'active' : ''} onClick={() => toggleWeekday(v)}>{label}</button>)}</div></div>}
