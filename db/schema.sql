@@ -188,6 +188,23 @@ CREATE TABLE IF NOT EXISTS automation_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_automation_notifications_tenant ON automation_notifications(tenant_id, created_at DESC);
 
+-- 캠페인·광고세트·소재·키워드의 "지금 현재" ON/OFF 상태입니다. 일별 성과 테이블과는 성격이
+-- 달라서(성과는 매일 쌓이는 이력, 상태는 "지금" 하나만 의미 있음) 별도 테이블로 관리하고,
+-- 매체 자동 동기화 때마다 최신값으로 덮어씁니다(upsert).
+CREATE TABLE IF NOT EXISTS ad_entity_status (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  advertiser_id UUID NOT NULL REFERENCES advertisers(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  entity_type TEXT NOT NULL, -- 'campaign' | 'adset' | 'creative' | 'keyword'
+  entity_id TEXT NOT NULL,
+  entity_name TEXT,
+  status TEXT NOT NULL DEFAULT 'unknown', -- 'on' | 'off' | 'unknown'(매체가 다른 상태를 반환한 경우)
+  checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, advertiser_id, channel, entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ad_entity_status_lookup ON ad_entity_status(tenant_id, advertiser_id, channel, entity_type);
+
 
 -- ============================================================
 -- 오토포스트 Pro 연동 (블로그 자동 생성 - ㈜시온랩스 제휴 API)

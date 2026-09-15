@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Grid3X3, List, Search, X, Play } from 'lucide-react';
+import { Grid3X3, List, Search, X, Play, Power } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
+import { Badge } from '../components/Badge';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { useMetricRows } from '../hooks/useMetrics';
@@ -95,10 +96,10 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
 
 type Kind='이미지'|'영상'|'슬라이드'|'키워드';
 type Item = {
-  key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string; adId?:string;
+  key:string; kind:Kind; advertiserId:string; advertiserName?:string; channel:string; adId?:string; keywordId?:string;
   name:string; campaignName?:string; impressions:number; clicks:number; spend:number; dbCount:number; purchases?:number; unconfirmed?:number;
   revenue?:number; roas?:number; thumbnailUrl?:string|null; videoUrl?:string|null; carouselImages?:string[]|null;
-  title?:string; body?:string; description?:string; cta?:string;
+  title?:string; body?:string; description?:string; cta?:string; status?:'on'|'off'|'unknown';
 };
 
 export function CreativeLibraryPage(){
@@ -113,6 +114,22 @@ export function CreativeLibraryPage(){
   const [selected,setSelected]=useState<Item|null>(null);
   const [previewUrl,setPreviewUrl]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
+  // 서버에 실제로 반영된 뒤 다음 자동 동기화까지 기다리지 않고, 이 화면에서 방금 바꾼
+  // 상태를 즉시 보여주기 위한 오버라이드입니다(새로고침하면 실제 동기화 결과로 대체됩니다).
+  const [statusOverride,setStatusOverride]=useState<Record<string,'on'|'off'>>({});
+  const [togglingKey,setTogglingKey]=useState<string|null>(null);
+  const toggleItemStatus=(item:Item)=>{
+    const targetId=item.adId||item.keywordId; if(!targetId)return;
+    const targetType=item.kind==='키워드'?'keyword':'creative';
+    const current=statusOverride[item.key]||item.status;
+    const nextStatus=current==='on'?'off':'on';
+    if(!confirm(`${item.name} ${item.kind==='키워드'?'키워드':'소재'}를 실제로 ${nextStatus==='off'?'중지':'재개'}할까요? 이 작업은 실제 광고 계정에 바로 반영됩니다.`))return;
+    setTogglingKey(item.key);
+    apiFetch('/campaigns',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:targetId,targetType,channel:item.channel,advertiserId:item.advertiserId,status:nextStatus})})
+      .then(()=>setStatusOverride(prev=>({...prev,[item.key]:nextStatus})))
+      .catch(err=>alert(err instanceof Error?err.message:'상태 변경에 실패했습니다.'))
+      .finally(()=>setTogglingKey(null));
+  };
   useEffect(()=>{
     setPreviewUrl(null);
     // 원본 영상 파일(source)은 매체 권한에 따라 막힐 수 있어, Meta가 직접 제공하는 재생 가능한
@@ -131,12 +148,12 @@ export function CreativeLibraryPage(){
       key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
       name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
       revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl, carouselImages:r.carouselImages,
-      title:r.title, body:r.body, description:r.description, cta:r.cta,
+      title:r.title, body:r.body, description:r.description, cta:r.cta, status:r.status,
     })),
     ...keywordRows.map((r):Item=>({
-      key:`${r.channel}-kw-${r.keywordId||r.keyword}`, kind:'키워드', advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel,
+      key:`${r.channel}-kw-${r.keywordId||r.keyword}`, kind:'키워드', advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, keywordId:r.keywordId,
       name:r.keyword, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
-      revenue:r.revenue, roas:Number(r.roas||0),
+      revenue:r.revenue, roas:Number(r.roas||0), status:r.status,
     })),
   ],[creativeRows,keywordRows]);
 
@@ -188,9 +205,19 @@ export function CreativeLibraryPage(){
       <th className="num sortable-th" onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('dbCount')} title="DB·구매·미확인(당일 잠정치) 전환을 모두 합한 값입니다">전환{arrow('dbCount')}</th>
       <th className="num sortable-th" onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th>
-    </tr></thead><tbody>{filtered.map(r=><tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{(r.dbCount+(r.purchases||0)+(r.unconfirmed||0)).toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}</tbody></table></div></section>}
+      <th>상태</th><th>작업</th>
+    </tr></thead><tbody>{filtered.map(r=>{const st=statusOverride[r.key]||r.status;return <tr key={r.key} onClick={()=>setSelected(r)} style={{cursor:'pointer'}}><td><b>{r.name}</b></td><td>{r.kind}</td><td>{channelLabel(r.channel)}</td><td>{r.advertiserName||r.advertiserId}</td><td>{r.campaignName||'-'}</td><td className="num metric-emphasis">{won(r.spend)}</td><td className="num">{r.impressions.toLocaleString()}</td><td className="num">{r.clicks.toLocaleString()}</td><td className="num"><b>{(r.dbCount+(r.purchases||0)+(r.unconfirmed||0)).toLocaleString()}</b></td><td className={`num ${roasClass(Number(r.roas||0))}`}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td>
+      <td><Badge tone={st==='on'?'success':st==='off'?'neutral':'warning'}>{st==='on'?'ON':st==='off'?'OFF':'확인 필요'}</Badge></td>
+      <td onClick={e=>e.stopPropagation()}>{(r.adId||r.keywordId)?<button className="icon-btn" title="ON/OFF" disabled={togglingKey===r.key} onClick={()=>toggleItemStatus(r)}><Power size={15}/></button>:'-'}</td>
+    </tr>;})}</tbody></table></div></section>}
     {selected&&<ModalPortal onClose={()=>setSelected(null)} wide>
-      <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button></div>
+      <div className="modal-head"><div><h3>{selected.name}</h3><p>{selected.advertiserName||selected.advertiserId} · {channelLabel(selected.channel)} · {selected.campaignName||'-'}</p></div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          {(() => { const st=statusOverride[selected.key]||selected.status; return <Badge tone={st==='on'?'success':st==='off'?'neutral':'warning'}>{st==='on'?'ON':st==='off'?'OFF':'확인 필요'}</Badge>; })()}
+          {(selected.adId||selected.keywordId)&&<button className="btn secondary" disabled={togglingKey===selected.key} onClick={()=>toggleItemStatus(selected)}><Power size={14}/> ON/OFF</button>}
+          <button className="icon-btn" onClick={()=>setSelected(null)}><X size={18}/></button>
+        </div>
+      </div>
       {(selected.kind==='영상'||selected.kind==='슬라이드')&&previewLoading
         ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
         : previewUrl

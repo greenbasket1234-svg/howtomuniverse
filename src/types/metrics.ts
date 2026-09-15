@@ -52,10 +52,13 @@ export type CreativeMetricRow = BaseMetricRow & {
   adId: string; adName: string; thumbnailUrl?: string | null; mediaType?: 'image'|'video'|'text'|'carousel'|null; videoUrl?: string | null;
   carouselImages?: string[] | null;
   title?: string; body?: string; description?: string; cta?: string;
+  /** 지금 현재 ON/OFF 상태 - 성과 데이터와 별개로 매체 자동 동기화 때마다 갱신됩니다. */
+  status?: 'on' | 'off' | 'unknown';
 };
 export type CreativeDailyMetricRow = CreativeMetricRow & { date: string };
 export type KeywordMetricRow = BaseMetricRow & {
   campaignId?: string; campaignName?: string; campaignType?: string; adgroupId?: string; adgroupName?: string; keywordId?: string; keyword: string;
+  status?: 'on' | 'off' | 'unknown';
 };
 export type KeywordDailyMetricRow = KeywordMetricRow & { date: string };
 

@@ -623,6 +623,30 @@ async function metaFetchAdInsights(accountId, since, until) {
   return metaFetchLevelInsights(accountId, since, until, 'ad');
 }
 
+/**
+ * Meta의 캠페인·광고세트·소재 "지금 현재" 상태를 가져옵니다. Insights 엔드포인트는
+ * 성과만 주고 상태를 안 주기 때문에 별도 호출이 필요합니다. effective_status를 기준으로
+ * 판정합니다 - status(사용자가 설정한 값)만 보면 예산 소진·심사 대기 등으로 실제로는
+ * 꺼져 있는데 켜진 것처럼 보일 수 있습니다.
+ */
+function metaEffectiveStatusToOnOff(effectiveStatus) {
+  if (!effectiveStatus) return 'unknown';
+  if (['ACTIVE'].includes(effectiveStatus)) return 'on';
+  if (['PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED', 'ARCHIVED', 'DELETED', 'DISAPPROVED'].includes(effectiveStatus)) return 'off';
+  return 'unknown'; // PENDING_REVIEW, WITH_ISSUES 등은 켜짐도 꺼짐도 아닌 중간 상태입니다.
+}
+async function metaFetchEntityStatuses(accountId, level) {
+  const id = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+  const path = level === 'campaign' ? '/campaigns' : level === 'adset' ? '/adsets' : '/ads';
+  const rows = []; let after;
+  do {
+    const data = await metaGraphGet(`/${id}${path}`, { fields: 'id,name,effective_status', limit: 200, ...(after ? { after } : {}) });
+    for (const row of data?.data || []) rows.push({ id: row.id, name: row.name, status: metaEffectiveStatusToOnOff(row.effective_status) });
+    after = data?.paging?.cursors?.after && data?.paging?.next ? data.paging.cursors.after : undefined;
+  } while (after);
+  return rows;
+}
+
 /** 광고 ID 목록으로 실제 소재 썸네일(이미지/영상) URL을 가져옵니다. */
 // Meta의 call_to_action_type은 영어 enum이라, 화면에는 한국어로 번역해서 보여줍니다.
 const CTA_LABEL_KO = {
@@ -888,6 +912,37 @@ async function naverFetchAdMasters(credentials, maxAds = Infinity) {
   });
   console.log(`[naver-ad-masters] 캠페인 ${campaigns.length}개 → 광고그룹 ${adgroups.length}개 → 소재 전체 ${totalAds}개${Number.isFinite(maxAds) && totalAds > ads.length ? ` / 메모리 보관 ${ads.length}개` : ''}. 유형별 캠페인 수: ${JSON.stringify(campaigns.reduce((a, c) => { const t = naverCampaignTypeKo(c.campaignTp); a[t] = (a[t] || 0) + 1; return a; }, {}))}`);
   return { ads, totalAds, adgroupNameMap };
+}
+
+/** 네이버 status/userLock 조합을 on/off/unknown으로 판정합니다.
+ * userLock=true면 사용자가 명시적으로 정지시킨 것(off), status='ELIGIBLE'이면 정상 노출 중(on),
+ * 그 외(심사중·삭제됨 등)는 켜짐도 꺼짐도 아닌 중간 상태(unknown)로 둡니다. */
+function naverStatusToOnOff(row) {
+  if (row?.userLock === true) return 'off';
+  if (row?.status === 'ELIGIBLE') return 'on';
+  return 'unknown';
+}
+/** 캠페인·광고그룹(=광고세트)·소재·키워드의 지금 현재 상태를 전부 가져옵니다.
+ * 일별 성과 수집과는 별개의 가벼운 조회입니다(마스터 데이터만, 통계 호출 없음). */
+async function naverFetchEntityStatuses(credentials) {
+  const campaigns = await naverFetchCampaigns(credentials);
+  const result = { campaign: [], adset: [], creative: [], keyword: [] };
+  for (const c of campaigns) result.campaign.push({ id: c.nccCampaignId, name: c.name, status: naverStatusToOnOff(c) });
+  const adgroups = [];
+  await mapWithConcurrency(campaigns, 6, async c => {
+    const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: c.nccCampaignId }, credentials).catch(() => []);
+    if (Array.isArray(rows)) adgroups.push(...rows);
+  });
+  for (const ag of adgroups) result.adset.push({ id: ag.nccAdgroupId, name: ag.name || '', status: naverStatusToOnOff(ag) });
+  await mapWithConcurrency(adgroups, 6, async ag => {
+    const [adRows, kwRows] = await Promise.all([
+      naverApiRequest('GET', '/ncc/ads', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []),
+      naverApiRequest('GET', '/ncc/keywords', { nccAdgroupId: ag.nccAdgroupId }, credentials).catch(() => []),
+    ]);
+    if (Array.isArray(adRows)) for (const a of adRows) result.creative.push({ id: a.nccAdId, name: a.ad?.headline || a.nccAdId, status: naverStatusToOnOff(a) });
+    if (Array.isArray(kwRows)) for (const k of kwRows) result.keyword.push({ id: k.nccKeywordId, name: k.keyword || k.nccKeywordId, status: naverStatusToOnOff(k) });
+  });
+  return result;
 }
 
 /**
@@ -3005,7 +3060,22 @@ async function handleApi(req, res, pathname) {
          valid.map(r => metricNumber(r.unconfirmed))]
       );
     }
-    async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
+    /** 여러 유형(campaign/adset/creative/keyword)의 상태를 한 번에 저장합니다. */
+async function upsertEntityStatuses(tenantId, advertiserId, channel, byType) {
+  for (const [entityType, rows] of Object.entries(byType || {})) {
+    const valid = (rows || []).filter(r => r.id);
+    if (!valid.length) continue;
+    await pgQueryWithRetry(
+      `INSERT INTO ad_entity_status (tenant_id, advertiser_id, channel, entity_type, entity_id, entity_name, status, checked_at)
+       SELECT $1, $2, $3, $4, eid, ename, est, now()
+       FROM UNNEST($5::text[], $6::text[], $7::text[]) AS t(eid, ename, est)
+       ON CONFLICT (tenant_id, advertiser_id, channel, entity_type, entity_id)
+       DO UPDATE SET entity_name = EXCLUDED.entity_name, status = EXCLUDED.status, checked_at = now()`,
+      [tenantId, advertiserId, channel, entityType, valid.map(r => String(r.id)), valid.map(r => r.name || String(r.id)), valid.map(r => r.status || 'unknown')]
+    );
+  }
+}
+async function upsertCreativeDailyMetrics(tenantId, advertiserId, channel, rows) {
       const valid = (rows || []).filter(r => r.date && r.adId);
       if (!valid.length) return;
       await pgQueryWithRetry(
@@ -3180,6 +3250,18 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
             const enrichedAdRows = adRows.map(r => ({ ...r, ...(thumbnails[r.adId] || {}) }));
             await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, enrichedAdRows);
           }
+          // 캠페인·광고세트·소재의 지금 현재 ON/OFF 상태도 함께 가져와 저장합니다(성과와는
+          // 별개의 조회입니다). 실패해도 메인 성과 동기화 자체는 그대로 성공 처리합니다.
+          try {
+            const [campaignStatuses, adsetStatuses, creativeStatuses] = await Promise.all([
+              metaFetchEntityStatuses(account.account_id, 'campaign'),
+              metaFetchEntityStatuses(account.account_id, 'adset'),
+              metaFetchEntityStatuses(account.account_id, 'ad'),
+            ]);
+            await upsertEntityStatuses(tenantId, advertiserId, channel, { campaign: campaignStatuses, adset: adsetStatuses, creative: creativeStatuses });
+          } catch (statusError) {
+            console.error('[meta-entity-status] 상태 동기화 실패(성과 동기화는 정상 완료됨):', statusError?.message || statusError);
+          }
           // 진단용: 캠페인 레벨을 합산한 값이 계정 레벨 원천과 얼마나 다른지 기록합니다(저장 기준은 위에서 이미 계정 레벨로 확정).
           const validation = await recordValidation(tenantId, advertiserId, channel, since, until, accountRows, campaignRows, 'Meta 계정 레벨 원천(저장 기준) vs 캠페인 합산(진단용)', account.account_id);
           await recordSyncResult(tenantId, advertiserId, channel, { ok: true, count: dailyRows.length });
@@ -3343,6 +3425,16 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
           await upsertCampaignDailyMetrics(tenantId, advertiserId, channel, campaignRows);
           if (creativeRows.length) await upsertCreativeDailyMetrics(tenantId, advertiserId, channel, creativeRows);
           if (keywordRows.length) await upsertKeywordDailyMetrics(tenantId, advertiserId, channel, keywordRows);
+
+          // 캠페인·광고그룹(=광고세트)·소재·키워드의 지금 현재 ON/OFF 상태도 함께 가져와
+          // 저장합니다. 네이버는 이미 마스터 데이터(userLock·status)를 갖고 있어서 별도
+          // 통계 호출 없이 가볍게 처리됩니다. 실패해도 메인 성과 동기화는 그대로 성공 처리합니다.
+          try {
+            const statuses = await naverFetchEntityStatuses(credentials);
+            await upsertEntityStatuses(tenantId, advertiserId, channel, statuses);
+          } catch (statusError) {
+            console.error('[naver-entity-status] 상태 동기화 실패(성과 동기화는 정상 완료됨):', statusError?.message || statusError);
+          }
 
           // 진단용: 캠페인 레벨 합계와 소재 레벨 합계를 캠페인별로 대조해서, 소재 레벨에서
           // 어느 캠페인이 얼마나 누락되는지 확인합니다("소재 관리" 합계가 "통합 홈"과 다르다는
@@ -3622,6 +3714,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         cur.impressions+=metricNumber(row.impressions);cur.clicks+=metricNumber(row.clicks);cur.spend+=metricNumber(row.spend);cur.dbCount+=metricNumber(row.dbCount);cur.purchases+=metricNumber(row.purchases);cur.addToCart+=metricNumber(row.addToCart);cur.completeRegistration+=metricNumber(row.completeRegistration);cur.initiateCheckout+=metricNumber(row.initiateCheckout);cur.revenue+=metricNumber(row.revenue);cur.thumbnailUrl=row.thumbnailUrl||cur.thumbnailUrl;cur.mediaType=row.mediaType||cur.mediaType;cur.carouselImages=row.carouselImages||cur.carouselImages;cur.title=row.title||cur.title;cur.body=row.body||cur.body;cur.description=row.description||cur.description;cur.cta=row.cta||cur.cta;grouped.set(key,cur);
       }
       const rows=Array.from(grouped.values()).map(withDerived).sort((a,b)=>b.spend-a.spend);
+      // 지금 현재 ON/OFF 상태를 조인합니다(성과 테이블에는 상태가 없어서 별도 테이블에서 가져옵니다).
+      const statusRows = pgPool ? (await pgPool.query(`SELECT advertiser_id, channel, entity_id, status FROM ad_entity_status WHERE tenant_id=$1 AND entity_type='creative'`, [tenantId])).rows : [];
+      const statusMap = new Map(statusRows.map(s => [`${s.advertiser_id}|${s.channel}|${s.entity_id}`, s.status]));
+      for (const row of rows) row.status = statusMap.get(`${row.advertiserId}|${row.channel}|${row.adId}`) || 'unknown';
       return sendJson(res, 200, { rows, dailyRows: decorateRows(source, db), meta: metricMeta(db, filters) });
     }
     // 소재 상세를 열 때만(목록 전체가 아니라) 그 순간 Meta 미리보기를 요청합니다 - 매번 전체 동기화에서
@@ -4931,6 +5027,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     if (req.method === 'GET' && pathname === '/api/metrics/keywords') {
       const tenantId = await getCurrentTenantId(); const filters = await parseMetricQuery(); if (!filters) return true; const db = (await pgReadDb(tenantId, filters)); const names = advertiserNameMap(db); const source = filterMetricRows(db.keywordDailyMetrics, filters);
       const rows=groupMetrics(source,r=>`${r.advertiserId}|${r.channel}|${r.keywordId||r.keyword}`,r=>({advertiserId:r.advertiserId,advertiserName:names.get(String(r.advertiserId))||String(r.advertiserId),channel:r.channel,campaignId:r.campaignId||'',campaignName:r.campaignName||'',campaignType:r.campaignType||'',adgroupId:r.adgroupId||'',adgroupName:r.adgroupName||'',keywordId:r.keywordId||'',keyword:r.keyword,impressions:0,clicks:0,spend:0,dbCount:0,purchases:0,revenue:0})).sort((a,b)=>b.spend-a.spend);
+      // 지금 현재 ON/OFF 상태를 조인합니다(네이버 파워링크 키워드만 지원됩니다).
+      const kwStatusRows = pgPool ? (await pgPool.query(`SELECT advertiser_id, channel, entity_id, status FROM ad_entity_status WHERE tenant_id=$1 AND entity_type='keyword'`, [tenantId])).rows : [];
+      const kwStatusMap = new Map(kwStatusRows.map(s => [`${s.advertiser_id}|${s.channel}|${s.entity_id}`, s.status]));
+      for (const row of rows) row.status = kwStatusMap.get(`${row.advertiserId}|${row.channel}|${row.keywordId}`) || 'unknown';
       const connectedKeywordChannels = [...new Set(metricConnectionStatus(db, filters).filter(x=>KEYWORD_CAPABLE_CHANNELS.includes(x.channel)&&x.status==='connected').map(x=>x.channel))];
       // (2026-09) 예전엔 여기에 dailyRows(키워드 × 날짜 단위 원본, 90일이면 키워드 2,000개
       // 기준 최대 18만 행)까지 같이 내려줬는데, 이 화면 어디서도 실제로 쓰지 않는 완전히
