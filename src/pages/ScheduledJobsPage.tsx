@@ -1,63 +1,111 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CalendarDays, List, Plus, Trash2, X, Clock3, AlertTriangle, Pause, Play } from 'lucide-react';
+import { CalendarDays, List, Plus, Trash2, X, Clock3, Pause, Play } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { ADVERTISERS } from '../data/operationsMock';
-import { AUTOMATION_EVENT, getAllAutomationJobs, loadAutomationJobs, removeAutomationJob, upsertAutomationJob } from '../automation/automationStore';
-import { findScheduleConflicts } from '../automation/scheduleConflict';
-import { formatKoreanDateTime, nextOccurrences, scheduleSummary } from '../automation/scheduleEngine';
-import type { AutomationJob, AutomationJobType, AutomationSchedule, AutomationScheduleType } from '../automation/automationTypes';
-import type { Campaign } from '../types/operations';
+import { useAdvertisers } from '../hooks/useAdvertisers';
+import { automationApi, ruleScheduleSummary, nextRunAt, type AutomationRule, type AutomationRuleType } from '../automation/automationApi';
 
-const CAMPAIGN_STORAGE_KEY='howtom-campaign-management-v2';
-function campaigns():Campaign[]{try{const v=JSON.parse(localStorage.getItem(CAMPAIGN_STORAGE_KEY)||'[]');return Array.isArray(v)?v:[]}catch{return []}}
-const jobTypeLabel:Record<string,string>={campaign_on:'캠페인 ON',campaign_off:'캠페인 OFF',campaign_schedule:'캠페인 ON/OFF',data_sync:'데이터 동기화',notification:'알림 자동화',report_generation:'보고서 자동 생성',content_generation:'광고 문구 자동 생성'};
-const typeOptions:[AutomationJobType,string][]=[['campaign_on','캠페인 ON'],['campaign_off','캠페인 OFF'],['data_sync','데이터 동기화'],['notification','알림 생성']];
-const managePath=(j:AutomationJob)=>j.jobType==='report_generation'?'/automation/report-generation':j.jobType==='content_generation'?'/automation/ad-copy':j.jobType==='notification'?'/automation/notifications':j.jobType==='data_sync'?'/automation/data-collection':'/campaigns';
-const WEEKDAYS=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]] as const;
-function todayKey(d=new Date()){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+const typeLabel: Record<AutomationRuleType, string> = { report: '보고서 자동 생성', 'ad-copy': '광고 문구 자동 생성', notification: '알림 자동화', workflow: '작업 흐름', campaign: '캠페인 ON/OFF' };
+const managePath: Record<AutomationRuleType, string> = { report: '/automation/report-generation', 'ad-copy': '/automation/ad-copy', notification: '/automation/notifications', workflow: '/automation/workflows', campaign: '/automation/scheduled-jobs' };
+const WEEKDAYS = [['일', 0], ['월', 1], ['화', 2], ['수', 3], ['목', 4], ['금', 5], ['토', 6]] as const;
+function todayKey(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function fmtDateTime(d: Date) { return `${d.getMonth() + 1}/${d.getDate()}(${['일', '월', '화', '수', '목', '금', '토'][d.getDay()]}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 
-export function ScheduledJobsPage(){
-  const [revision,setRevision]=useState(0); const [showForm,setShowForm]=useState(false); const [editing,setEditing]=useState<AutomationJob|null>(null);
-  const [scope,setScope]=useState<'today'|'week'|'all'>('week'); const [typeFilter,setTypeFilter]=useState('all'); const [statusFilter,setStatusFilter]=useState('all'); const [advertiser,setAdvertiser]=useState('all'); const [view,setView]=useState<'list'|'calendar'|'timeline'>('list');
-  useEffect(()=>{const fn=()=>setRevision(x=>x+1);window.addEventListener(AUTOMATION_EVENT,fn);window.addEventListener('storage',fn);return()=>{window.removeEventListener(AUTOMATION_EVENT,fn);window.removeEventListener('storage',fn)}},[]);
-  const all=useMemo(()=>getAllAutomationJobs().filter(j=>j.schedule||j.scheduleText),[revision]);
-  const structured=all.filter(j=>j.schedule);
-  const conflicts=useMemo(()=>findScheduleConflicts(all),[all]);
-  const now=new Date(); const weekEnd=new Date(now); weekEnd.setDate(now.getDate()+7);
-  const filtered=all.filter(j=>{
-    if(typeFilter!=='all'&&j.jobType!==typeFilter)return false; if(statusFilter!=='all'&&j.status!==statusFilter)return false; if(advertiser!=='all'&&j.advertiserId!==advertiser)return false;
-    if(scope==='all'||!j.schedule)return true; const next=nextOccurrences(j.schedule,1, new Date(now.getTime()-60_000))[0]; if(!next)return false; if(scope==='today')return todayKey(next)===todayKey(now); return next<=weekEnd;
+export function ScheduledJobsPage() {
+  const [advs] = useAdvertisers();
+  const [rules, setRules] = useState<AutomationRule[]>([]);
+  const reload = async () => { try { setRules(await automationApi.rules.list()); } catch { setRules([]); } };
+  useEffect(() => { void reload(); }, []);
+  const [showForm, setShowForm] = useState(false); const [editing, setEditing] = useState<AutomationRule | null>(null);
+  const [scope, setScope] = useState<'today' | 'week' | 'all'>('week');
+  const [typeFilter, setTypeFilter] = useState<'all' | AutomationRuleType>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all');
+  const [advertiser, setAdvertiser] = useState('all');
+  const [view, setView] = useState<'list' | 'calendar' | 'timeline'>('list');
+
+  const now = new Date(); const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
+  const withNext = useMemo(() => rules.map(r => ({ rule: r, next: nextRunAt(r) })), [rules]);
+  const filtered = withNext.filter(({ rule, next }) => {
+    if (typeFilter !== 'all' && rule.type !== typeFilter) return false;
+    if (statusFilter !== 'all' && (rule.enabled ? 'active' : 'paused') !== statusFilter) return false;
+    if (advertiser !== 'all' && rule.advertiser_id !== advertiser) return false;
+    if (scope === 'all' || !next) return true;
+    if (scope === 'today') return todayKey(next) === todayKey(now);
+    return next <= weekEnd;
   });
-  const occurrenceRows=structured.flatMap(j=>nextOccurrences(j.schedule,8).map(at=>({job:j,at}))).filter(x=>scope==='all'||(scope==='today'?todayKey(x.at)===todayKey(now):x.at<=weekEnd)).sort((a,b)=>+a.at-+b.at).slice(0,80);
-  const weekDays=Array.from({length:7},(_,i)=>{const d=new Date(now);d.setHours(0,0,0,0);d.setDate(now.getDate()+i);return d});
-  const toggle=(job:AutomationJob)=>{if(job.readOnly)return;upsertAutomationJob({...job,status:job.status==='active'?'paused':'active'});setRevision(x=>x+1)};
+  const occurrenceRows = withNext.filter(x => x.next).filter(x => scope === 'all' || (scope === 'today' ? todayKey(x.next!) === todayKey(now) : x.next! <= weekEnd)).sort((a, b) => +a.next! - +b.next!);
+  const weekDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(now.getDate() + i); return d; });
+  const toggle = async (rule: AutomationRule) => { await automationApi.rules.update(rule.id, { enabled: !rule.enabled }); void reload(); };
+
   return <div className="automation-engine-page">
-    <PageHeader title="예약 작업" description="시간 기반 실행·ON/OFF·반복 주기를 한 곳에서 관리합니다. 캠페인 관리의 기존 예약도 같은 화면에서 읽어옵니다." action={<button className="btn primary" onClick={()=>{setEditing(null);setShowForm(true)}}><Plus size={15}/> 예약 작업</button>}/>
-    <div className="automation-pre-revenue-note"><b>스케줄러 프론트 단계</b><span>다음 실행 계산·충돌 감지·설정 저장은 실제 동작합니다. 브라우저가 닫혀 있어도 실행되는 24시간 Worker는 아직 연결하지 않았습니다.</span></div>
-    {conflicts.length>0&&<div className="auto-conflict-banner"><AlertTriangle size={18}/><div><b>예약 충돌 {conflicts.length}건</b><span>{conflicts[0].detail}</span></div></div>}
-    <div className="card auto-filter-card"><div className="auto-filter-row"><div className="segmented"><button className={scope==='today'?'active':''} onClick={()=>setScope('today')}>오늘</button><button className={scope==='week'?'active':''} onClick={()=>setScope('week')}>이번 주</button><button className={scope==='all'?'active':''} onClick={()=>setScope('all')}>전체</button></div><select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}><option value="all">전체 광고주</option>{ADVERTISERS.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select><select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="all">전체 유형</option>{typeOptions.map(([k,l])=><option key={k} value={k}>{l}</option>)}<option value="campaign_schedule">기존 캠페인 일정</option></select><select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}><option value="all">전체 상태</option><option value="active">ON</option><option value="paused">일시중지</option></select><div className="auto-view-buttons"><button className={view==='list'?'active':''} onClick={()=>setView('list')}><List size={15}/>목록</button><button className={view==='calendar'?'active':''} onClick={()=>setView('calendar')}><CalendarDays size={15}/>캘린더</button><button className={view==='timeline'?'active':''} onClick={()=>setView('timeline')}><Clock3 size={15}/>타임라인</button></div></div></div>
+    <PageHeader title="예약 작업" description="서버에 저장된 모든 자동화 규칙(보고서·광고문구·알림·작업흐름·캠페인)의 예약 현황을 한 곳에서 봅니다." action={<button className="btn primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={15} /> 캠페인 예약 추가</button>} />
+    <div className="automation-pre-revenue-note"><b>서버 스케줄러 연동됨</b><span>여기 표시되는 예약은 실제로 서버가 정해진 시각에 자동 실행합니다(광고문구·캠페인·알림 감시). 보고서·작업흐름은 아직 자동 실행 준비 중입니다.</span></div>
+    <div className="card auto-filter-card"><div className="auto-filter-row">
+      <div className="segmented"><button className={scope === 'today' ? 'active' : ''} onClick={() => setScope('today')}>오늘</button><button className={scope === 'week' ? 'active' : ''} onClick={() => setScope('week')}>이번 주</button><button className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>전체</button></div>
+      <select value={advertiser} onChange={e => setAdvertiser(e.target.value)}><option value="all">전체 광고주</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">전체 유형</option>{Object.entries(typeLabel).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+      <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)}><option value="all">전체 상태</option><option value="active">ON</option><option value="paused">중지</option></select>
+      <div className="auto-view-buttons"><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><List size={15} />목록</button><button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><CalendarDays size={15} />캘린더</button><button className={view === 'timeline' ? 'active' : ''} onClick={() => setView('timeline')}><Clock3 size={15} />타임라인</button></div>
+    </div></div>
 
-    {view==='list'&&<section className="card auto-panel" style={{padding:0}}><div className="table-scroll"><table className="data-table auto-table"><thead><tr><th>작업</th><th>광고주</th><th>유형</th><th>실행 주기</th><th>다음 실행</th><th>상태</th><th>실행 방식</th><th>작업</th></tr></thead><tbody>{filtered.length===0?<tr><td colSpan={8} className="auto-table-empty">조건에 맞는 예약 작업이 없습니다.</td></tr>:filtered.map(j=><tr key={j.jobId}><td><b>{j.name}</b>{j.targetName&&<small>{j.targetName}</small>}</td><td>{j.advertiserName||'전체'}</td><td>{jobTypeLabel[j.jobType]||j.jobType}</td><td>{j.schedule?scheduleSummary(j.schedule):j.scheduleText||'-'}</td><td>{j.schedule?formatKoreanDateTime(nextOccurrences(j.schedule,1)[0]):'-'}</td><td><span className={`auto-state ${j.status}`}>{j.status==='active'?'ON':j.status==='paused'?'일시중지':'OFF'}</span></td><td>{j.readOnly?'연결된 관리 화면':'프론트 예약 · 서버 미연동'}</td><td><div className="row-actions">{j.readOnly?<Link className="btn secondary mini" to={managePath(j)}>관리 화면</Link>:<><button className="icon-btn" title={j.status==='active'?'일시중지':'활성화'} onClick={()=>toggle(j)}>{j.status==='active'?<Pause size={15}/>:<Play size={15}/>}</button><button className="btn secondary mini" onClick={()=>{setEditing(j);setShowForm(true)}}>수정</button><button className="icon-btn danger" onClick={()=>confirm('예약 작업을 삭제할까요?')&&removeAutomationJob(j.jobId)}><Trash2 size={15}/></button></>}</div></td></tr>)}</tbody></table></div></section>}
+    {view === 'list' && <section className="card auto-panel" style={{ padding: 0 }}><div className="table-scroll"><table className="data-table auto-table"><thead><tr><th>작업</th><th>광고주</th><th>유형</th><th>실행 주기</th><th>다음 실행</th><th>상태</th><th>작업</th></tr></thead><tbody>
+      {filtered.length === 0 ? <tr><td colSpan={7} className="auto-table-empty">조건에 맞는 예약 작업이 없습니다.</td></tr> : filtered.map(({ rule, next }) => (
+        <tr key={rule.id}><td><b>{rule.name}</b></td><td>{rule.config?.advertiserName || (rule.advertiser_id ? advs.find(a => a.id === rule.advertiser_id)?.name : '전체') || '-'}</td><td>{typeLabel[rule.type]}</td>
+        <td>{ruleScheduleSummary(rule)}</td><td>{next ? fmtDateTime(next) : '-'}</td><td><span className={`auto-state ${rule.enabled ? 'active' : 'paused'}`}>{rule.enabled ? 'ON' : '중지'}</span></td>
+        <td><div className="row-actions">{rule.type === 'campaign' ? <>
+          <button className="icon-btn" title={rule.enabled ? '일시중지' : '활성화'} onClick={() => toggle(rule)}>{rule.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
+          <button className="btn secondary mini" onClick={() => { setEditing(rule); setShowForm(true); }}>수정</button>
+          <button className="icon-btn danger" onClick={() => { if (confirm('예약 작업을 삭제할까요?')) automationApi.rules.remove(rule.id).then(reload); }}><Trash2 size={15} /></button>
+        </> : <Link className="btn secondary mini" to={managePath[rule.type]}>관리 화면</Link>}</div></td></tr>
+      ))}
+    </tbody></table></div></section>}
 
-    {view==='calendar'&&<section className="card auto-panel"><div className="auto-calendar-grid">{weekDays.map(day=><div className="auto-calendar-day" key={todayKey(day)}><header><b>{day.getMonth()+1}/{day.getDate()}</b><span>{['일','월','화','수','목','금','토'][day.getDay()]}</span></header>{occurrenceRows.filter(x=>todayKey(x.at)===todayKey(day)).map((x,i)=><div className="auto-calendar-event" key={`${x.job.jobId}-${i}`}><time>{String(x.at.getHours()).padStart(2,'0')}:{String(x.at.getMinutes()).padStart(2,'0')}</time><b>{x.job.name}</b><small>{x.job.advertiserName||'전체'}</small></div>)}</div>)}</div></section>}
+    {view === 'calendar' && <section className="card auto-panel"><div className="auto-calendar-grid">{weekDays.map(day => <div className="auto-calendar-day" key={todayKey(day)}><header><b>{day.getMonth() + 1}/{day.getDate()}</b><span>{['일', '월', '화', '수', '목', '금', '토'][day.getDay()]}</span></header>
+      {occurrenceRows.filter(x => todayKey(x.next!) === todayKey(day)).map((x, i) => <div className="auto-calendar-event" key={`${x.rule.id}-${i}`}><time>{String(x.next!.getHours()).padStart(2, '0')}:{String(x.next!.getMinutes()).padStart(2, '0')}</time><b>{x.rule.name}</b><small>{typeLabel[x.rule.type]}</small></div>)}
+    </div>)}</div></section>}
 
-    {view==='timeline'&&<section className="card auto-panel"><div className="auto-timeline">{occurrenceRows.length===0?<div className="auto-empty">계산 가능한 다음 실행이 없습니다.</div>:occurrenceRows.map((x,i)=><div className="auto-timeline-row" key={`${x.job.jobId}-${+x.at}-${i}`}><time>{formatKoreanDateTime(x.at)}</time><span className="auto-dot queued"/><div><b>{x.job.name}</b><small>{x.job.advertiserName||'전체'} · {jobTypeLabel[x.job.jobType]||x.job.jobType}</small></div></div>)}</div></section>}
+    {view === 'timeline' && <section className="card auto-panel"><div className="auto-timeline">{occurrenceRows.length === 0 ? <div className="auto-empty">계산 가능한 다음 실행이 없습니다.</div> : occurrenceRows.map((x, i) => (
+      <div className="auto-timeline-row" key={`${x.rule.id}-${i}`}><time>{fmtDateTime(x.next!)}</time><span className="auto-dot queued" /><div><b>{x.rule.name}</b><small>{typeLabel[x.rule.type]}</small></div></div>
+    ))}</div></section>}
 
-    {showForm&&<ScheduledJobModal initial={editing} onClose={()=>setShowForm(false)} onSaved={()=>{setShowForm(false);setRevision(x=>x+1)}}/>}
+    {showForm && <CampaignScheduleModal initial={editing} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); void reload(); }} />}
   </div>;
 }
 
-function ScheduledJobModal({initial,onClose,onSaved}:{initial:AutomationJob|null;onClose:()=>void;onSaved:()=>void}){
-  const campaignRows=campaigns();
-  const [type,setType]=useState<AutomationJobType>(initial?.jobType==='campaign_schedule'?'campaign_on':initial?.jobType||'campaign_on');
-  const [advertiserId,setAdvertiserId]=useState(initial?.advertiserId||ADVERTISERS[0]?.id||'');
-  const availableCampaigns=campaignRows.filter(c=>!advertiserId||c.advertiserId===advertiserId);
-  const [targetId,setTargetId]=useState(initial?.targetId||availableCampaigns[0]?.id||'');
-  const [name,setName]=useState(initial?.name||''); const [scheduleType,setScheduleType]=useState<AutomationScheduleType>(initial?.schedule?.scheduleType||'weekly'); const [time,setTime]=useState(initial?.schedule?.time||'08:00'); const [date,setDate]=useState(initial?.schedule?.date||todayKey(new Date(Date.now()+86400000))); const [days,setDays]=useState<number[]>(initial?.schedule?.daysOfWeek||[1,2,3,4,5]); const [dayOfMonth,setDayOfMonth]=useState(initial?.schedule?.dayOfMonth||1); const [startDate,setStartDate]=useState(initial?.schedule?.startDate||''); const [endDate,setEndDate]=useState(initial?.schedule?.endDate||''); const [exceptions,setExceptions]=useState<string[]>(initial?.schedule?.exceptionDates||[]); const [exceptionInput,setExceptionInput]=useState('');
-  const selectedCampaign=campaignRows.find(c=>c.id===targetId); const selectedAdvertiser=ADVERTISERS.find(a=>a.id===advertiserId);
-  const schedule:AutomationSchedule={scheduleType,time,date:scheduleType==='once'?date:undefined,daysOfWeek:scheduleType==='weekly'?days:undefined,dayOfMonth:scheduleType==='monthly'?dayOfMonth:undefined,startDate:startDate||undefined,endDate:endDate||undefined,exceptionDates:exceptions,timezone:'Asia/Seoul'};
-  const preview=nextOccurrences(schedule,5);
-  const save=()=>{const now=new Date().toISOString(); const targetNeeded=type==='campaign_on'||type==='campaign_off'; if(targetNeeded&&!targetId)return; const autoName=name.trim()|| (targetNeeded?`${selectedCampaign?.name||'캠페인'} ${type==='campaign_on'?'ON':'OFF'}`:type==='data_sync'?`${selectedAdvertiser?.name||'광고주'} 데이터 동기화`:`${selectedAdvertiser?.name||'광고주'} 알림`); upsertAutomationJob({jobId:initial?.jobId||`job-${Date.now()}`,name:autoName,jobType:type,advertiserId,advertiserName:selectedAdvertiser?.name,targetType:targetNeeded?'campaign':type==='data_sync'?'data-source':'advertiser',targetId:targetNeeded?targetId:advertiserId,targetName:targetNeeded?selectedCampaign?.name:selectedAdvertiser?.name,platform:targetNeeded?selectedCampaign?.platform:undefined,schedule,status:initial?.status||'active',implementationStatus:'mock',source:'scheduler',createdAt:initial?.createdAt||now,updatedAt:now,syncedCampaignRuleLabel:initial?.syncedCampaignRuleLabel});onSaved()};
-  return <div className="modal-backdrop"><div className="modal-card auto-modal"><div className="modal-head"><div><h3>{initial?'예약 작업 수정':'새 예약 작업'}</h3><p>시간 기반 자동화 설정입니다. 실제 서버 실행은 아직 연결하지 않습니다.</p></div><button className="icon-btn" onClick={onClose}><X size={18}/></button></div><div className="auto-modal-grid"><label>작업 유형<select value={type} onChange={e=>setType(e.target.value as AutomationJobType)}>{typeOptions.map(([k,l])=><option value={k} key={k}>{l}</option>)}</select></label><label>광고주<select value={advertiserId} onChange={e=>{setAdvertiserId(e.target.value);const first=campaignRows.find(c=>c.advertiserId===e.target.value);setTargetId(first?.id||'')}}>{ADVERTISERS.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label>{(type==='campaign_on'||type==='campaign_off')&&<label className="span-2">대상 캠페인<select value={targetId} onChange={e=>setTargetId(e.target.value)}>{availableCampaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}<label className="span-2">작업 이름<input value={name} onChange={e=>setName(e.target.value)} placeholder="비우면 자동 생성"/></label><label>실행 방식<select value={scheduleType} onChange={e=>setScheduleType(e.target.value as AutomationScheduleType)}><option value="once">한 번</option><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option><option value="custom">사용자 지정(매일)</option></select></label><label>실행 시각<input type="time" value={time} onChange={e=>setTime(e.target.value)}/></label>{scheduleType==='once'&&<label className="span-2">실행 날짜<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>}{scheduleType==='weekly'&&<div className="span-2"><span className="auto-field-title">요일</span><div className="auto-weekday-buttons">{WEEKDAYS.map(([label,value])=><button type="button" key={value} className={days.includes(value)?'active':''} onClick={()=>setDays(prev=>prev.includes(value)?prev.filter(x=>x!==value):[...prev,value].sort())}>{label}</button>)}</div></div>}{scheduleType==='monthly'&&<label className="span-2">매월 실행일<input type="number" min="1" max="28" value={dayOfMonth} onChange={e=>setDayOfMonth(Math.max(1,Math.min(28,Number(e.target.value)||1)))}/></label>}<label>시작일(선택)<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label><label>종료일(선택)<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label><div className="span-2"><span className="auto-field-title">특정일 예외</span><div className="auto-inline-input"><input type="date" value={exceptionInput} onChange={e=>setExceptionInput(e.target.value)}/><button type="button" className="btn secondary" onClick={()=>{if(exceptionInput&&!exceptions.includes(exceptionInput)){setExceptions([...exceptions,exceptionInput]);setExceptionInput('')}}}>예외 추가</button></div>{exceptions.length>0&&<div className="auto-exception-list">{exceptions.map(x=><button type="button" key={x} onClick={()=>setExceptions(exceptions.filter(v=>v!==x))}>{x} ×</button>)}</div>}</div></div><div className="auto-preview"><b>다음 실행 미리보기</b>{preview.length?<div>{preview.map(d=><span key={+d}>{formatKoreanDateTime(d)}</span>)}</div>:<p>현재 설정으로 계산 가능한 다음 실행이 없습니다.</p>}</div><div className="modal-actions"><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={save}>전체 저장</button></div></div></div>;
+function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: AutomationRule | null; onClose: () => void; onSaved: () => void }) {
+  const [advs] = useAdvertisers();
+  const c = initial?.config || {};
+  const [advertiserId, setAdvertiserId] = useState(c.advertiserId || advs[0]?.id || '');
+  const [campaignId, setCampaignId] = useState(c.campaignId || '');
+  const [campaignName, setCampaignName] = useState(c.campaignName || '');
+  const [channel, setChannel] = useState(c.channel || 'naver');
+  const [action, setAction] = useState<'on' | 'off'>(c.action || 'on');
+  const [cadence, setCadence] = useState(c.cadence || 'daily');
+  const [weekday, setWeekday] = useState(c.weekday ?? 1);
+  const [time, setTime] = useState(c.time || '09:00');
+  const [enabled, setEnabled] = useState(initial?.enabled !== false);
+  const save = async () => {
+    if (!campaignId) { alert('캠페인 ID를 입력하세요.'); return; }
+    const adv = advs.find(a => a.id === advertiserId);
+    const config = { advertiserId, advertiserName: adv?.name, campaignId, campaignName, channel, action, cadence, weekday, time };
+    const name = `${adv?.name || ''} ${campaignName || campaignId} ${action === 'on' ? 'ON' : 'OFF'}`;
+    if (initial) await automationApi.rules.update(initial.id, { name, config, enabled });
+    else await automationApi.rules.create({ type: 'campaign', advertiserId, name, config, enabled });
+    onSaved();
+  };
+  return <div className="modal-backdrop"><div className="modal-card auto-modal">
+    <div className="modal-head"><div><h3>{initial ? '캠페인 예약 수정' : '새 캠페인 ON/OFF 예약'}</h3><p>정해진 주기·시각에 서버가 실제로 캠페인 상태를 변경합니다. 네이버는 바로 지원되고, Meta는 관리 권한 토큰 연결 후 사용 가능합니다.</p></div><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+    <div className="auto-modal-grid">
+      <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+      <label>매체<select value={channel} onChange={e => setChannel(e.target.value)}><option value="naver">네이버</option><option value="meta">Meta</option></select></label>
+      <label>캠페인 ID<input value={campaignId} onChange={e => setCampaignId(e.target.value)} placeholder="캠페인 관리 화면에서 확인" /></label>
+      <label>캠페인 이름(선택)<input value={campaignName} onChange={e => setCampaignName(e.target.value)} /></label>
+      <label>동작<select value={action} onChange={e => setAction(e.target.value as any)}><option value="on">ON</option><option value="off">OFF</option></select></label>
+      <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option></select></label>
+      {cadence === 'weekly' && <label>요일<select value={weekday} onChange={e => setWeekday(Number(e.target.value))}>{WEEKDAYS.map(([l, v]) => <option key={v} value={v}>{l}</option>)}</select></label>}
+      <label>실행 시각<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+      <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 예약 ON</label>
+    </div>
+    <div className="modal-actions"><button className="btn secondary" onClick={onClose}>취소</button><button className="btn primary" onClick={save}>저장</button></div>
+  </div></div>;
 }
