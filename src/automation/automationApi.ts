@@ -67,7 +67,10 @@ export function ruleScheduleSummary(rule: AutomationRule): string {
   if (rule.type === 'report' || rule.type === 'workflow') return c.dayOfMonth ? `매월 ${c.dayOfMonth}일 ${c.time || ''}` : '수동 실행';
   if (c.cadence === 'manual' || !c.cadence) return '수동 실행';
   if (c.cadence === 'daily') return `매일 ${c.time}`;
-  if (c.cadence === 'weekly') return `매주 ${WEEKDAY_LABELS[c.weekday ?? 1]} ${c.time}`;
+  if (c.cadence === 'weekly') {
+    const weekdays: number[] = Array.isArray(c.weekdays) ? c.weekdays : (c.weekday !== undefined ? [c.weekday] : []);
+    return `매주 ${weekdays.map(w => WEEKDAY_LABELS[w]).join('·')} ${c.time}`;
+  }
   if (c.cadence === 'monthly') return `매월 ${c.dayOfMonth || 1}일 ${c.time}`;
   return '-';
 }
@@ -89,11 +92,19 @@ export function nextRunAt(rule: AutomationRule): Date | null {
     return candidate;
   }
   if (cadence === 'weekly') {
-    const targetDay = c.weekday ?? 1;
-    let diff = (targetDay - candidate.getDay() + 7) % 7;
-    if (diff === 0 && candidate <= now) diff = 7;
-    candidate.setDate(candidate.getDate() + diff);
-    return candidate;
+    const weekdays: number[] = rule.type === 'campaign'
+      ? (Array.isArray(c.weekdays) ? c.weekdays : (c.weekday !== undefined ? [c.weekday] : []))
+      : [c.weekday ?? 1];
+    if (!weekdays.length) return null;
+    let best: Date | null = null;
+    for (const targetDay of weekdays) {
+      const cand = new Date(candidate);
+      let diff = (targetDay - cand.getDay() + 7) % 7;
+      if (diff === 0 && cand <= now) diff = 7;
+      cand.setDate(cand.getDate() + diff);
+      if (!best || cand < best) best = cand;
+    }
+    return best;
   }
   if (cadence === 'monthly' || rule.type === 'report') {
     const targetDay = c.dayOfMonth || 1;

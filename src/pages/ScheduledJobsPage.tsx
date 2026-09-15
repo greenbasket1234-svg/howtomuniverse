@@ -76,33 +76,40 @@ function CampaignScheduleModal({ initial, onClose, onSaved }: { initial: Automat
   const [advs] = useAdvertisers();
   const c = initial?.config || {};
   const [advertiserId, setAdvertiserId] = useState(c.advertiserId || advs[0]?.id || '');
-  const [campaignId, setCampaignId] = useState(c.campaignId || '');
-  const [campaignName, setCampaignName] = useState(c.campaignName || '');
+  const [targetType, setTargetType] = useState<'campaign' | 'creative'>(c.targetType || 'campaign');
+  const [targetId, setTargetId] = useState(c.targetId || c.campaignId || '');
+  const [targetName, setTargetName] = useState(c.targetName || c.campaignName || '');
   const [channel, setChannel] = useState(c.channel || 'naver');
   const [action, setAction] = useState<'on' | 'off'>(c.action || 'on');
   const [cadence, setCadence] = useState(c.cadence || 'daily');
-  const [weekday, setWeekday] = useState(c.weekday ?? 1);
+  const [weekdays, setWeekdays] = useState<number[]>(c.weekdays || (c.weekday !== undefined ? [c.weekday] : [1]));
+  const [dayOfMonth, setDayOfMonth] = useState(c.dayOfMonth || 1);
   const [time, setTime] = useState(c.time || '09:00');
   const [enabled, setEnabled] = useState(initial?.enabled !== false);
+  const toggleWeekday = (v: number) => setWeekdays(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v].sort());
   const save = async () => {
-    if (!campaignId) { alert('캠페인 ID를 입력하세요.'); return; }
+    if (!targetId) { alert(`${targetType === 'creative' ? '소재' : '캠페인'} ID를 입력하세요.`); return; }
+    if (cadence === 'weekly' && weekdays.length === 0) { alert('요일을 하나 이상 선택하세요.'); return; }
     const adv = advs.find(a => a.id === advertiserId);
-    const config = { advertiserId, advertiserName: adv?.name, campaignId, campaignName, channel, action, cadence, weekday, time };
-    const name = `${adv?.name || ''} ${campaignName || campaignId} ${action === 'on' ? 'ON' : 'OFF'}`;
+    const config = { advertiserId, advertiserName: adv?.name, targetType, targetId, targetName, channel, action, cadence, weekdays, dayOfMonth, time };
+    const name = `${adv?.name || ''} ${targetName || targetId} ${action === 'on' ? 'ON' : 'OFF'}`;
     if (initial) await automationApi.rules.update(initial.id, { name, config, enabled });
     else await automationApi.rules.create({ type: 'campaign', advertiserId, name, config, enabled });
     onSaved();
   };
   return <div className="modal-backdrop"><div className="modal-card auto-modal">
-    <div className="modal-head"><div><h3>{initial ? '캠페인 예약 수정' : '새 캠페인 ON/OFF 예약'}</h3><p>정해진 주기·시각에 서버가 실제로 캠페인 상태를 변경합니다. 네이버는 바로 지원되고, Meta는 관리 권한 토큰 연결 후 사용 가능합니다.</p></div><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+    <div className="modal-head"><div><h3>{initial ? '예약 수정' : '새 캠페인·소재 ON/OFF 예약'}</h3><p>정해진 요일·시각에 서버가 실제로 상태를 변경합니다.</p></div><button className="icon-btn" onClick={onClose}><X size={18} /></button></div>
+    {channel === 'meta' && <div className="automation-pre-revenue-note"><b>Meta 권한 안내</b><span>현재 연결된 Meta 토큰이 조회 전용(ads_read)이면 예약 시각에 실행이 실패로 기록됩니다. ads_management 권한 토큰으로 재연결하면 별도 설정 없이 바로 작동합니다.</span></div>}
     <div className="auto-modal-grid">
       <label>광고주<select value={advertiserId} onChange={e => setAdvertiserId(e.target.value)}>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       <label>매체<select value={channel} onChange={e => setChannel(e.target.value)}><option value="naver">네이버</option><option value="meta">Meta</option></select></label>
-      <label>캠페인 ID<input value={campaignId} onChange={e => setCampaignId(e.target.value)} placeholder="캠페인 관리 화면에서 확인" /></label>
-      <label>캠페인 이름(선택)<input value={campaignName} onChange={e => setCampaignName(e.target.value)} /></label>
+      <label>대상 유형<select value={targetType} onChange={e => setTargetType(e.target.value as any)}><option value="campaign">캠페인</option><option value="creative">소재(개별 광고)</option></select></label>
+      <label>{targetType === 'creative' ? '소재' : '캠페인'} ID<input value={targetId} onChange={e => setTargetId(e.target.value)} placeholder={targetType === 'creative' ? '소재 관리 화면에서 확인' : '캠페인 관리 화면에서 확인'} /></label>
+      <label className="span-2">{targetType === 'creative' ? '소재' : '캠페인'} 이름(선택)<input value={targetName} onChange={e => setTargetName(e.target.value)} /></label>
       <label>동작<select value={action} onChange={e => setAction(e.target.value as any)}><option value="on">ON</option><option value="off">OFF</option></select></label>
-      <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="daily">매일</option><option value="weekly">매주</option><option value="monthly">매월</option></select></label>
-      {cadence === 'weekly' && <label>요일<select value={weekday} onChange={e => setWeekday(Number(e.target.value))}>{WEEKDAYS.map(([l, v]) => <option key={v} value={v}>{l}</option>)}</select></label>}
+      <label>주기<select value={cadence} onChange={e => setCadence(e.target.value)}><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
+      {cadence === 'weekly' && <div className="span-2"><span className="auto-field-title">요일(복수 선택 가능)</span><div className="auto-weekday-buttons">{WEEKDAYS.map(([label, v]) => <button type="button" key={v} className={weekdays.includes(v) ? 'active' : ''} onClick={() => toggleWeekday(v)}>{label}</button>)}</div></div>}
+      {cadence === 'monthly' && <label>매월 실행일<input type="number" min="1" max="28" value={dayOfMonth} onChange={e => setDayOfMonth(Math.max(1, Math.min(28, Number(e.target.value) || 1)))} /></label>}
       <label>실행 시각<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
       <label><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> 예약 ON</label>
     </div>
