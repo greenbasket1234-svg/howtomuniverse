@@ -1,9 +1,14 @@
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { LoginPage } from '../pages/LoginPage';
+import { SignupPage } from '../pages/SignupPage';
+import { ForgotPasswordPage } from '../pages/ForgotPasswordPage';
+
+type AuthScreen = 'login' | 'signup' | 'forgot-password';
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
+  const [screen, setScreen] = useState<AuthScreen>('login');
 
   if (loading) {
     return (
@@ -22,7 +27,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user) return <LoginPage />;
+  if (!user) {
+    if (screen === 'signup') return <SignupPage onSwitchToLogin={() => setScreen('login')} />;
+    if (screen === 'forgot-password') return <ForgotPasswordPage onSwitchToLogin={() => setScreen('login')} />;
+    return <LoginPage onSwitchToSignup={() => setScreen('signup')} onSwitchToForgotPassword={() => setScreen('forgot-password')} />;
+  }
 
   return <>{children}</>;
 }

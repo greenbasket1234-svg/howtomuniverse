@@ -638,7 +638,7 @@ CREATE TABLE IF NOT EXISTS app_users (
   name TEXT NOT NULL,
   title TEXT,
   department TEXT,
-  status TEXT NOT NULL DEFAULT 'invited', -- 'invited' | 'active' | 'disabled'
+  status TEXT NOT NULL DEFAULT 'invited', -- 'pending'(가입 신청, 관리자 승인 대기) | 'invited' | 'active' | 'disabled' | 'rejected'
   is_owner BOOLEAN NOT NULL DEFAULT false,
   -- true면 "광고주 본인" 계정입니다(내부 직원이 아님). 로그인·권한 검사는 팀원과
   -- 완전히 동일한 시스템(app_users/app_memberships)을 그대로 씁니다 - 별도로 만들지
@@ -651,6 +651,20 @@ CREATE TABLE IF NOT EXISTS app_users (
   UNIQUE(tenant_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_app_users_tenant ON app_users(tenant_id);
+-- 비밀번호 찾기(이메일 미연동) - 사용자가 "비밀번호를 잊었다"고 신청하면 관리자에게
+-- 보이는 목록에 쌓이고, 관리자가 직접 새 비밀번호를 정해서 알려주는 방식입니다.
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES app_users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'requested', -- 'requested' | 'resolved'
+  note TEXT,
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_tenant ON password_reset_requests(tenant_id, status);
+
 ALTER TABLE app_users ADD COLUMN IF NOT EXISTS is_advertiser_account BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS app_roles (

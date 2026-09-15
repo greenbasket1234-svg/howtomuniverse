@@ -2362,6 +2362,18 @@ body{font-size:15.5px;line-height:1.55}
 .space-login-notice.is-blocked{
   background:rgba(255,170,60,.07); border-color:rgba(255,170,60,.22); color:#ffc98a;
 }
+.space-login-links{
+  display:flex; justify-content:center; align-items:center; gap:10px;
+  margin-top:16px; font-size:13px; color:rgba(255,255,255,.4);
+}
+.space-login-links a{ color:rgba(255,255,255,.75); text-decoration:none; }
+.space-login-links a:hover{ text-decoration:underline; }
+.space-login-linkbtn{
+  background:none; border:none; padding:0; margin:0; cursor:pointer;
+  color:rgba(255,255,255,.75); font-size:13px; font-family:inherit;
+}
+.space-login-linkbtn:hover{ text-decoration:underline; }
+.space-login-notice .space-login-linkbtn{ color:#fff; font-weight:600; }
 
 /* ---------- 지구 (화면 하단, CSS만으로 구현) ---------- */
 .space-login-earth-wrap{

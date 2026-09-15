@@ -25,7 +25,7 @@ import {
   upsertNotice,
 } from '../control/controlStore';
 import type { FeatureFlagState } from '../control/controlTypes';
-import { teamApi, type AppRole, type TeamUserRow } from '../control/teamApi';
+import { teamApi, passwordResetApi, type AppRole, type TeamUserRow, type PasswordResetRequest } from '../control/teamApi';
 import { subscriptionApi, type SubscriptionPlanRow } from '../utils/subscriptionApi';
 
 const ADMIN_SECTIONS = [
@@ -89,6 +89,8 @@ function UsersAdmin(){
   };
   const toggleStatus=async(u:TeamUserRow)=>{ await teamApi.patchUser(u.id,{status:u.status==='disabled'?'active':'disabled'}); refresh(); };
   const removeUser=async(u:TeamUserRow)=>{ if(!confirm(`${u.name}(${u.email}) 계정을 완전히 삭제할까요? 되돌릴 수 없습니다.`))return; await teamApi.deleteUser(u.id); refresh(); };
+  const approveUser=async(u:TeamUserRow,roleId?:string)=>{ await teamApi.approveUser(u.id,{roleIds:roleId?[roleId]:[]}); refresh(); };
+  const rejectUser=async(u:TeamUserRow)=>{ if(!confirm(`${u.name}(${u.email})의 가입 신청을 거절할까요?`))return; await teamApi.rejectUser(u.id); refresh(); };
   const toggleRole=async(u:TeamUserRow,roleId:string)=>{
     const has=(u.role_ids||[]).includes(roleId);
     const next=has?(u.role_ids||[]).filter(r=>r!==roleId):[...(u.role_ids||[]),roleId];
@@ -100,7 +102,34 @@ function UsersAdmin(){
     const next=current.includes(advertiserId)?current.filter(a=>a!==advertiserId):[...current,advertiserId];
     await teamApi.patchUser(u.id,{advertiserIds:next}); refresh();
   };
-  return <ControlPanel title="사용자" description="실제 팀원 계정입니다 - 초기 비밀번호를 정해서 추가하면 그 계정으로 바로 로그인할 수 있습니다(팀원에게 별도로 전달해주세요). 역할·광고주 범위·계정 상태는 여기서 바로 관리합니다." actions={<BackendBadge/>}>
+  const pendingUsers=users.filter(u=>u.status==='pending');
+  const activeUsers=users.filter(u=>u.status!=='pending');
+  const [resets,setResets]=useState<PasswordResetRequest[]>([]);
+  const refreshResets=async()=>{ try{ setResets(await passwordResetApi.list()); }catch{ setResets([]); } };
+  useEffect(()=>{ refreshResets(); },[]);
+  const resolveReset=async(r:PasswordResetRequest)=>{
+    const pw=prompt(`${r.email} 계정의 새 비밀번호를 입력하세요(8자 이상). 입력 후 이 비밀번호를 직접 전달해주세요(이메일 발송 안 됨).`);
+    if(pw===null)return;
+    if(pw.length<8){alert('비밀번호는 8자 이상이어야 합니다.');return;}
+    try{ await passwordResetApi.resolve(r.id,pw); alert('비밀번호가 재설정되었습니다. 전달해주세요.'); refreshResets(); }
+    catch(e){ alert(e instanceof Error?e.message:'재설정에 실패했습니다.'); }
+  };
+  return <>
+    {pendingUsers.length>0&&<ControlPanel title={`가입 승인 대기 (${pendingUsers.length}건)`} description="누구나 가입 신청을 할 수 있고, 승인해야 로그인이 가능합니다.">
+      <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>이름</th><th>이메일</th><th>신청일</th><th>역할 지정 후 승인</th><th></th></tr></thead><tbody>
+        {pendingUsers.map(u=><tr key={u.id}>
+          <td><b>{u.name}</b></td><td>{u.email}</td><td>{new Date(u.created_at).toLocaleString('ko-KR')}</td>
+          <td><select id={`role-${u.id}`} defaultValue={roles[0]?.id||''}>{roles.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></td>
+          <td><button className="btn primary sm" onClick={()=>{ const sel=document.getElementById(`role-${u.id}`) as HTMLSelectElement|null; approveUser(u,sel?.value); }}>승인</button>{' '}<button className="btn secondary sm" onClick={()=>rejectUser(u)}>거절</button></td>
+        </tr>)}
+      </tbody></table></div>
+    </ControlPanel>}
+    {resets.filter(r=>r.status==='requested').length>0&&<ControlPanel title={`비밀번호 재설정 요청함 (${resets.filter(r=>r.status==='requested').length}건)`} description="이메일 발송이 연동되어 있지 않아, 새 비밀번호를 직접 정해서 별도로(전화·메신저 등) 전달해주세요.">
+      <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>이메일</th><th>요청일</th><th></th></tr></thead><tbody>
+        {resets.filter(r=>r.status==='requested').map(r=><tr key={r.id}><td>{r.email}</td><td>{new Date(r.requested_at).toLocaleString('ko-KR')}</td><td><button className="btn primary sm" onClick={()=>resolveReset(r)}>새 비밀번호 설정</button></td></tr>)}
+      </tbody></table></div>
+    </ControlPanel>}
+    <ControlPanel title="사용자" description="실제 팀원 계정입니다 - 초기 비밀번호를 정해서 추가하면 그 계정으로 바로 로그인할 수 있습니다(팀원에게 별도로 전달해주세요). 역할·광고주 범위·계정 상태는 여기서 바로 관리합니다." actions={<BackendBadge/>}>
     {error&&<div className="ctrl-form-error">{error}</div>}
     <div className="ctrl-inline-form">
       <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="이메일"/>
@@ -111,7 +140,7 @@ function UsersAdmin(){
     </div>
     {formError&&<div className="ctrl-form-error">{formError}</div>}
     <div className="ctrl-table-wrap"><table className="ctrl-table"><thead><tr><th>사용자</th><th>이메일</th><th>역할</th><th>광고주 범위</th><th>광고주명</th><th>상태</th><th>계정 제어</th></tr></thead><tbody>
-      {loading?<tr><td colSpan={7}>불러오는 중...</td></tr>:users.map(u=>{
+      {loading?<tr><td colSpan={7}>불러오는 중...</td></tr>:activeUsers.map(u=>{
         const isEditing=editingUserId===u.id;
         return <>
           <tr key={u.id}>
@@ -120,7 +149,7 @@ function UsersAdmin(){
             <td>{roles.filter(r=>(u.role_ids||[]).includes(r.id)).map(r=>r.name).join(', ')||'-'}</td>
             <td>{!u.advertiser_ids?.length?'전체':`${u.advertiser_ids.length}곳`}</td>
             <td>{!u.advertiser_ids?.length?'-':u.advertiser_ids.map(id=>advertisers.find(a=>a.id===id)?.name||'삭제된 광고주').join(', ')}</td>
-            <td><ControlStatus tone={u.status==='active'?'success':'warning'}>{u.status==='active'?'활성':u.status==='invited'?'초대됨':'중지됨'}</ControlStatus></td>
+            <td><ControlStatus tone={u.status==='active'?'success':u.status==='rejected'?'danger':'warning'}>{u.status==='active'?'활성':u.status==='invited'?'초대됨':u.status==='rejected'?'거절됨':'중지됨'}</ControlStatus></td>
             <td>
               {!u.is_owner&&<><button className="btn secondary sm" onClick={()=>setEditingUserId(isEditing?null:u.id)}>{isEditing?'닫기':'역할 범위 편집'}</button>
               <button className="btn secondary sm" onClick={()=>toggleStatus(u)}>{u.status==='disabled'?'재활성화':'사용 중지'}</button>
@@ -141,9 +170,9 @@ function UsersAdmin(){
           </td></tr>}
         </>;
       })}
-      {!loading&&!users.length&&<tr><td colSpan={7}>등록된 팀원이 없습니다.</td></tr>}
+      {!loading&&!activeUsers.length&&<tr><td colSpan={7}>등록된 팀원이 없습니다.</td></tr>}
     </tbody></table></div>
-  </ControlPanel>;
+  </ControlPanel></>;
 }
 function AdvertisersAdmin(){
   const [advertisers]=useAdvertisers();const assets=loadAssets(true);

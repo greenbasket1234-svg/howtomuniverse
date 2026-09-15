@@ -2291,7 +2291,8 @@ async function handleAuth(req, res, pathname) {
       if (row && row.password_hash && verifyUserPassword(password, row.password_hash)) {
         if (row.status !== 'active') {
           addLog({ action: 'login_failed', email, ip, result: 'fail' });
-          sendJson(res, 401, { error: row.status === 'invited' ? '아직 초대를 수락하지 않은 계정입니다. 관리자에게 문의하세요.' : '사용이 중지된 계정입니다.' });
+          const messages = { invited: '아직 초대를 수락하지 않은 계정입니다. 관리자에게 문의하세요.', pending: '가입 신청이 접수되어 관리자 승인을 기다리고 있습니다. 승인 후 이용하실 수 있습니다.', rejected: '가입 신청이 승인되지 않았습니다. 관리자에게 문의하세요.', disabled: '사용이 중지된 계정입니다.' };
+          sendJson(res, 401, { error: messages[row.status] || '사용이 중지된 계정입니다.' });
           return true;
         }
         await pgPool.query('UPDATE app_users SET last_login_at = now() WHERE id = $1', [row.id]);
@@ -2316,8 +2317,55 @@ async function handleAuth(req, res, pathname) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/auth/signup') {
+    // 공개 회원가입 - 누구나 신청은 할 수 있지만, 관리자가 승인(active로 전환)하기 전까지는
+    // 로그인이 되지 않습니다(status='pending'). 승인 시점에 역할·담당 광고주 범위를 정합니다.
+    if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' }), true;
+    const body = await readJson(req);
+    const email = cleanText(body.email || '', 200).toLowerCase();
+    const name = cleanText(body.name || '', 100);
+    const password = String(body.password || '');
+    if (!email || !email.includes('@')) { sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' }); return true; }
+    if (!name) { sendJson(res, 400, { error: '이름을 입력하세요.' }); return true; }
+    if (!password || password.length < 8) { sendJson(res, 400, { error: '비밀번호는 8자 이상이어야 합니다.' }); return true; }
+    const tenantId = await getCurrentTenantId();
+    try {
+      const insert = await pgPool.query(
+        `INSERT INTO app_users (tenant_id, email, password_hash, name, status) VALUES ($1,$2,$3,$4,'pending') RETURNING id, email, name, status, created_at`,
+        [tenantId, email, hashUserPassword(password), name]
+      );
+      addLog({ action: 'signup_requested', email, result: 'success' });
+      sendJson(res, 201, { ok: true, message: '가입 신청이 접수되었습니다. 관리자 승인 후 로그인하실 수 있습니다.', user: insert.rows[0] });
+    } catch (error) {
+      if (String(error?.message || '').includes('duplicate')) { sendJson(res, 409, { error: '이미 등록된 이메일입니다.' }); return true; }
+      throw error;
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/auth/password-reset-request') {
+    // 이메일 발송 인프라가 없어서, "요청을 접수해서 관리자에게 보여주고, 관리자가 직접
+    // 새 비밀번호를 정해 알려주는" 방식으로 처리합니다. 이 엔드포인트 자체는 계정 존재
+    // 여부를 알려주지 않습니다(이메일 목록 추측 공격 방지) - 항상 같은 응답을 줍니다.
+    if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' }), true;
+    const body = await readJson(req);
+    const email = cleanText(body.email || '', 200).toLowerCase();
+    if (!email || !email.includes('@')) { sendJson(res, 400, { error: '올바른 이메일을 입력하세요.' }); return true; }
+    const tenantId = await getCurrentTenantId();
+    const userRow = await pgPool.query('SELECT id FROM app_users WHERE tenant_id=$1 AND lower(email)=lower($2)', [tenantId, email]);
+    await pgPool.query(
+      `INSERT INTO password_reset_requests (tenant_id, user_id, email) VALUES ($1,$2,$3)`,
+      [tenantId, userRow.rows[0]?.id || null, email]
+    );
+    addLog({ action: 'password_reset_requested', email, result: 'success' });
+    sendJson(res, 200, { ok: true, message: '요청이 접수되었습니다. 등록된 계정이면 관리자가 확인 후 비밀번호 재설정을 도와드립니다.' });
+    return true;
+  }
+
+
   return false; // 이 라우터가 처리하지 않는 경로 → 호출부에서 다음 단계로 계속 진행
 }
+
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -3678,9 +3726,72 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         return sendJson(res, 200, { ok: true });
       }
 
+      // ── 회원가입 승인/거절 (status='pending'인 계정만 대상) ──────────────
+      const approveMatch = pathname.match(/^\/api\/users\/([^/]+)\/approve$/);
+      if (approveMatch && req.method === 'POST') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const targetId = approveMatch[1]; const body = await readJson(req);
+        const cur = await pgPool.query('SELECT status FROM app_users WHERE id=$1 AND tenant_id=$2', [targetId, tenantId]);
+        if (!cur.rows.length) return sendJson(res, 404, { error: '가입 신청을 찾을 수 없습니다.' });
+        if (cur.rows[0].status !== 'pending') return sendJson(res, 409, { error: '이미 처리된 가입 신청입니다.' });
+        await pgPool.query(`UPDATE app_users SET status='active', updated_at=now() WHERE id=$1 AND tenant_id=$2`, [targetId, tenantId]);
+        if (Array.isArray(body.roleIds) || Array.isArray(body.advertiserIds)) {
+          await pgPool.query(
+            `INSERT INTO app_memberships (tenant_id, user_id, role_ids, advertiser_ids) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (user_id) DO UPDATE SET role_ids = EXCLUDED.role_ids, advertiser_ids = EXCLUDED.advertiser_ids, updated_at = now()`,
+            [tenantId, targetId, body.roleIds || [], body.advertiserIds || null]
+          );
+        }
+        addLog({ action: 'signup_approved', targetUserId: targetId, result: 'success' });
+        return sendJson(res, 200, { ok: true });
+      }
+      const rejectMatch = pathname.match(/^\/api\/users\/([^/]+)\/reject$/);
+      if (rejectMatch && req.method === 'POST') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const targetId = rejectMatch[1];
+        const cur = await pgPool.query('SELECT status FROM app_users WHERE id=$1 AND tenant_id=$2', [targetId, tenantId]);
+        if (!cur.rows.length) return sendJson(res, 404, { error: '가입 신청을 찾을 수 없습니다.' });
+        if (cur.rows[0].status !== 'pending') return sendJson(res, 409, { error: '이미 처리된 가입 신청입니다.' });
+        await pgPool.query(`UPDATE app_users SET status='rejected', updated_at=now() WHERE id=$1 AND tenant_id=$2`, [targetId, tenantId]);
+        addLog({ action: 'signup_rejected', targetUserId: targetId, result: 'success' });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      // ── 비밀번호 재설정 요청함은 /api/users 접두사가 아니라서 이 블록 밖(아래)에
+      // 별도의 독립된 pathname 블록으로 옮겼습니다 - 여기 있으면 절대 도달하지 못합니다.
+
       if (req.method === 'DELETE' && detailMatch) {
         if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
         await pgPool.query('DELETE FROM app_users WHERE id = $1 AND tenant_id = $2 AND is_owner = false', [detailMatch[1], tenantId]);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ── 비밀번호 재설정 요청함 (관리자 전용, 이메일 미연동이라 여기서 직접 처리) ──
+    if (pathname.startsWith('/api/password-reset-requests')) {
+      if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (req.method === 'GET' && pathname === '/api/password-reset-requests') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const rows = await pgPool.query(`SELECT * FROM password_reset_requests WHERE tenant_id=$1 ORDER BY requested_at DESC LIMIT 200`, [tenantId]);
+        return sendJson(res, 200, { items: rows.rows });
+      }
+      const resolveResetMatch = pathname.match(/^\/api\/password-reset-requests\/([^/]+)\/resolve$/);
+      if (resolveResetMatch && req.method === 'POST') {
+        if (denyUnlessPermitted(res, requester, 'admin.users.manage')) return true;
+        const requestId = resolveResetMatch[1]; const body = await readJson(req);
+        const reqRow = await pgPool.query('SELECT user_id FROM password_reset_requests WHERE id=$1 AND tenant_id=$2', [requestId, tenantId]);
+        if (!reqRow.rows.length) return sendJson(res, 404, { error: '요청을 찾을 수 없습니다.' });
+        // 여기서 바로 새 비밀번호를 지정할 수 있게 해서, 관리자가 이 화면 하나에서 요청
+        // 확인과 재설정을 한 번에 끝낼 수 있습니다(다른 화면으로 옮겨가지 않아도 됨).
+        if (body.newPassword) {
+          if (String(body.newPassword).length < 8) return sendJson(res, 400, { error: '비밀번호는 8자 이상이어야 합니다.' });
+          if (!reqRow.rows[0].user_id) return sendJson(res, 400, { error: '이 요청에 연결된 계정을 찾을 수 없어 비밀번호를 바꿀 수 없습니다. 계정이 실제로 존재하는지 이메일을 다시 확인해주세요.' });
+          await pgPool.query('UPDATE app_users SET password_hash=$2, updated_at=now() WHERE id=$1 AND tenant_id=$3 AND is_owner=false', [reqRow.rows[0].user_id, hashUserPassword(String(body.newPassword)), tenantId]);
+        }
+        await pgPool.query(`UPDATE password_reset_requests SET status='resolved', resolved_at=now() WHERE id=$1`, [requestId]);
         return sendJson(res, 200, { ok: true });
       }
     }

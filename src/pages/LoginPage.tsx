@@ -4,7 +4,7 @@ import { User, Lock, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { HowtomUniverseLogo } from '../components/HowtomUniverseLogo';
 
-export function LoginPage() {
+export function LoginPage({ onSwitchToSignup, onSwitchToForgotPassword }: { onSwitchToSignup?: () => void; onSwitchToForgotPassword?: () => void }) {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [id, setId]           = useState('');
@@ -95,6 +95,12 @@ export function LoginPage() {
           <button type="submit" className="space-login-submit" disabled={loading}>
             {loading ? '로그인 중...' : '로그인'}
           </button>
+
+          <div className="space-login-links">
+            <button type="button" className="space-login-linkbtn" onClick={onSwitchToForgotPassword}>비밀번호를 잊으셨나요?</button>
+            <span>·</span>
+            <button type="button" className="space-login-linkbtn" onClick={onSwitchToSignup}>회원가입</button>
+          </div>
         </form>
 
         <div className="space-login-notice">
