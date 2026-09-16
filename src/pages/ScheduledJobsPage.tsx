@@ -5,7 +5,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ChannelTag } from '../components/ChannelTag';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
-import { automationApi, ruleScheduleSummary, nextRunAt, type AutomationRule, type AutomationRuleType } from '../automation/automationApi';
+import { automationApi, ruleScheduleSummary, nextRunAt, occurrencesInRange, type AutomationRule, type AutomationRuleType } from '../automation/automationApi';
 import type { CreativeMetricRow } from '../types/metrics';
 
 const typeLabel: Record<AutomationRuleType, string> = { report: '보고서 자동 생성', 'ad-copy': '광고 문구 자동 생성', notification: '알림 자동화', workflow: '작업 흐름', campaign: '캠페인·소재·키워드 ON/OFF' };
@@ -45,7 +45,30 @@ export function ScheduledJobsPage() {
     return next <= weekEnd;
   });
   const occurrenceRows = withNext.filter(x => x.next).filter(x => scope === 'all' || (scope === 'today' ? todayKey(x.next!) === todayKey(now) : x.next! <= weekEnd)).sort((a, b) => +a.next! - +b.next!);
-  const weekDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(now.getDate() + i); return d; });
+  // 캘린더 뷰 - "오늘부터 7일"이 아니라 실제 달력(월 단위 + 이전달/다음달 이동)입니다.
+  const [calendarMonth, setCalendarMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
+  const scopeIndependentRules = rules.filter(rule => {
+    if (typeFilter !== 'all' && rule.type !== typeFilter) return false;
+    if (statusFilter !== 'all' && (rule.enabled ? 'active' : 'paused') !== statusFilter) return false;
+    if (advertiser !== 'all' && rule.advertiser_id !== advertiser) return false;
+    return true;
+  });
+  const calendarGrid = useMemo(() => {
+    const monthStart = new Date(calendarMonth); const monthEnd = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0);
+    const gridStart = new Date(monthStart); gridStart.setDate(gridStart.getDate() - gridStart.getDay()); // 그 주의 일요일부터
+    const gridEnd = new Date(monthEnd); gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay())); // 그 주의 토요일까지
+    const days: { date: Date; inMonth: boolean; events: { rule: AutomationRule; at: Date }[] }[] = [];
+    const cursor = new Date(gridStart);
+    while (cursor <= gridEnd) {
+      const dayEvents: { rule: AutomationRule; at: Date }[] = [];
+      for (const rule of scopeIndependentRules) {
+        for (const at of occurrencesInRange(rule, cursor, cursor)) dayEvents.push({ rule, at });
+      }
+      days.push({ date: new Date(cursor), inMonth: cursor.getMonth() === calendarMonth.getMonth(), events: dayEvents.sort((a, b) => +a.at - +b.at) });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return days;
+  }, [calendarMonth, scopeIndependentRules]);
   const toggle = async (rule: AutomationRule) => { await automationApi.rules.update(rule.id, { enabled: !rule.enabled }); void reload(); };
   const [runningId, setRunningId] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
@@ -105,9 +128,20 @@ export function ScheduledJobsPage() {
       })}
     </tbody></table></div></section>}
 
-    {view === 'calendar' && <section className="card auto-panel"><div className="auto-calendar-grid">{weekDays.map(day => <div className="auto-calendar-day" key={todayKey(day)}><header><b>{day.getMonth() + 1}/{day.getDate()}</b><span>{['일', '월', '화', '수', '목', '금', '토'][day.getDay()]}</span></header>
-      {occurrenceRows.filter(x => todayKey(x.next!) === todayKey(day)).map((x, i) => <div className="auto-calendar-event" key={`${x.rule.id}-${i}`}><time>{String(x.next!.getHours()).padStart(2, '0')}:{String(x.next!.getMinutes()).padStart(2, '0')}</time><b>{x.rule.name}</b><small>{typeLabel[x.rule.type]}</small></div>)}
-    </div>)}</div></section>}
+    {view === 'calendar' && <section className="card auto-panel">
+      <div className="auto-calendar-nav">
+        <button className="btn secondary mini" onClick={() => setCalendarMonth(d => { const n = new Date(d); n.setMonth(n.getMonth() - 1); return n; })}>← 이전달</button>
+        <b>{calendarMonth.getFullYear()}년 {calendarMonth.getMonth() + 1}월</b>
+        <button className="btn secondary mini" onClick={() => setCalendarMonth(d => { const n = new Date(d); n.setMonth(n.getMonth() + 1); return n; })}>다음달 →</button>
+        <button className="btn secondary mini" onClick={() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); setCalendarMonth(d); }}>오늘</button>
+      </div>
+      <div className="auto-calendar-weekdays">{['일', '월', '화', '수', '목', '금', '토'].map(w => <span key={w}>{w}</span>)}</div>
+      <div className="auto-calendar-month-grid">{calendarGrid.map(day => <div className={`auto-calendar-day month ${day.inMonth ? '' : 'outside'} ${todayKey(day.date) === todayKey(now) ? 'is-today' : ''}`} key={todayKey(day.date)}>
+        <header><b>{day.date.getDate()}</b></header>
+        {day.events.slice(0, 4).map((ev, i) => <div className="auto-calendar-event" key={`${ev.rule.id}-${i}`} title={`${String(ev.at.getHours()).padStart(2, '0')}:${String(ev.at.getMinutes()).padStart(2, '0')} ${ev.rule.name}`}><time>{String(ev.at.getHours()).padStart(2, '0')}:{String(ev.at.getMinutes()).padStart(2, '0')}</time><b>{ev.rule.name}</b></div>)}
+        {day.events.length > 4 && <small className="auto-calendar-more">외 {day.events.length - 4}건</small>}
+      </div>)}</div>
+    </section>}
 
     {view === 'timeline' && <section className="card auto-panel"><div className="auto-timeline">{occurrenceRows.length === 0 ? <div className="auto-empty">계산 가능한 다음 실행이 없습니다.</div> : occurrenceRows.map((x, i) => (
       <div className="auto-timeline-row" key={`${x.rule.id}-${i}`}><time>{fmtDateTime(x.next!)}</time><span className="auto-dot queued" /><div><b>{x.rule.name}</b><small>{typeLabel[x.rule.type]}</small></div></div>

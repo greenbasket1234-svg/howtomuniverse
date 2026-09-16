@@ -115,3 +115,30 @@ export function nextRunAt(rule: AutomationRule): Date | null {
   return null;
 }
 
+/** 달력에 쓰기 위한 함수입니다 - "다음 실행 한 번"이 아니라, 지정한 기간(예: 이번 달)
+ * 안에서 반복 규칙이 실제로 발생하는 모든 날짜를 전부 계산해서 돌려줍니다. */
+export function occurrencesInRange(rule: AutomationRule, rangeStart: Date, rangeEnd: Date): Date[] {
+  const c = rule.config || {};
+  if (rule.type === 'notification' || rule.type === 'workflow') return [];
+  if (rule.type !== 'report' && (c.cadence === 'manual' || !c.cadence)) return [];
+  const time = c.time as string | undefined;
+  if (!time) return [];
+  const [h, m] = time.split(':').map(Number);
+  const cadence = rule.type === 'report' ? 'monthly' : c.cadence;
+  const weekdays: number[] = rule.type === 'campaign'
+    ? (Array.isArray(c.weekdays) ? c.weekdays : (c.weekday !== undefined ? [c.weekday] : []))
+    : [c.weekday ?? 1];
+  const results: Date[] = [];
+  const cursor = new Date(rangeStart); cursor.setHours(0, 0, 0, 0);
+  const end = new Date(rangeEnd); end.setHours(0, 0, 0, 0);
+  while (cursor <= end) {
+    let matches = false;
+    if (cadence === 'daily') matches = true;
+    else if (cadence === 'weekly') matches = weekdays.includes(cursor.getDay());
+    else if (cadence === 'monthly') matches = cursor.getDate() === (c.dayOfMonth || 1);
+    if (matches) { const occ = new Date(cursor); occ.setHours(h, m, 0, 0); results.push(occ); }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return results;
+}
+
