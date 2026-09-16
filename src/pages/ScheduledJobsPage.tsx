@@ -88,7 +88,7 @@ export function ScheduledJobsPage() {
   return <div className="automation-engine-page">
     <PageHeader title="예약 작업" description="서버에 저장된 모든 자동화 규칙(보고서·광고문구·알림·작업흐름·캠페인)의 예약 현황을 한 곳에서 봅니다." />
     <div className="automation-pre-revenue-note"><b>서버 스케줄러 연동됨</b><span>여기 표시되는 예약은 실제로 서버가 정해진 시각에 자동 실행합니다(광고문구·캠페인·알림 감시). 보고서·작업흐름은 아직 자동 실행 준비 중입니다.</span></div>
-    <div className="automation-pre-revenue-note"><b>새 캠페인·소재·키워드 예약은 각 관리 화면에서 만들어주세요</b><span>대상을 목록에서 직접 골라야 정확한 ID로 등록되므로, ID를 직접 입력하는 방식 대신 아래 화면의 "일정 설정" 버튼을 이용해주세요.</span>
+    <div className="automation-pre-revenue-note"><b>새 캠페인·소재·키워드 예약은 각 관리 화면에서 만들어주세요</b>
       <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
         <Link className="btn secondary mini" to="/campaigns">캠페인 관리에서 만들기 <ExternalLink size={13} /></Link>
         <Link className="btn secondary mini" to="/creatives/performance">소재 성과에서 만들기 <ExternalLink size={13} /></Link>
