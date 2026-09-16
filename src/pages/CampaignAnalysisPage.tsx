@@ -48,7 +48,7 @@ export function CampaignAnalysisPage(){
     <MetricsDateBar/>
     <section className="card metrics-toolbar"><div><b>캠페인 {visible.length}개</b><small>{connected.length?`마지막 동기화 ${(()=>{const x=connected.map(c=>c.lastSyncedAt).filter(Boolean).sort();return x.length?x[x.length-1]:'-'})()}`:'연결된 매체 없음'}</small></div><div className="media-report-actions"><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option key={c} value={c}>{c==='all'?'전체 매체':c==='meta'?'Meta':c==='naver'?'네이버':c}</option>)}</select><div className="campaign-search-box"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="캠페인 검색"/></div></div></section>
     {error&&<div className="status-banner danger">{error}</div>}
-    <section className="campaign-live-grid"><article className="card"><div className="table-scroll"><table className="ops-table"><thead><tr>
+    <section className="campaign-live-grid"><article className="card"><div className="table-scroll fixed-scroll-box"><table className="ops-table"><thead><tr>
       <th className="sortable-th" onClick={()=>toggleSort('campaignName')}>캠페인{arrow('campaignName')}</th>
       <th>매체</th>
       <th className="sortable-th" onClick={()=>toggleSort('advertiserName')}>광고주{arrow('advertiserName')}</th>
