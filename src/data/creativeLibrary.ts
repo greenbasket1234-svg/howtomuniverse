@@ -38,7 +38,10 @@ export type Creative = {
   impressions?: number;
   clicks?: number;
   dbCount?: number;
+  unconfirmed?: number;
   purchases?: number;
+  addToCart?: number;
+  completeRegistration?: number;
   revenue?: number;
   ctr?: number;
   cpc?: number;
