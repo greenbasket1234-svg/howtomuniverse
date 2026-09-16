@@ -19,6 +19,7 @@ export type Campaign = {
   startAt: string;
   endAt?: string;
   status: CampaignStatus;
+  campaignType?: string; // 네이버: 파워링크·쇼핑검색·플레이스 등
   schedule?: { onAt?: string; offAt?: string; repeat?: string; rules?: string[] };
   lastSyncedAt?: string;
   capability: { upload: boolean; toggle: boolean; schedule: boolean };

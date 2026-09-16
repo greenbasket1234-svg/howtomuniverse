@@ -5134,6 +5134,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
               startAt: c.regTm || new Date().toISOString(), endAt: undefined,
               status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
               lastSyncedAt: new Date().toISOString(),
+              campaignType: naverCampaignTypeKo(c.campaignTp), // 파워링크·쇼핑검색·플레이스 등
               capability: { upload: false, toggle: true, schedule: true }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF·일정 예약이 가능합니다.
             });
           }
