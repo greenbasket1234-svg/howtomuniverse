@@ -1381,10 +1381,22 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
   });
 
   // 쇼핑검색·브랜드검색 등 키워드 자체가 없는 광고그룹은 광고그룹 전체를 대체 항목으로 표시합니다.
+  // 네이버 API가 "키워드 ID" 단위 조회에서만 purchaseCcnt를 정확히 주고, 광고그룹 ID 단위
+  // 조회에서는 이 필드가 부정확하거나 항상 0으로 올 수 있다는 사례가 있어(커뮤니티 보고),
+  // 실제 원본 응답을 진단 로그로 남겨서 다음 동기화 때 정확한 원인을 확인합니다.
   const adgroupsWithoutKeyword = adgroups.filter(a => a.nccAdgroupId && !adgroupsWithKeyword.has(a.nccAdgroupId)).slice(0, 150);
+  let adgroupLevelDiagLogged = 0;
   await mapWithConcurrency(adgroupsWithoutKeyword, 6, async ag => {
     const campaignId = ag.nccCampaignId || '';
     const stats = await naverStatsForIdsDaily(credentials, [ag.nccAdgroupId], since, until);
+    if (adgroupLevelDiagLogged < 20) {
+      for (const row of stats) {
+        if (Number(row.salesAmt || 0) > 0) {
+          adgroupLevelDiagLogged++;
+          console.log(`[naver-adgroup-level-진단] 광고그룹="${ag.name}"(${campaignTypeMap.get(campaignId) || '유형미상'}) date=${row.date} salesAmt=${row.salesAmt} ccnt=${row.ccnt} purchaseCcnt=${row.purchaseCcnt} purchaseConvAmt=${row.purchaseConvAmt}`);
+        }
+      }
+    }
     for (const row of stats) {
       const conversions = splitNaverConversions(row);
       result.push({
