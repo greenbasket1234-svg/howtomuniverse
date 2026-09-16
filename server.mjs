@@ -5462,7 +5462,7 @@ function scheduleAutomationRules() {
   setInterval(async () => {
     if (!pgPool) return;
     try {
-      const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', hour12: false, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
       const get = (type) => parts.find(p => p.type === type)?.value;
       const hour = Number(get('hour')); const minute = Number(get('minute'));
       const dayOfMonth = Number(get('day')); const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
