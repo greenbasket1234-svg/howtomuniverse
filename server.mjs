@@ -3415,8 +3415,14 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
                   for (const row of targetRows) {
                     if (!coveredDates.has(row.date)) continue;
                     const hit = exact.get(`${row.date}|${row[idField]}`);
-                    for (const f of CONV_FIELDS) row[f] = hit ? hit[f] : 0;
-                    if (hit) replaced++;
+                    // 상세 리포트에 이 항목이 아예 없으면(예: "광고그룹 전체" 대체 항목처럼
+                    // 리포트 개념 자체에 없는 파생 ID, 또는 리포트가 우연히 놓친 키워드),
+                    // 실제 전환이 0건인 것으로 단정하지 않고 /stats 기반 기존 값을 그대로
+                    // 둡니다 - 여기서 무조건 0으로 지웠던 게 실제 구매 전환이 화면에서
+                    // 사라지던 버그의 원인이었습니다.
+                    if (!hit) continue;
+                    for (const f of CONV_FIELDS) row[f] = hit[f];
+                    replaced++;
                   }
                   return replaced;
                 };
