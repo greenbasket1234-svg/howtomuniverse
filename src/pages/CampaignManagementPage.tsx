@@ -164,18 +164,21 @@ export function CampaignManagementPage() {
 export function TargetAutomationModal({targetType,targetId,targetName,channel,advertiserId,rules,onClose,onChanged}:{targetType:'campaign'|'creative'|'keyword';targetId:string;targetName:string;channel:string;advertiserId:string;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
   const WEEKDAYS:[string,number][]=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]];
   const [action,setAction]=useState<'on'|'off'>('on');
-  const [cadence,setCadence]=useState<'daily'|'weekly'|'monthly'>('daily');
+  const [cadence,setCadence]=useState<'once'|'daily'|'weekly'|'monthly'>('daily');
   const [weekdays,setWeekdays]=useState<number[]>([1]);
   const [dayOfMonth,setDayOfMonth]=useState(1);
+  const todayStr=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+  const [onceDate,setOnceDate]=useState(todayStr());
   const [time,setTime]=useState('09:00');
   const [saving,setSaving]=useState(false);
   const label=targetType==='creative'?'소재':targetType==='keyword'?'키워드':'캠페인';
   const toggleWeekday=(v:number)=>setWeekdays(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v].sort());
   const addRule=async()=>{
     if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}
+    if(cadence==='once'&&!onceDate){alert('실행할 날짜를 선택하세요.');return;}
     setSaving(true);
     try{
-      const config={targetType,targetId,targetName,channel,action,cadence,weekdays,dayOfMonth,time};
+      const config={targetType,targetId,targetName,channel,action,cadence,weekdays,dayOfMonth,date:onceDate,time};
       const name=`${targetName} ${action==='on'?'ON':'OFF'}`;
       await automationApi.rules.create({type:'campaign',advertiserId,name,config});
       onChanged();
@@ -201,7 +204,8 @@ export function TargetAutomationModal({targetType,targetId,targetName,channel,ad
     </div>}
     <div className="final-form">
       <label style={{display:'block',marginBottom:8}}>동작<select className="form-select" style={{width:'100%',marginTop:4}} value={action} onChange={e=>setAction(e.target.value as any)}><option value="on">켜기(ON)</option><option value="off">끄기(OFF)</option></select></label>
-      <label style={{display:'block',marginBottom:8}}>주기<select className="form-select" style={{width:'100%',marginTop:4}} value={cadence} onChange={e=>setCadence(e.target.value as any)}><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
+      <label style={{display:'block',marginBottom:8}}>주기<select className="form-select" style={{width:'100%',marginTop:4}} value={cadence} onChange={e=>setCadence(e.target.value as any)}><option value="once">1회(특정 날짜)</option><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
+      {cadence==='once'&&<label style={{display:'block',marginBottom:8}}>실행 날짜<input type="date" className="form-select" style={{width:'100%',marginTop:4}} value={onceDate} onChange={e=>setOnceDate(e.target.value)}/></label>}
       {cadence==='weekly'&&<div style={{marginBottom:8}}><span style={{fontSize:13,fontWeight:700}}>요일(복수 선택 가능)</span><div style={{display:'flex',gap:6,marginTop:6}}>{WEEKDAYS.map(([label,v])=><button type="button" key={v} className={weekdays.includes(v)?'btn primary sm':'btn secondary sm'} onClick={()=>toggleWeekday(v)}>{label}</button>)}</div></div>}
       {cadence==='monthly'&&<label style={{display:'block',marginBottom:8}}>매월 실행일<input type="number" min={1} max={28} className="form-select" style={{width:'100%',marginTop:4}} value={dayOfMonth} onChange={e=>setDayOfMonth(Math.max(1,Math.min(28,Number(e.target.value)||1)))}/></label>}
       <label style={{display:'block',marginBottom:8}}>실행 시각<input type="time" className="form-select" style={{width:'100%',marginTop:4}} value={time} onChange={e=>setTime(e.target.value)}/></label>

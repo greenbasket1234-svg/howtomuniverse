@@ -5377,6 +5377,11 @@ async function runAutomationRule(rule, trigger) {
     }
     await pgPool.query(`UPDATE automation_runs SET status='success', result=$2, finished_at=now() WHERE id=$1`, [runId, JSON.stringify(result || {})]);
     await pgPool.query(`UPDATE automation_rules SET last_run_at=now() WHERE id=$1`, [rule.id]);
+    // 1회성(once) 예약은 정해진 시각에 실제로 실행되고 나면 목적을 다한 것이므로, 자동으로
+    // 중지 처리해서 "이미 실행 완료됨"이 명확히 보이게 합니다(수동 "지금 실행" 테스트는 제외).
+    if (rule.type === 'campaign' && rule.config?.cadence === 'once' && trigger === 'scheduled') {
+      await pgPool.query(`UPDATE automation_rules SET enabled=false WHERE id=$1`, [rule.id]);
+    }
     return { runId, status: 'success', result };
   } catch (error) {
     await pgPool.query(`UPDATE automation_runs SET status='failed', error=$2, finished_at=now() WHERE id=$1`, [runId, error?.message || String(error)]);
@@ -5470,6 +5475,7 @@ function scheduleAutomationRules() {
       const weekday = weekdayMap[get('weekday')];
       const dateKey = `${get('year')}-${get('month')}-${get('day')}-${hour}-${minute}`;
       const timeNow = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      const todayDateStr = `${get('year')}-${get('month')}-${get('day')}`;
 
       const rules = await pgPool.query(`SELECT * FROM automation_rules WHERE enabled = true AND type IN ('ad-copy','notification','campaign')`);
       for (const rule of rules.rows) {
@@ -5483,8 +5489,9 @@ function scheduleAutomationRules() {
           // 알림 조건은 예약 시각이 아니라 "주기적으로 계속 감시"하는 성격이라, 정각(0분)마다 재확인합니다.
           if (minute === 0) due = true;
         } else if (rule.type === 'campaign') {
-          // 캠페인/소재 ON/OFF는 daily(매일)/weekly(매주, 여러 요일 지정 가능)/monthly(매월) 중 하나로 지정합니다.
+          // 캠페인/소재 ON/OFF는 once(1회, 특정 날짜)/daily(매일)/weekly(매주, 여러 요일 지정 가능)/monthly(매월) 중 하나로 지정합니다.
           const weekdays = Array.isArray(cfg.weekdays) ? cfg.weekdays : (cfg.weekday !== undefined ? [cfg.weekday] : []);
+          if (cfg.cadence === 'once' && cfg.date === todayDateStr && cfg.time === timeNow) due = true;
           if (cfg.cadence === 'daily' && cfg.time === timeNow) due = true;
           if (cfg.cadence === 'weekly' && weekdays.includes(weekday) && cfg.time === timeNow) due = true;
           if (cfg.cadence === 'monthly' && cfg.dayOfMonth === dayOfMonth && cfg.time === timeNow) due = true;

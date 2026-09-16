@@ -66,6 +66,7 @@ export function ruleScheduleSummary(rule: AutomationRule): string {
   if (rule.type === 'notification') return '조건 발생 시 자동 감시(매시 정각 확인)';
   if (rule.type === 'report' || rule.type === 'workflow') return c.dayOfMonth ? `매월 ${c.dayOfMonth}일 ${c.time || ''}` : '수동 실행';
   if (c.cadence === 'manual' || !c.cadence) return '수동 실행';
+  if (c.cadence === 'once') return `${c.date || ''} ${c.time || ''} (1회)`;
   if (c.cadence === 'daily') return `매일 ${c.time}`;
   if (c.cadence === 'weekly') {
     const weekdays: number[] = Array.isArray(c.weekdays) ? c.weekdays : (c.weekday !== undefined ? [c.weekday] : []);
@@ -87,6 +88,12 @@ export function nextRunAt(rule: AutomationRule): Date | null {
   const candidate = new Date(now);
   candidate.setHours(h, m, 0, 0);
   const cadence = rule.type === 'report' ? 'monthly' : c.cadence;
+  if (cadence === 'once') {
+    if (!c.date) return null;
+    const [y, mo, d] = String(c.date).split('-').map(Number);
+    const candidateOnce = new Date(y, (mo || 1) - 1, d || 1, h, m, 0, 0);
+    return candidateOnce > now ? candidateOnce : null;
+  }
   if (cadence === 'daily') {
     if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
     return candidate;
@@ -135,7 +142,8 @@ export function occurrencesInRange(rule: AutomationRule, rangeStart: Date, range
   const end = new Date(rangeEnd); end.setHours(0, 0, 0, 0);
   while (cursor <= end) {
     let matches = false;
-    if (cadence === 'daily') matches = true;
+    if (cadence === 'once') matches = c.date === `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+    else if (cadence === 'daily') matches = true;
     else if (cadence === 'weekly') matches = weekdays.includes(cursor.getDay());
     else if (cadence === 'monthly') matches = cursor.getDate() === (c.dayOfMonth || 1);
     if (matches) { const occ = new Date(cursor); occ.setHours(h, m, 0, 0); results.push(occ); }
