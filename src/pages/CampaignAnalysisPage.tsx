@@ -39,8 +39,9 @@ export function CampaignAnalysisPage(){
   const maxSpend=Math.max(1,...series.map(r=>r.spend));
   const connected=meta?.connections?.filter(c=>c.status==='connected')||[];
   // 고성과: ROAS 200%↑ 또는(매출 미추적 시) 전환 확보 + CTR 1%↑. 저성과: 광고비는 썼는데 전환이 0건이거나 ROAS 100% 미만.
-  const highPerf=useMemo(()=>visible.filter(r=>r.spend>0&&((Number(r.roas||0)>=200&&r.revenue>0)||(!r.revenue&&Number(r.ctr||0)>=1&&r.dbCount>0))).sort((a,b)=>r_score(b)-r_score(a)).slice(0,8),[visible]);
-  const lowPerf=useMemo(()=>visible.filter(r=>r.spend>0&&(r.dbCount===0||(r.revenue>0&&Number(r.roas||0)<100))).sort((a,b)=>b.spend-a.spend).slice(0,8),[visible]);
+  const totalConv=(r:CampaignMetricRow)=>r.dbCount+(r.purchases||0)+(r.unconfirmed||0);
+  const highPerf=useMemo(()=>visible.filter(r=>r.spend>0&&((Number(r.roas||0)>=200&&r.revenue>0)||(!r.revenue&&Number(r.ctr||0)>=1&&totalConv(r)>0))).sort((a,b)=>r_score(b)-r_score(a)).slice(0,8),[visible]);
+  const lowPerf=useMemo(()=>visible.filter(r=>r.spend>0&&(totalConv(r)===0||(r.revenue>0&&Number(r.roas||0)<100))).sort((a,b)=>b.spend-a.spend).slice(0,8),[visible]);
   function r_score(r:CampaignMetricRow){return r.revenue>0?Number(r.roas||0):Number(r.ctr||0)*100;}
   return <>
     <PageHeader title="캠페인 분석" description="계정 성과를 캠페인 성과로 추정하지 않고, 매체 API의 실제 campaign_id 일별 Stats만 사용합니다."/>
@@ -78,8 +79,8 @@ export function CampaignAnalysisPage(){
       <div className="daily-bar-chart">{series.map(r=><div key={r.date} title={`${r.date} ${won(r.spend)}`}><i style={{height:`${Math.max(2,r.spend/maxSpend*100)}%`}}/><small>{r.date.slice(5)}</small></div>)}</div>
     </aside></section>
     <div className="keyword-analysis-cards">
-      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={rowKey(r)} className="analysis-item analysis-item-high" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser">{r.advertiserName}</small><b className="analysis-target analysis-target-high">{r.campaignName}</b></span><span className="analysis-metrics">{r.revenue>0?`ROAS ${Number(r.roas||0).toFixed(0)}%`:`CTR ${Number(r.ctr||0).toFixed(2)}%`} · 전환 {r.dbCount}건</span></p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
-      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={rowKey(r)} className="analysis-item analysis-item-low" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser">{r.advertiserName}</small><b className="analysis-target analysis-target-low">{r.campaignName}</b></span><span className="analysis-metrics">광고비 {won(r.spend)} · 전환 {r.dbCount}건{r.revenue>0?` · ROAS ${Number(r.roas||0).toFixed(0)}%`:''}</span></p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">고성과 캠페인</div>{highPerf.length?highPerf.map(r=><p key={rowKey(r)} className="analysis-item analysis-item-high" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser"><ChannelTag channel={r.channel}/> {r.advertiserName}</small><b className="analysis-target analysis-target-high">{r.campaignName}</b></span><span className="analysis-metrics">{r.revenue>0?`ROAS ${Number(r.roas||0).toFixed(0)}%`:`CTR ${Number(r.ctr||0).toFixed(2)}%`} · 전환 {totalConv(r)}건</span></p>):<p className="muted-text">선택 기간에 뚜렷한 고성과 캠페인이 없습니다.</p>}</div>
+      <div className="card"><div className="card-title">저성과 캠페인</div>{lowPerf.length?lowPerf.map(r=><p key={rowKey(r)} className="analysis-item analysis-item-low" onClick={()=>setSelected(rowKey(r))} style={{cursor:'pointer'}}><span className="analysis-name-block"><small className="analysis-advertiser"><ChannelTag channel={r.channel}/> {r.advertiserName}</small><b className="analysis-target analysis-target-low">{r.campaignName}</b></span><span className="analysis-metrics">광고비 {won(r.spend)} · 전환 {totalConv(r)}건{r.revenue>0?` · ROAS ${Number(r.roas||0).toFixed(0)}%`:''}</span></p>):<p className="muted-text">선택 기간에 뚜렷한 저성과 캠페인이 없습니다.</p>}</div>
     </div>
     <div className="footnote">고성과·저성과는 선택하신 기간의 실제 매체 성과 기준입니다. 항목을 클릭하면 위 표에서 바로 확인할 수 있습니다.</div>
   </>;

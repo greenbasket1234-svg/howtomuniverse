@@ -139,8 +139,12 @@ export function ScheduledJobsPage() {
       <div className="auto-calendar-weekdays">{['일', '월', '화', '수', '목', '금', '토'].map(w => <span key={w}>{w}</span>)}</div>
       <div className="auto-calendar-month-grid">{calendarGrid.map(day => <div className={`auto-calendar-day month ${day.inMonth ? '' : 'outside'} ${todayKey(day.date) === todayKey(now) ? 'is-today' : ''}`} key={todayKey(day.date)}>
         <header><b>{day.date.getDate()}</b></header>
-        {day.events.slice(0, 4).map((ev, i) => <div className="auto-calendar-event" key={`${ev.rule.id}-${i}`} title={`${String(ev.at.getHours()).padStart(2, '0')}:${String(ev.at.getMinutes()).padStart(2, '0')} ${ev.rule.name}`}><time>{String(ev.at.getHours()).padStart(2, '0')}:{String(ev.at.getMinutes()).padStart(2, '0')}</time><b>{ev.rule.name}</b></div>)}
-        {day.events.length > 4 && <small className="auto-calendar-more">외 {day.events.length - 4}건</small>}
+        {day.events.slice(0, 3).map((ev, i) => <div className="auto-calendar-event" key={`${ev.rule.id}-${i}`}><time>{String(ev.at.getHours()).padStart(2, '0')}:{String(ev.at.getMinutes()).padStart(2, '0')}</time><b>{ev.rule.name}</b></div>)}
+        {day.events.length > 3 && <small className="auto-calendar-more">외 {day.events.length - 3}건 · 마우스를 올려 전체보기</small>}
+        {day.events.length > 0 && <div className="auto-calendar-popover">
+          <b className="auto-calendar-popover-date">{day.date.getMonth() + 1}월 {day.date.getDate()}일 예약 {day.events.length}건</b>
+          {day.events.map((ev, i) => <div className="auto-calendar-event" key={`popover-${ev.rule.id}-${i}`}><time>{String(ev.at.getHours()).padStart(2, '0')}:{String(ev.at.getMinutes()).padStart(2, '0')}</time><b>{ev.rule.name}</b></div>)}
+        </div>}
       </div>)}</div>
     </section>}
 
