@@ -39,7 +39,12 @@ function metricEvidence(row:{spend:number;impressions:number;clicks:number;dbCou
 }
 function makeActualRecommendation(row:CampaignMetricRow|CreativeMetricRow|KeywordMetricRow,type:RecommendationType,score:number,title:string,summary:string,targetType:'campaign'|'creative'|'keyword',targetId:string,targetLabel:string,to:string):Recommendation{
   const conv=totalConv(row);
-  return rec({recommendationId:`live:${targetType}:${row.advertiserId}:${row.channel}:${encodeURIComponent(targetId)}`,advertiserName:row.advertiserName||row.advertiserId,targetType,targetId,targetLabel,mediaName:row.channel,type,title,summary,priorityScore:score,metrics:metricEvidence(row),evidence:[`실제 ${targetType} 일별 성과 집계 기준`,`광고비 ${Math.round(row.spend).toLocaleString()}원 · 클릭 ${row.clicks.toLocaleString()} · 전환 ${conv.toLocaleString()}`],suggestedActions:[{label:'관련 성과 보기',to}]},Math.max(row.clicks,conv));
+  // 소재·키워드 추천은 상위 계층(캠페인·광고세트/광고그룹)을 함께 보여주기 위해 원본 행에서
+  // 그대로 가져옵니다 - 캠페인 레벨 행에는 adgroupName 개념 자체가 없어 안전하게 처리합니다.
+  const campaignName=targetType!=='campaign'?(row as CreativeMetricRow|KeywordMetricRow).campaignName:undefined;
+  const adgroupName=targetType!=='campaign'?(row as CreativeMetricRow|KeywordMetricRow).adgroupName:undefined;
+  const campaignType=row.campaignType;
+  return rec({recommendationId:`live:${targetType}:${row.advertiserId}:${row.channel}:${encodeURIComponent(targetId)}`,advertiserName:row.advertiserName||row.advertiserId,targetType,targetId,targetLabel,mediaName:row.channel,campaignName,adgroupName,campaignType,type,title,summary,priorityScore:score,metrics:metricEvidence(row),evidence:[`실제 ${targetType} 일별 성과 집계 기준`,`광고비 ${Math.round(row.spend).toLocaleString()}원 · 클릭 ${row.clicks.toLocaleString()} · 전환 ${conv.toLocaleString()}`],suggestedActions:[{label:'관련 성과 보기',to}]},Math.max(row.clicks,conv));
 }
 
 export function buildLiveRecommendations(campaigns:CampaignMetricRow[],creatives:CreativeMetricRow[],keywords:KeywordMetricRow[]):Recommendation[]{

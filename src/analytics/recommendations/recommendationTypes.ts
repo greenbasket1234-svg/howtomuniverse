@@ -82,6 +82,12 @@ export type Recommendation = {
   targetId: string;
   targetLabel: string;
   mediaName?: string;
+  /** 소재·키워드 추천에서 상위 계층을 함께 보여주기 위한 정보입니다(캠페인 관리 등 다른
+   * 화면과 이름을 통일: 메타는 "광고세트", 네이버는 "광고그룹" 개념을 같은 필드에 담습니다). */
+  campaignName?: string;
+  adgroupName?: string;
+  /** 네이버 전용 - 쇼핑검색·파워링크·브랜드검색·플레이스 등 캠페인 유형 구분입니다. */
+  campaignType?: string;
   type: RecommendationType;
   title: string;
   summary: string;
