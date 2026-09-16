@@ -5133,7 +5133,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
               startAt: c.regTm || new Date().toISOString(), endAt: undefined,
               status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
               lastSyncedAt: new Date().toISOString(),
-              capability: { upload: false, toggle: true, schedule: false }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF가 가능합니다.
+              capability: { upload: false, toggle: true, schedule: true }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF·일정 예약이 가능합니다.
             });
           }
         } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }

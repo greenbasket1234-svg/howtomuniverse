@@ -10,8 +10,8 @@ import { useAdvertisers } from '../hooks/useAdvertisers';
 import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey } from '../types/operations';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
-import { AutomationEditor } from './SearchAdManagementPages';
 import { apiFetch } from '../hooks/useApi';
+import { automationApi, ruleScheduleSummary, type AutomationRule } from '../automation/automationApi';
 import { metricQuery } from '../hooks/useMetrics';
 import type { CampaignMetricRow } from '../types/metrics';
 import { splitHighLowPerformers } from '../utils/performanceScoring';
@@ -25,6 +25,12 @@ export function CampaignManagementPage() {
   const [advertisers]=useAdvertisers();
   const reloadCampaigns=()=>{setCampaignError('');apiFetch<Campaign[]>('/campaigns').then(live=>setRows(live||[])).catch(error=>{setRows([]);setCampaignError(error instanceof Error?error.message:String(error))});};
   useEffect(()=>{reloadCampaigns();},[]);
+  // 예약 작업(AI 자동화 → 예약 작업)에 저장된 캠페인 ON/OFF 규칙을 함께 불러옵니다 -
+  // 예전엔 이 화면의 "일정 설정"이 로컬 상태에만 저장되고 서버에 전혀 반영되지 않았습니다.
+  const [autoRules,setAutoRules]=useState<AutomationRule[]>([]);
+  const reloadAutoRules=()=>{automationApi.rules.list('campaign').then(setAutoRules).catch(()=>setAutoRules([]));};
+  useEffect(()=>{reloadAutoRules();},[]);
+  const rulesFor=(row:Campaign)=>autoRules.filter(r=>r.config?.targetType==='campaign'&&String(r.config?.targetId)===String(row.id)&&r.config?.channel===row.platform);
   // 다른 인사이트 화면들과 같은 상단 기간 선택기(오늘/7일/30일 등)를 그대로 씁니다.
   const {range}=useMetricsQuery();
   const [perf,setPerf] = useState<CampaignMetricRow[]>([]);
@@ -119,7 +125,9 @@ export function CampaignManagementPage() {
 
     <div className="card" style={{padding:0}}>
       <div className="table-scroll"><table className="data-table campaign-table"><thead><tr><th>매체</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>캠페인{sortArrow('name')}</th><th>광고계정</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('budget')}>예산{sortArrow('budget')}</th><th>운영 기간</th><th>자동 일정</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('status')}>상태{sortArrow('status')}</th><th>최근 동기화</th><th>작업</th></tr></thead><tbody>
-        {filtered.map(r=><tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><strong>{r.name}</strong></td><td>{r.accountName}</td><td className="num metric-emphasis">{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</td><td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td><td>{r.schedule ? (() => { const rules = r.schedule.rules?.length ? r.schedule.rules : (r.schedule.repeat ? [r.schedule.repeat] : []); return <span title={rules.join('\n')}>{r.schedule.onAt?.replace('T',' ')}{r.schedule.onAt && <br/>}<span className="muted-text">{rules[0] || r.schedule.offAt?.replace('T',' ') || '일정 저장됨'}{rules.length > 1 ? ` 외 ${rules.length - 1}개 규칙` : ''}</span></span>; })() : '-'}</td><td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="ON/OFF 일정 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리에서 함께 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}</div></td></tr>)}
+        {filtered.map(r=>{const myRules=rulesFor(r);return <tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><strong>{r.name}</strong></td><td>{r.accountName}</td><td className="num metric-emphasis">{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</td><td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td>
+        <td>{myRules.length===0?'-':<span title={myRules.map(x=>`${x.name}(${x.enabled?'ON':'중지'})`).join('\n')}>{ruleScheduleSummary(myRules[0])} · {myRules[0].config?.action==='on'?'켜기':'끄기'}{myRules.length>1?` 외 ${myRules.length-1}개 규칙`:''}</span>}</td>
+        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="ON/OFF 일정 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리에서 함께 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}</div></td></tr>;})}
       </tbody></table></div>
     </div>
 
@@ -135,20 +143,64 @@ export function CampaignManagementPage() {
 
     {showUpload && <div className="modal-backdrop" onClick={()=>setShowUpload(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-title">캠페인 업로드</div><p className="muted-text">개별 등록 또는 CSV/XLSX 대량 업로드를 선택하세요. 실제 API 키가 연결되면 사전 검증 후 매체로 전송됩니다.</p><div className="upload-drop"><Upload size={24}/><strong>파일을 놓거나 선택하세요</strong><span>CSV, XLSX · 최대 10MB</span></div><div className="modal-actions"><button className="btn" onClick={()=>setShowUpload(false)}>취소</button><button className="btn btn-primary" onClick={()=>setShowUpload(false)}>검증만 실행</button></div></div></div>}
     {scheduleTarget && (
-      <AutomationEditor
-        title={`${scheduleTarget.name} ON/OFF 일정 설정`}
-        value={scheduleTarget.schedule?.rules?.length ? scheduleTarget.schedule.rules : (scheduleTarget.schedule?.repeat ? [scheduleTarget.schedule.repeat] : [])}
+      <CampaignAutomationModal
+        campaign={scheduleTarget}
+        rules={rulesFor(scheduleTarget)}
         onClose={()=>setShowSchedule(null)}
-        onSave={(labels)=>{
-          setRows(prev=>{
-            const next = prev.map(r=>r.id===scheduleTarget.id
-              ? {...r,status: (labels.length ? 'scheduled' : r.status) as CampaignStatus,schedule: labels.length ? {...r.schedule, repeat: labels[0], rules: [...labels]} : undefined}
-              : r);
-            return next;
-          });
-          setShowSchedule(null);
-        }}
+        onChanged={reloadAutoRules}
       />
     )}
   </div>
+}
+
+/** 캠페인 하나에 대한 ON/OFF 예약 규칙을 관리합니다 - 예약 작업(AI 자동화) 화면과 완전히
+ * 같은 서버 저장소(automation_rules)를 씁니다. 이 화면에서 만든 규칙은 예약 작업 화면에서도
+ * 그대로 보이고, 예약 작업 화면에서 만든 규칙도 여기서 함께 관리할 수 있습니다. */
+function CampaignAutomationModal({campaign,rules,onClose,onChanged}:{campaign:Campaign;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
+  const WEEKDAYS:[string,number][]=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]];
+  const [action,setAction]=useState<'on'|'off'>('on');
+  const [cadence,setCadence]=useState<'daily'|'weekly'|'monthly'>('daily');
+  const [weekdays,setWeekdays]=useState<number[]>([1]);
+  const [dayOfMonth,setDayOfMonth]=useState(1);
+  const [time,setTime]=useState('09:00');
+  const [saving,setSaving]=useState(false);
+  const toggleWeekday=(v:number)=>setWeekdays(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v].sort());
+  const addRule=async()=>{
+    if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}
+    setSaving(true);
+    try{
+      const config={targetType:'campaign',targetId:campaign.id,targetName:campaign.name,channel:campaign.platform,action,cadence,weekdays,dayOfMonth,time};
+      const name=`${campaign.name} ${action==='on'?'ON':'OFF'}`;
+      await automationApi.rules.create({type:'campaign',advertiserId:campaign.advertiserId,name,config});
+      onChanged();
+    }catch(e){alert(e instanceof Error?e.message:'저장에 실패했습니다.');}
+    finally{setSaving(false);}
+  };
+  const removeRule=async(id:string)=>{ if(!confirm('이 예약을 삭제할까요?'))return; await automationApi.rules.remove(id); onChanged(); };
+  const toggleEnabled=async(rule:AutomationRule)=>{ await automationApi.rules.update(rule.id,{enabled:!rule.enabled}); onChanged(); };
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal-card" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+    <div className="modal-title">{campaign.name} ON/OFF 일정 설정</div>
+    <p className="muted-text">정해진 요일·시각에 서버가 실제로 이 캠페인 상태를 변경합니다. 여러 규칙을 함께 등록할 수 있습니다(예: 평일 09:00 켜기 + 평일 21:00 끄기).</p>
+    {rules.length>0&&<div style={{marginBottom:14}}>
+      <label style={{marginBottom:6,display:'block',fontWeight:700,fontSize:13}}>등록된 규칙 ({rules.length}개)</label>
+      <div style={{display:'flex',flexDirection:'column',gap:6}}>
+        {rules.map(r=><div key={r.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#f8fafc',borderRadius:6,padding:'8px 10px',fontSize:12.5}}>
+          <span>{ruleScheduleSummary(r)} · <b>{r.config?.action==='on'?'켜기':'끄기'}</b> {!r.enabled&&<em style={{color:'#94a3b8'}}>(중지됨)</em>}</span>
+          <div style={{display:'flex',gap:6}}>
+            <button type="button" className="btn secondary sm" onClick={()=>toggleEnabled(r)}>{r.enabled?'중지':'재개'}</button>
+            <button type="button" className="icon-btn danger" onClick={()=>removeRule(r.id)}>×</button>
+          </div>
+        </div>)}
+      </div>
+    </div>}
+    <div className="final-form">
+      <label style={{display:'block',marginBottom:8}}>동작<select className="form-select" style={{width:'100%',marginTop:4}} value={action} onChange={e=>setAction(e.target.value as any)}><option value="on">켜기(ON)</option><option value="off">끄기(OFF)</option></select></label>
+      <label style={{display:'block',marginBottom:8}}>주기<select className="form-select" style={{width:'100%',marginTop:4}} value={cadence} onChange={e=>setCadence(e.target.value as any)}><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
+      {cadence==='weekly'&&<div style={{marginBottom:8}}><span style={{fontSize:13,fontWeight:700}}>요일(복수 선택 가능)</span><div style={{display:'flex',gap:6,marginTop:6}}>{WEEKDAYS.map(([label,v])=><button type="button" key={v} className={weekdays.includes(v)?'btn primary sm':'btn secondary sm'} onClick={()=>toggleWeekday(v)}>{label}</button>)}</div></div>}
+      {cadence==='monthly'&&<label style={{display:'block',marginBottom:8}}>매월 실행일<input type="number" min={1} max={28} className="form-select" style={{width:'100%',marginTop:4}} value={dayOfMonth} onChange={e=>setDayOfMonth(Math.max(1,Math.min(28,Number(e.target.value)||1)))}/></label>}
+      <label style={{display:'block',marginBottom:8}}>실행 시각<input type="time" className="form-select" style={{width:'100%',marginTop:4}} value={time} onChange={e=>setTime(e.target.value)}/></label>
+      <button type="button" className="btn full" onClick={addRule} disabled={saving}>{saving?'저장 중...':'+ 규칙 추가'}</button>
+    </div>
+    <div className="modal-actions"><button className="btn" onClick={onClose}>닫기</button></div>
+  </div></div>;
 }
