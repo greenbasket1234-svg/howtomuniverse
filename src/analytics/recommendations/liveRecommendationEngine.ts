@@ -13,21 +13,29 @@ function rec(base:Omit<Recommendation,'priorityLabel'|'confidence'|'insufficient
 /** 예전엔 DB(리드) 전환만 봐서, 구매(이커머스) 전환 위주인 캠페인·소재·키워드가 전부
  * "전환 없음"으로 잘못 판정되던 문제가 있었습니다. 총 전환(DB+구매+미확인) 기준으로 봅니다. */
 function totalConv(row:{dbCount:number;purchases?:number;unconfirmed?:number}){return row.dbCount+(row.purchases||0)+(row.unconfirmed||0);}
-function metricEvidence(row:{spend:number;impressions:number;clicks:number;dbCount:number;purchases?:number;unconfirmed?:number;revenue:number;ctr?:number;cpa?:number;roas?:number}){
+function metricEvidence(row:{spend:number;impressions:number;clicks:number;dbCount:number;purchases?:number;unconfirmed?:number;addToCart?:number;completeRegistration?:number;revenue:number;ctr?:number;cpa?:number;roas?:number}){
   const conv=totalConv(row);
   // 서버가 이 목록 API(캠페인/소재/키워드)에서는 cpa·cvr을 채워주지 않으므로, 있는
   // 값(광고비·클릭·전환)으로 여기서 직접 계산합니다(roas는 서버 값을 그대로 씁니다).
   const cpa=conv?row.spend/conv:0;
   const cvr=row.clicks?conv/row.clicks*100:0;
-  return [
+  const items=[
     {label:'광고비',detail:`₩${Math.round(row.spend).toLocaleString()}`},
     {label:'CTR',detail:`${(row.ctr||0).toFixed(2)}%`},
     {label:'DB 전환',detail:`${row.dbCount.toLocaleString()}건`},
     {label:'구매 전환',detail:`${(row.purchases||0).toLocaleString()}건`},
+  ];
+  // 미확인 전환(당일 등 세부 분류가 아직 안 된 전환)이 있으면 함께 보여줍니다 - 이게 0이
+  // 아닌데 화면에 안 보이면 "전환이 있는데 0건으로 나온다"는 오해를 살 수 있습니다.
+  if((row.unconfirmed||0)>0) items.push({label:'미확인 전환',detail:`${(row.unconfirmed||0).toLocaleString()}건`});
+  if((row.addToCart||0)>0) items.push({label:'장바구니 담기',detail:`${(row.addToCart||0).toLocaleString()}건`});
+  if((row.completeRegistration||0)>0) items.push({label:'회원가입',detail:`${(row.completeRegistration||0).toLocaleString()}건`});
+  items.push(
     {label:'CVR',detail:row.clicks?`${cvr.toFixed(2)}%`:'-'},
     {label:'CPA',detail:conv?`₩${Math.round(cpa).toLocaleString()}`:'-'},
     {label:'ROAS',detail:row.revenue?`${(row.roas||0).toFixed(1)}%`:'-'},
-  ];
+  );
+  return items;
 }
 function makeActualRecommendation(row:CampaignMetricRow|CreativeMetricRow|KeywordMetricRow,type:RecommendationType,score:number,title:string,summary:string,targetType:'campaign'|'creative'|'keyword',targetId:string,targetLabel:string,to:string):Recommendation{
   const conv=totalConv(row);

@@ -42,12 +42,9 @@ export function AIRecommendationsPage(){
   async function handleDeepDive(){
     if(!recommendations.length)return;setAiStatus('loading');setAiError('');
     try{
-      // 캠페인·소재·키워드 점수가 비슷하면 전체를 우선순위로만 정렬해 상위 10개를 뽑을 때
-      // 한 유형(예: 캠페인)이 상위를 독점하고 다른 유형은 AI에게 아예 전달되지 않는
-      // 문제가 있었습니다. 유형별로 최소 개수를 보장해 고르게 섞어서 보냅니다.
-      const byType=(t:'campaign'|'creative'|'keyword')=>recommendations.filter(r=>r.targetType===t).slice(0,4);
-      const balanced=[...byType('campaign'),...byType('creative'),...byType('keyword')].sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,12);
-      const sample=balanced.length?balanced:recommendations.slice(0,10);
+      // 예전엔 유형별 상위 몇 개(총 12개)만 뽑아서 보냈는데, 화면에 필터링된 발견 사항
+      // 전체를 종합적으로 분석해달라는 요청에 따라 지금 필터에 걸린 추천 전체를 보냅니다.
+      const sample=[...recommendations].sort((a,b)=>b.priorityScore-a.priorityScore);
       const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample);
       const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')
     }catch(error){
