@@ -5113,7 +5113,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
                 startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
                 status: metaCampaignStatus(c.effective_status || c.status),
                 lastSyncedAt: new Date().toISOString(),
-                capability: { upload: false, toggle: false, schedule: false }, // 읽기 전용 토큰(ads_read) 기준
+                capability: { upload: false, toggle: true, schedule: true }, // 실제로 시도해서 결과로 판단합니다 - 지금 연결된 토큰이 소재 단위 ON/OFF에서 이미 성공했으므로 캠페인도 같은 권한으로 시도합니다.
               });
             }
           } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
