@@ -30,7 +30,7 @@ function row(overrides: Partial<CreativeAnalysisRow> = {}): CreativeAnalysisRow 
     dbRows: [],
     campaignName: '테스트캠페인',
     spend: 10000, impressions: 10000, clicks: 100, ctr: 1, cpc: 100, cpm: 10,
-    db: 5, validDb: 4, contracts: 1, revenue: 0, cvr: 5, cpa: 2000,
+    db: 5, unconfirmed: 0, validDb: 4, contracts: 1, purchases: 0, addToCart: 0, completeRegistration: 0, revenue: 0, cvr: 5, cpa: 2000,
     validDbRate: 80, contractRate: 20, roas: 0,
     hookTypes: [], cta: '',
     fatigueScore: 20, fatigueLevel: '정상', lifecycle: '성장',

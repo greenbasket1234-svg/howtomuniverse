@@ -11,6 +11,6 @@ export function useLiveCreatives(): Creative[] {
     type:r.mediaType==='video'?'영상':r.mediaType==='text'?'키워드':'이미지',objective:r.dbCount>0?'DB 수집':r.revenue>0?'판매':'트래픽',thumb:r.thumbnailUrl||'🖼️',copy:[r.title,r.body].filter(Boolean).join('\n'),
     status:r.clicks>0&&r.dbCount/Math.max(1,r.clicks)>0.05?'성과 좋음':r.clicks>0?'보통':'피로',liveStatus:'노출중',fatigue:'데이터 부족',tags:[],spend:r.spend,uses:1,date:new Date().toISOString().slice(0,10),
     campaignId:r.campaignId,campaignName:r.campaignName,headline:r.title,primaryText:r.body,description:r.description,cta:r.cta,
-    impressions:r.impressions,clicks:r.clicks,dbCount:r.dbCount,purchases:r.purchases,revenue:r.revenue,ctr:r.ctr,cpc:r.cpc,cpm:r.cpm,cpa:r.cpa,roas:r.roas,
+    impressions:r.impressions,clicks:r.clicks,dbCount:r.dbCount,unconfirmed:r.unconfirmed,purchases:r.purchases,addToCart:r.addToCart,completeRegistration:r.completeRegistration,revenue:r.revenue,ctr:r.ctr,cpc:r.cpc,cpm:r.cpm,cpa:r.cpa,roas:r.roas,
   })),[rows]);
 }

@@ -5,7 +5,7 @@ export type CreativeLifecycle = '신규'|'성장'|'안정'|'피로'|'교체 권�
 export type CreativeAnalysisStatus = '매우 우수'|'우수'|'정상'|'주의'|'개선 필요'|'평가 보류';
 export type CreativeHookType = '가격'|'할인'|'한정'|'희소성'|'질문'|'문제제기'|'후기'|'공감'|'정보'|'비교'|'결과'|'숫자'|'혜택'|'불안'|'미분류';
 
-type LiveCreativePerformance={creativeId?:string;name:string;advertiser:string;media:string;campaign?:string;spend:number;impressions:number;clicks:number;dbCount?:number;revenue?:number;purchases?:number;trend:number[];days:number;frequency?:number};
+type LiveCreativePerformance={creativeId?:string;name:string;advertiser:string;media:string;campaign?:string;spend:number;impressions:number;clicks:number;dbCount?:number;unconfirmed?:number;revenue?:number;purchases?:number;addToCart?:number;completeRegistration?:number;trend:number[];days:number;frequency?:number};
 
 export type CreativeAnalysisRow = {
   creative: Creative;
@@ -19,8 +19,12 @@ export type CreativeAnalysisRow = {
   cpc: number;
   cpm: number;
   db: number;
+  unconfirmed: number;
   validDb: number;
   contracts: number;
+  purchases: number;
+  addToCart: number;
+  completeRegistration: number;
   revenue: number;
   cvr: number;
   cpa: number;
@@ -113,7 +117,7 @@ function goalFor(brand:string){
 function matchPerformance(creative:Creative):LiveCreativePerformance|undefined{
   const has=Number(creative.spend||0)>0||Number(creative.impressions||0)>0||Number(creative.clicks||0)>0||Number(creative.dbCount||0)>0||Number(creative.revenue||0)>0;
   if(!has)return undefined;
-  return{creativeId:creative.id,name:creative.name,advertiser:creative.brand,media:normalizeCreativeMedia(creative.platform),campaign:creative.campaignName,spend:Number(creative.spend)||0,impressions:Number(creative.impressions)||0,clicks:Number(creative.clicks)||0,dbCount:Number(creative.dbCount)||0,revenue:Number(creative.revenue)||0,purchases:Number(creative.purchases)||0,trend:[],days:1};
+  return{creativeId:creative.id,name:creative.name,advertiser:creative.brand,media:normalizeCreativeMedia(creative.platform),campaign:creative.campaignName,spend:Number(creative.spend)||0,impressions:Number(creative.impressions)||0,clicks:Number(creative.clicks)||0,dbCount:Number(creative.dbCount)||0,unconfirmed:Number(creative.unconfirmed)||0,revenue:Number(creative.revenue)||0,purchases:Number(creative.purchases)||0,addToCart:Number(creative.addToCart)||0,completeRegistration:Number(creative.completeRegistration)||0,trend:[],days:1};
 }
 
 function matchDbRows(creative:Creative, all:DbDataRow[]){
@@ -154,6 +158,10 @@ export function loadCreativeAnalysisRows(dbRowsOverride?:DbDataRow[],creativesOv
     const performance=matchPerformance(creative);
     const dbRows=matchDbRows(creative,dbAll);
     const db=Number(performance?.dbCount||0) || dbRows.reduce((a,row)=>a+(Number(row.db)||0),0);
+    const unconfirmed=Number(performance?.unconfirmed||0);
+    const purchases=Number(performance?.purchases||0);
+    const addToCart=Number(performance?.addToCart||0);
+    const completeRegistration=Number(performance?.completeRegistration||0);
     const validDb=dbRows.reduce((a,row)=>a+(Number(row.validDb)||0),0);
     const contracts=dbRows.reduce((a,row)=>a+(Number(row.contracts)||0),0);
     const dbSpend=dbRows.reduce((a,row)=>a+(Number(row.spend)||0),0);
@@ -173,7 +181,7 @@ export function loadCreativeAnalysisRows(dbRowsOverride?:DbDataRow[],creativesOv
     if(!dbRows.length) notes.push('소재 단위 Google Sheets DB 미연결');
     const campaignName=creative.campaignName || performance?.campaign || '-';
     return {
-      creative,performance,dbRows,campaignName,spend,impressions,clicks,ctr,cpc,cpm,db,validDb,contracts,revenue,cvr,cpa,validDbRate,contractRate,roas,
+      creative,performance,dbRows,campaignName,spend,impressions,clicks,ctr,cpc,cpm,db,unconfirmed,validDb,contracts,purchases,addToCart,completeRegistration,revenue,cvr,cpa,validDbRate,contractRate,roas,
       hookTypes:inferHooks(creative),cta:inferCta(creative),fatigueScore:fatigue.score,fatigueLevel:creative.fatigue,lifecycle:fatigue.lifecycle,
       score:undefined,analysisStatus:'평가 보류' as CreativeAnalysisStatus,kpiLabel,kpiAchievement,
       peerKey:`${creative.brand}|${normalizeCreativeMedia(creative.platform)}|${creative.type}|${creative.objective}`,
