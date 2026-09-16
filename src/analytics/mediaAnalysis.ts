@@ -95,12 +95,15 @@ export function buildMediaComparison(data:PerformanceDataset,currentStart:string
     const selectedTarget=advertiser?targetForMedia(advertiser,current,targets):{metric:primaryMetric(type),target:undefined,achievement:undefined};
     const primary=overrideMetric ?? selectedTarget.metric;
     const spendShare=currentTotal.spend?current.spend/currentTotal.spend*100:0;
-    const perfBase=currentTotal.leads||currentTotal.revenue||currentTotal.clicks;
-    const perfValue=currentTotal.leads?current.leads:currentTotal.revenue?current.revenue:current.clicks;
+    const perfBase=currentTotal.totalConversions||currentTotal.revenue||currentTotal.clicks;
+    const perfValue=currentTotal.totalConversions?current.totalConversions:currentTotal.revenue?current.revenue:current.clicks;
     const performanceShare=perfBase?perfValue/perfBase*100:0;
     const raw={
       name,current,previous,primaryMetric:primary,primaryChange:pctChange(metricValue(current,primary),metricValue(previous,primary)),
-      spendChange:pctChange(current.spend,previous.spend),leadChange:pctChange(current.leads,previous.leads),cpaChange:pctChange(current.cpa,previous.cpa),
+      // leadChange라는 필드명은 유지하지만, DB(리드)만이 아니라 총 전환(리드+구매+미확인) 변화율로
+      // 계산합니다 - 구매(이커머스) 위주 광고주가 리드는 0이어도 실제 전환이 있을 수 있어서,
+      // 종합 점수·판정(budgetVerdict)이 DB전환만 보고 잘못 판단하던 문제를 막습니다.
+      spendChange:pctChange(current.spend,previous.spend),leadChange:pctChange(current.totalConversions,previous.totalConversions),cpaChange:pctChange(current.cpa,previous.cpa),
       roasChange:pctChange(current.roas,previous.roas),ctrChange:pctChange(current.ctr,previous.ctr),spendShare,performanceShare,
       kpiTarget:selectedTarget.target,kpiAchievement:selectedTarget.achievement,healthScore:0,budgetVerdict:'유지' as MediaComparisonRow['budgetVerdict'],
     };
