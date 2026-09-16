@@ -395,6 +395,11 @@ table.brand-table tbody tr:hover td { background: #fafbfd; }
 }
 .form-select:focus { outline: none; border-color: var(--accent); }
 .keyword-analysis-table { min-width: 1450px !important; }
+/* 키워드가 수백~수천 개라 표 전체가 페이지를 길게 늘리던 문제를 없앱니다 - 표를 고정
+   높이 박스 안에 넣고, 그 박스 안에서만 세로 스크롤이 되도록 합니다. 헤더는 스크롤해도
+   계속 보이도록 고정합니다(가로 스크롤은 기존처럼 그대로 지원됩니다). */
+.keyword-scroll-box { max-height: 640px; overflow-y: auto; }
+.keyword-scroll-box thead th { position: sticky; top: 0; background: #fff; z-index: 1; box-shadow: 0 1px 0 #edf0f4; }
 .table-cell-note { max-width: 260px; white-space: normal; color: var(--text-muted); font-size: 13.5px; margin-top: 3px; line-height: 1.35; }
 .keyword-analysis-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .keyword-analysis-cards .card { margin-bottom: 0; }
