@@ -56,7 +56,7 @@ export function NaverKeywordReportPage(){
     {error&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{error}</div>}
     <section className="card media-report-card" style={{borderTop:`3px solid ${current.color}`}}>
       <div className="media-report-toolbar"><div><b>{current.label} 키워드 {visible.length}개</b><span> · 광고비 {won(totals.spend)} · 클릭 {totals.clicks.toLocaleString()} · 전환 {totals.conv.toLocaleString()}</span></div><div className="media-report-actions"><select value={campaign} onChange={e=>setCampaign(e.target.value)}>{campaigns.map(c=><option key={c} value={c}>{c==='전체'?'전체 캠페인':c}</option>)}</select><div className="inline-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="키워드 검색"/></div></div></div>
-      <div className="table-scroll"><table className="media-report-table"><thead><tr>
+      <div className="table-scroll fixed-scroll-box"><table className="media-report-table"><thead><tr>
         <th className="sortable-th" onClick={()=>toggleSort('advertiserName')}>광고주{arrow('advertiserName')}</th>
         <th className="sortable-th" onClick={()=>toggleSort('campaignName')}>캠페인{arrow('campaignName')}</th>
         <th>유형</th>
