@@ -161,7 +161,7 @@ export function CampaignManagementPage() {
 /** 캠페인 하나에 대한 ON/OFF 예약 규칙을 관리합니다 - 예약 작업(AI 자동화) 화면과 완전히
  * 같은 서버 저장소(automation_rules)를 씁니다. 이 화면에서 만든 규칙은 예약 작업 화면에서도
  * 그대로 보이고, 예약 작업 화면에서 만든 규칙도 여기서 함께 관리할 수 있습니다. */
-export function TargetAutomationModal({targetType,targetId,targetName,channel,advertiserId,rules,onClose,onChanged}:{targetType:'campaign'|'creative';targetId:string;targetName:string;channel:string;advertiserId:string;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
+export function TargetAutomationModal({targetType,targetId,targetName,channel,advertiserId,rules,onClose,onChanged}:{targetType:'campaign'|'creative'|'keyword';targetId:string;targetName:string;channel:string;advertiserId:string;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
   const WEEKDAYS:[string,number][]=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]];
   const [action,setAction]=useState<'on'|'off'>('on');
   const [cadence,setCadence]=useState<'daily'|'weekly'|'monthly'>('daily');
@@ -169,7 +169,7 @@ export function TargetAutomationModal({targetType,targetId,targetName,channel,ad
   const [dayOfMonth,setDayOfMonth]=useState(1);
   const [time,setTime]=useState('09:00');
   const [saving,setSaving]=useState(false);
-  const label=targetType==='creative'?'소재':'캠페인';
+  const label=targetType==='creative'?'소재':targetType==='keyword'?'키워드':'캠페인';
   const toggleWeekday=(v:number)=>setWeekdays(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v].sort());
   const addRule=async()=>{
     if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}

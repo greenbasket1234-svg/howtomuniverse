@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { Search, Power } from 'lucide-react';
+import { Search, Power, CalendarClock } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
 import { CampaignTypeTag } from '../components/ChannelTag';
@@ -12,6 +12,8 @@ import { useAdvertisers } from '../hooks/useAdvertisers';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import type { KeywordMetricRow } from '../types/metrics';
+import { automationApi, ruleScheduleSummary, type AutomationRule } from '../automation/automationApi';
+import { TargetAutomationModal } from './CampaignManagementPage';
 
 type KeywordPlatformFilter = '전체' | KeywordPlatform;
 const CHANNEL_TO_PLATFORM: Record<string, KeywordPlatform> = { naver: '네이버', google: '구글', kakao: '카카오', daangn: '당근' };
@@ -93,6 +95,12 @@ export function KeywordAnalysisPage(){
       .catch(err=>alert(err instanceof Error?err.message:'상태 변경에 실패했습니다.'))
       .finally(()=>setTogglingId(null));
   };
+  // 키워드 ON/OFF 예약 - 캠페인·소재 관리와 완전히 같은 서버 저장소(automation_rules)를 씁니다.
+  const [autoRules,setAutoRules]=useState<AutomationRule[]>([]);
+  const reloadAutoRules=()=>{automationApi.rules.list('campaign').then(setAutoRules).catch(()=>setAutoRules([]));};
+  useEffect(()=>{reloadAutoRules();},[]);
+  const rulesForKeyword=(row:{keywordId?:string;channel:string})=>autoRules.filter(x=>x.config?.targetType==='keyword'&&String(x.config?.targetId)===String(row.keywordId)&&x.config?.channel===row.channel);
+  const [scheduleTarget,setScheduleTarget]=useState<{id:string;keyword:string;keywordId?:string;channel:string;advertiserId?:string}|null>(null);
 
   if(!found)return <div><Link className="breadcrumb-back" to="/keywords">← 광고주 목록으로</Link><PageHeader title="광고주를 찾을 수 없습니다" description="키워드 분석 대상 광고주가 존재하지 않습니다."/></div>;
 
@@ -119,7 +127,7 @@ export function KeywordAnalysisPage(){
     <div className="keyword-toolbar"><select className="form-select keyword-platform-select" value={platform} onChange={e=>setPlatform(e.target.value as KeywordPlatformFilter)}><option value="전체">전체</option>{KEYWORD_PLATFORMS.map(item=><option key={item}>{item}</option>)}</select><select className="form-select" value={campaign} onChange={e=>setCampaign(e.target.value)}>{campaigns.map(c=><option key={c} value={c}>{c==='전체'?'전체 캠페인':c}</option>)}</select><div className="search-input-wrap" style={{marginBottom:0}}><Search size={15}/><input className="search-input" placeholder="키워드 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div><select className="form-select" value={grade} onChange={e=>setGrade(e.target.value as typeof grade)}><option value="all">전체 분석 등급</option><option value="high_performance">고성과</option><option value="stable">안정</option><option value="waste">비용 낭비</option><option value="exclude_candidate">제외 후보</option><option value="expansion_candidate">확장 후보</option></select></div>
     <div className="card" style={{padding:0}}><div className="table-scroll keyword-scroll-box"><table className="data-table keyword-analysis-table"><thead><tr>
       <th>매체</th>
-      <th>상태</th><th>작업</th>
+      <th>상태</th><th>작업</th><th>자동 일정</th>
       <th className="sortable-th" onClick={()=>toggleSort('keyword')}>키워드{arrow('keyword')}</th>
       <th>캠페인</th><th>유형</th><th>광고그룹</th>
       <th className="num sortable-th" onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th>
@@ -141,11 +149,24 @@ export function KeywordAnalysisPage(){
     </tr></thead><tbody>
       {filteredRows.map(row=>{const st=statusOverride[row.id]||row.onOffStatus;return <tr key={row.id}><td><Badge tone="accent" style={{background:`${getPlatformColor(row.platform)}1a`,color:getPlatformColor(row.platform),border:`1px solid ${getPlatformColor(row.platform)}55`}}>{row.platform}</Badge></td>
       <td><Badge tone={st==='on'?'success':st==='off'?'neutral':'warning'}>{st==='on'?'ON':st==='off'?'OFF':'확인 필요'}</Badge></td>
-      <td>{row.keywordId&&row.channel==='naver'?<button className="icon-btn" title="ON/OFF" disabled={togglingId===row.id} onClick={()=>toggleKeywordStatus(row)}><Power size={15}/></button>:<span title="Meta는 키워드 단위 ON/OFF를 지원하지 않습니다">-</span>}</td>
+      <td>{row.keywordId&&row.channel==='naver'?<div style={{display:'flex',gap:4}}><button className="icon-btn" title="ON/OFF" disabled={togglingId===row.id} onClick={()=>toggleKeywordStatus(row)}><Power size={15}/></button><button className="icon-btn" title="ON/OFF 일정 설정" onClick={()=>setScheduleTarget(row)}><CalendarClock size={15}/></button></div>:<span title="Meta는 키워드 단위 ON/OFF를 지원하지 않습니다">-</span>}</td>
+      <td>{(()=>{const myRules=rulesForKeyword(row);return myRules.length===0?'-':<span title={myRules.map(x=>`${x.name}(${x.enabled?'ON':'중지'})`).join('\n')}>{ruleScheduleSummary(myRules[0])} · {myRules[0].config?.action==='on'?'켜기':'끄기'}{myRules.length>1?` 외 ${myRules.length-1}개`:''}</span>;})()}</td>
       <td><strong>{row.keyword}</strong></td><td>{row.campaign}</td><td><CampaignTypeTag type={row.campaignType}/></td><td>{row.adGroup}</td><td className="num">{row.impressions.toLocaleString()}</td><td className="num">{row.clicks.toLocaleString()}</td><td className="num">{pct(row.clicks,row.impressions)}</td><td className="num">{row.clicks?currency(row.spend/row.clicks):'-'}</td><td className="num">{row.impressions?currency(row.cpm):'-'}</td><td className="num metric-emphasis">{currency(row.spend)}</td><td className="num">{row.dbCount.toLocaleString()}</td><td className="num">{row.unconfirmed?row.unconfirmed.toLocaleString():'-'}</td><td className="num">{row.purchases.toLocaleString()}</td><td className="num">{row.addToCart?row.addToCart.toLocaleString():'-'}</td><td className="num">{row.completeRegistration?row.completeRegistration.toLocaleString():'-'}</td><td className="num">{pct(row.conversions,row.clicks)}</td><td className="num">{row.conversions?currency(row.spend/row.conversions):'-'}</td><td className="num">{row.revenue?currency(row.revenue):'-'}</td><td className={`num ${row.roas>=200?'metric-positive':row.roas>0&&row.roas<100?'metric-negative':''}`}>{row.revenue?`${row.roas.toFixed(1)}%`:'-'}</td><td><Badge tone={gradeTone[row.grade]}>{gradeLabel[row.grade]}</Badge></td>
       </tr>;})}
-      {!loading&&filteredRows.length===0&&<tr><td colSpan={19} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 키워드 데이터가 없습니다. 미연동 매체는 0으로 생성하지 않습니다.</td></tr>}
+      {!loading&&filteredRows.length===0&&<tr><td colSpan={20} style={{textAlign:'center',padding:30,color:'var(--text-muted)'}}>선택한 기간에 수집된 실제 키워드 데이터가 없습니다. 미연동 매체는 0으로 생성하지 않습니다.</td></tr>}
     </tbody></table></div></div>
     <div className="keyword-analysis-cards"><div className="card"><div className="card-title">고성과 키워드</div>{high.map(r=><p key={r.id} className="analysis-item"><Badge tone="success">{r.keyword}</Badge> 전환율 {pct(r.conversions,r.clicks)}</p>)}</div><div className="card"><div className="card-title">비용 낭비 키워드</div>{waste.map(r=><p key={r.id} className="analysis-item"><Badge tone="danger">{r.keyword}</Badge> 클릭 대비 전환 0건</p>)}</div><div className="card"><div className="card-title">제외 키워드 후보</div>{exclude.map(r=><p key={r.id} className="analysis-item"><Badge tone="warning">{r.keyword}</Badge> 노출 대비 클릭 0건</p>)}</div><div className="card"><div className="card-title">확장 키워드 후보</div>{expansion.map(r=><p key={r.id} className="analysis-item"><Badge tone="accent">{r.keyword}</Badge> CTR {pct(r.clicks,r.impressions)}</p>)}</div></div>
+    {scheduleTarget&&scheduleTarget.keywordId&&scheduleTarget.advertiserId&&(
+      <TargetAutomationModal
+        targetType="keyword"
+        targetId={scheduleTarget.keywordId}
+        targetName={scheduleTarget.keyword}
+        channel={scheduleTarget.channel}
+        advertiserId={scheduleTarget.advertiserId}
+        rules={rulesForKeyword(scheduleTarget)}
+        onClose={()=>setScheduleTarget(null)}
+        onChanged={reloadAutoRules}
+      />
+    )}
   </div>;
 }
