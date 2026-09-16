@@ -130,6 +130,8 @@ export function occurrencesInRange(rule: AutomationRule, rangeStart: Date, range
     : [c.weekday ?? 1];
   const results: Date[] = [];
   const cursor = new Date(rangeStart); cursor.setHours(0, 0, 0, 0);
+  // 규칙이 생성되기 이전 날짜에는 이 예약이 존재하지도 않았으므로, 시작점을 생성일 이후로 당깁니다.
+  if (rule.created_at) { const createdDay = new Date(rule.created_at); createdDay.setHours(0, 0, 0, 0); if (createdDay > cursor) cursor.setTime(createdDay.getTime()); }
   const end = new Date(rangeEnd); end.setHours(0, 0, 0, 0);
   while (cursor <= end) {
     let matches = false;

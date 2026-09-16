@@ -48,6 +48,7 @@ export function ScheduledJobsPage() {
   // 캘린더 뷰 - "오늘부터 7일"이 아니라 실제 달력(월 단위 + 이전달/다음달 이동)입니다.
   const [calendarMonth, setCalendarMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
   const scopeIndependentRules = rules.filter(rule => {
+    if (!rule.enabled) return false; // 중지된 예약은 실제로 실행되지 않으므로, 상태 필터와 무관하게 캘린더에서 항상 제외합니다.
     if (typeFilter !== 'all' && rule.type !== typeFilter) return false;
     if (statusFilter !== 'all' && (rule.enabled ? 'active' : 'paused') !== statusFilter) return false;
     if (advertiser !== 'all' && rule.advertiser_id !== advertiser) return false;
