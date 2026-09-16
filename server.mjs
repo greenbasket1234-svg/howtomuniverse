@@ -1436,15 +1436,16 @@ async function naverApiRequestOnce(method, uri, params, credentials, body) {
   const timestamp = String(Date.now());
   const signature = naverSignature(timestamp, method, uri, secretKey);
   const url = new URL(`${NAVER_API_BASE}${uri}`);
-  if (method === 'GET') {
-    for (const [key, value] of Object.entries(params || {})) {
-      // ids처럼 배열 값은 JSON 문자열 하나가 아니라, 같은 이름의 파라미터를 여러 개
-      // 반복해서 보내야 합니다 (예: ?ids=A&ids=B). fields/timeRange 같은 JSON 문자열은 그대로 둡니다.
-      if (Array.isArray(value)) {
-        for (const v of value) url.searchParams.append(key, v);
-      } else {
-        url.searchParams.set(key, value);
-      }
+  // 예전엔 GET일 때만 쿼리 파라미터를 URL에 붙였는데, 네이버 API는 PUT 요청에도
+  // fields 파라미터가 반드시 있어야 합니다(없으면 'Required request parameter fields
+  // is not present'로 거절됩니다) - method 조건 없이 항상 붙이도록 고칩니다.
+  for (const [key, value] of Object.entries(params || {})) {
+    // ids처럼 배열 값은 JSON 문자열 하나가 아니라, 같은 이름의 파라미터를 여러 개
+    // 반복해서 보내야 합니다 (예: ?ids=A&ids=B). fields/timeRange 같은 JSON 문자열은 그대로 둡니다.
+    if (Array.isArray(value)) {
+      for (const v of value) url.searchParams.append(key, v);
+    } else {
+      url.searchParams.set(key, value);
     }
   }
   const res = await fetch(url.toString(), {
