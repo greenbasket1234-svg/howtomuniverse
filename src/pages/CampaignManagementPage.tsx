@@ -143,8 +143,12 @@ export function CampaignManagementPage() {
 
     {showUpload && <div className="modal-backdrop" onClick={()=>setShowUpload(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-title">캠페인 업로드</div><p className="muted-text">개별 등록 또는 CSV/XLSX 대량 업로드를 선택하세요. 실제 API 키가 연결되면 사전 검증 후 매체로 전송됩니다.</p><div className="upload-drop"><Upload size={24}/><strong>파일을 놓거나 선택하세요</strong><span>CSV, XLSX · 최대 10MB</span></div><div className="modal-actions"><button className="btn" onClick={()=>setShowUpload(false)}>취소</button><button className="btn btn-primary" onClick={()=>setShowUpload(false)}>검증만 실행</button></div></div></div>}
     {scheduleTarget && (
-      <CampaignAutomationModal
-        campaign={scheduleTarget}
+      <TargetAutomationModal
+        targetType="campaign"
+        targetId={scheduleTarget.id}
+        targetName={scheduleTarget.name}
+        channel={scheduleTarget.platform}
+        advertiserId={scheduleTarget.advertiserId}
         rules={rulesFor(scheduleTarget)}
         onClose={()=>setShowSchedule(null)}
         onChanged={reloadAutoRules}
@@ -156,7 +160,7 @@ export function CampaignManagementPage() {
 /** 캠페인 하나에 대한 ON/OFF 예약 규칙을 관리합니다 - 예약 작업(AI 자동화) 화면과 완전히
  * 같은 서버 저장소(automation_rules)를 씁니다. 이 화면에서 만든 규칙은 예약 작업 화면에서도
  * 그대로 보이고, 예약 작업 화면에서 만든 규칙도 여기서 함께 관리할 수 있습니다. */
-function CampaignAutomationModal({campaign,rules,onClose,onChanged}:{campaign:Campaign;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
+export function TargetAutomationModal({targetType,targetId,targetName,channel,advertiserId,rules,onClose,onChanged}:{targetType:'campaign'|'creative';targetId:string;targetName:string;channel:string;advertiserId:string;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
   const WEEKDAYS:[string,number][]=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]];
   const [action,setAction]=useState<'on'|'off'>('on');
   const [cadence,setCadence]=useState<'daily'|'weekly'|'monthly'>('daily');
@@ -164,14 +168,15 @@ function CampaignAutomationModal({campaign,rules,onClose,onChanged}:{campaign:Ca
   const [dayOfMonth,setDayOfMonth]=useState(1);
   const [time,setTime]=useState('09:00');
   const [saving,setSaving]=useState(false);
+  const label=targetType==='creative'?'소재':'캠페인';
   const toggleWeekday=(v:number)=>setWeekdays(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v].sort());
   const addRule=async()=>{
     if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}
     setSaving(true);
     try{
-      const config={targetType:'campaign',targetId:campaign.id,targetName:campaign.name,channel:campaign.platform,action,cadence,weekdays,dayOfMonth,time};
-      const name=`${campaign.name} ${action==='on'?'ON':'OFF'}`;
-      await automationApi.rules.create({type:'campaign',advertiserId:campaign.advertiserId,name,config});
+      const config={targetType,targetId,targetName,channel,action,cadence,weekdays,dayOfMonth,time};
+      const name=`${targetName} ${action==='on'?'ON':'OFF'}`;
+      await automationApi.rules.create({type:'campaign',advertiserId,name,config});
       onChanged();
     }catch(e){alert(e instanceof Error?e.message:'저장에 실패했습니다.');}
     finally{setSaving(false);}
@@ -179,8 +184,8 @@ function CampaignAutomationModal({campaign,rules,onClose,onChanged}:{campaign:Ca
   const removeRule=async(id:string)=>{ if(!confirm('이 예약을 삭제할까요?'))return; await automationApi.rules.remove(id); onChanged(); };
   const toggleEnabled=async(rule:AutomationRule)=>{ await automationApi.rules.update(rule.id,{enabled:!rule.enabled}); onChanged(); };
   return <div className="modal-backdrop" onClick={onClose}><div className="modal-card" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-    <div className="modal-title">{campaign.name} ON/OFF 일정 설정</div>
-    <p className="muted-text">정해진 요일·시각에 서버가 실제로 이 캠페인 상태를 변경합니다. 여러 규칙을 함께 등록할 수 있습니다(예: 평일 09:00 켜기 + 평일 21:00 끄기).</p>
+    <div className="modal-title">{targetName} ON/OFF 일정 설정</div>
+    <p className="muted-text">정해진 요일·시각에 서버가 실제로 이 {label} 상태를 변경합니다. 여러 규칙을 함께 등록할 수 있습니다(예: 평일 09:00 켜기 + 평일 21:00 끄기).</p>
     {rules.length>0&&<div style={{marginBottom:14}}>
       <label style={{marginBottom:6,display:'block',fontWeight:700,fontSize:13}}>등록된 규칙 ({rules.length}개)</label>
       <div style={{display:'flex',flexDirection:'column',gap:6}}>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ExternalLink, Search, X } from 'lucide-react';
+import { ExternalLink, Search, X, Power, CalendarClock } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
@@ -7,9 +7,12 @@ import { useMetricsQuery } from '../context/MetricsQueryContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import type { CreativeMetricRow } from '../types/metrics';
 import { ModalPortal } from '../components/ModalPortal';
+import { Badge } from '../components/Badge';
 import { ChannelTag } from '../components/ChannelTag';
 import { apiFetch } from '../hooks/useApi';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
+import { automationApi, type AutomationRule } from '../automation/automationApi';
+import { TargetAutomationModal } from './CampaignManagementPage';
 
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
 type SortKey='spend'|'impressions'|'clicks'|'ctr'|'cpc'|'cpm'|'dbCount'|'unconfirmed'|'purchases'|'addToCart'|'completeRegistration'|'revenue'|'cpa'|'roas';
@@ -31,6 +34,27 @@ export function MetaCreativeReportPage(){
   },[detail?.adId]);
   const {filterValue}=useAdvertiserFilter();
   const {range}=useMetricsQuery();
+  // 상태 즉시 반영(다음 자동 동기화까지 기다리지 않고 이 화면에서 방금 바꾼 걸 바로 보여줌)
+  const [statusOverride,setStatusOverride]=useState<Record<string,'on'|'off'>>({});
+  const [togglingKey,setTogglingKey]=useState<string|null>(null);
+  const toggleCreativeStatus=(r:CreativeMetricRow)=>{
+    if(!r.adId)return;
+    const key=`${r.advertiserId}-${r.channel}-${r.adId}`;
+    const current=statusOverride[key]||r.status;
+    const nextStatus=current==='on'?'off':'on';
+    if(!confirm(`${r.adName} 소재를 실제로 ${nextStatus==='off'?'중지':'재개'}할까요? 이 작업은 실제 광고 계정에 바로 반영됩니다.`))return;
+    setTogglingKey(key);
+    apiFetch('/campaigns',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:r.adId,targetType:'creative',channel:r.channel,advertiserId:r.advertiserId,status:nextStatus})})
+      .then(()=>setStatusOverride(prev=>({...prev,[key]:nextStatus})))
+      .catch(err=>alert(err instanceof Error?err.message:'상태 변경에 실패했습니다.'))
+      .finally(()=>setTogglingKey(null));
+  };
+  // 소재 ON/OFF 예약 - 캠페인 관리와 완전히 같은 서버 저장소(automation_rules)를 씁니다.
+  const [autoRules,setAutoRules]=useState<AutomationRule[]>([]);
+  const reloadAutoRules=()=>{automationApi.rules.list('campaign').then(setAutoRules).catch(()=>setAutoRules([]));};
+  useEffect(()=>{reloadAutoRules();},[]);
+  const rulesForCreative=(r:CreativeMetricRow)=>autoRules.filter(x=>x.config?.targetType==='creative'&&String(x.config?.targetId)===String(r.adId)&&x.config?.channel===r.channel);
+  const [scheduleTarget,setScheduleTarget]=useState<CreativeMetricRow|null>(null);
   const rangeDays=useMemo(()=>{const from=new Date(range.from),to=new Date(range.to);return Math.round((to.getTime()-from.getTime())/86400000)+1;},[range.from,range.to]);
   const channels=useMemo(()=>['all',...new Set(rows.map(r=>r.channel))],[rows]);
   const filtered=useMemo(()=>[...rows].filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(kind==='전체'||kindOf(r)===kind)&&(`${r.adName} ${r.campaignName||''} ${r.advertiserName||''}`).toLowerCase().includes(query.trim().toLowerCase())).sort((a,b)=>{const av=Number(a[sortKey]||0),bv=Number(b[sortKey]||0);return sortDir==='desc'?bv-av:av-bv}),[rows,filterValue,channel,kind,query,sortKey,sortDir]);
@@ -49,12 +73,22 @@ export function MetaCreativeReportPage(){
     <section className="card media-report-card">
       <div className="media-report-toolbar"><div><b>실제 소재 {filtered.length}개</b><small className="footnote">{connected.length?`연동: ${[...new Set(connected.map(c=>c.channel))].join(', ')}`:'연동된 성과 매체 없음'}{unimplemented.length?` · 커넥터 미구현: ${[...new Set(unimplemented.map(c=>c.channel))].join(', ')}`:''}</small></div><div className="media-report-actions"><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option value={c} key={c}>{c==='all'?'전체 매체':c==='meta'?'Meta':c==='naver'?'네이버':c}</option>)}</select><div className="campaign-search-box"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="소재·캠페인 검색"/></div></div></div>
       {error&&<div className="status-banner danger">{error}</div>}
-      <div className="table-scroll"><table className="media-report-table creative-report-table"><thead><tr><th>소재</th><th>유형</th><th>매체</th><th>광고주</th><th onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th><th onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th><th onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th><th onClick={()=>toggleSort('ctr')}>CTR{arrow('ctr')}</th><th onClick={()=>toggleSort('cpc')}>CPC{arrow('cpc')}</th><th onClick={()=>toggleSort('cpm')}>CPM{arrow('cpm')}</th><th onClick={()=>toggleSort('dbCount')}>DB 전환{arrow('dbCount')}</th><th onClick={()=>toggleSort('unconfirmed')} title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환">미확인 ⓘ{arrow('unconfirmed')}</th><th onClick={()=>toggleSort('purchases')}>구매 전환{arrow('purchases')}</th><th onClick={()=>toggleSort('addToCart')}>장바구니 담기{arrow('addToCart')}</th><th onClick={()=>toggleSort('completeRegistration')}>회원가입{arrow('completeRegistration')}</th><th>CVR</th><th onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th><th onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th><th onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th></tr></thead><tbody>
-        {loading?<tr><td colSpan={19} className="empty-cell">불러오는 중...</td></tr>:filtered.length===0?<tr><td colSpan={19} className="empty-cell">선택 기간에 소재 성과가 없습니다. 매체 연결·동기화 상태를 확인해주세요.</td></tr>:filtered.map(r=><tr key={`${r.advertiserId}-${r.channel}-${r.adId}`}><td><button className="creative-name-cell" onClick={()=>setDetail(r)}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName||r.advertiserId}</td><td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td>{won(r.cpc||0)}</td><td>{won(r.cpm||0)}</td><td>{r.dbCount.toLocaleString()}</td><td>{(r.unconfirmed||0)?r.unconfirmed!.toLocaleString():'-'}</td><td>{(r.purchases||0).toLocaleString()}</td><td>{(r.addToCart||0)?r.addToCart!.toLocaleString():'-'}</td><td>{(r.completeRegistration||0)?r.completeRegistration!.toLocaleString():'-'}</td><td>{Number(r.cvr||0).toFixed(2)}%</td><td>{won(r.revenue)}</td><td>{(r.dbCount+(r.purchases||0)+(r.unconfirmed||0))?won(r.cpa||0):'-'}</td><td className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>)}
+      <div className="table-scroll"><table className="media-report-table creative-report-table"><thead><tr><th>소재</th><th>유형</th><th>매체</th><th>광고주</th><th>상태</th><th>작업</th><th onClick={()=>toggleSort('spend')}>광고비{arrow('spend')}</th><th onClick={()=>toggleSort('impressions')}>노출{arrow('impressions')}</th><th onClick={()=>toggleSort('clicks')}>클릭{arrow('clicks')}</th><th onClick={()=>toggleSort('ctr')}>CTR{arrow('ctr')}</th><th onClick={()=>toggleSort('cpc')}>CPC{arrow('cpc')}</th><th onClick={()=>toggleSort('cpm')}>CPM{arrow('cpm')}</th><th onClick={()=>toggleSort('dbCount')}>DB 전환{arrow('dbCount')}</th><th onClick={()=>toggleSort('unconfirmed')} title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환">미확인 ⓘ{arrow('unconfirmed')}</th><th onClick={()=>toggleSort('purchases')}>구매 전환{arrow('purchases')}</th><th onClick={()=>toggleSort('addToCart')}>장바구니 담기{arrow('addToCart')}</th><th onClick={()=>toggleSort('completeRegistration')}>회원가입{arrow('completeRegistration')}</th><th>CVR</th><th onClick={()=>toggleSort('revenue')}>전환매출{arrow('revenue')}</th><th onClick={()=>toggleSort('cpa')}>CPA{arrow('cpa')}</th><th onClick={()=>toggleSort('roas')}>ROAS{arrow('roas')}</th></tr></thead><tbody>
+        {loading?<tr><td colSpan={21} className="empty-cell">불러오는 중...</td></tr>:filtered.length===0?<tr><td colSpan={21} className="empty-cell">선택 기간에 소재 성과가 없습니다. 매체 연결·동기화 상태를 확인해주세요.</td></tr>:filtered.map(r=>{const key=`${r.advertiserId}-${r.channel}-${r.adId}`;const st=statusOverride[key]||r.status;return <tr key={key}><td><button className="creative-name-cell" onClick={()=>setDetail(r)}>{r.thumbnailUrl?<img className="creative-thumb" src={r.thumbnailUrl} alt=""/>:<span className="creative-thumb"/>}<span><b>{r.adName}</b><small>{r.campaignName||'-'}</small></span></button></td><td>{kindOf(r)}</td><td><ChannelTag channel={r.channel}/></td><td>{r.advertiserName||r.advertiserId}</td>
+        <td><Badge tone={st==='on'?'success':st==='off'?'neutral':'warning'}>{st==='on'?'ON':st==='off'?'OFF':'확인 필요'}</Badge></td>
+        <td><div style={{display:'flex',gap:4}}>{r.adId?<button className="icon-btn" title="ON/OFF" disabled={togglingKey===key} onClick={()=>toggleCreativeStatus(r)}><Power size={15}/></button>:null}{r.adId&&r.channel==='naver'?<button className="icon-btn" title="ON/OFF 일정 설정" onClick={()=>setScheduleTarget(r)}><CalendarClock size={15}/></button>:null}</div></td>
+        <td className="metric-emphasis">{won(r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{Number(r.ctr||0).toFixed(2)}%</td><td>{won(r.cpc||0)}</td><td>{won(r.cpm||0)}</td><td>{r.dbCount.toLocaleString()}</td><td>{(r.unconfirmed||0)?r.unconfirmed!.toLocaleString():'-'}</td><td>{(r.purchases||0).toLocaleString()}</td><td>{(r.addToCart||0)?r.addToCart!.toLocaleString():'-'}</td><td>{(r.completeRegistration||0)?r.completeRegistration!.toLocaleString():'-'}</td><td>{Number(r.cvr||0).toFixed(2)}%</td><td>{won(r.revenue)}</td><td>{(r.dbCount+(r.purchases||0)+(r.unconfirmed||0))?won(r.cpa||0):'-'}</td><td className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</td></tr>;})}
       </tbody></table></div>
     </section>
     {detail&&<ModalPortal onClose={()=>setDetail(null)} wide>
-      <div className="modal-head"><div><h3>{detail.adName}</h3><p style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>{detail.advertiserName} · <ChannelTag channel={detail.channel}/> · {detail.campaignName||'-'}</p></div><button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button></div>
+      <div className="modal-head"><div><h3>{detail.adName}</h3><p style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>{detail.advertiserName} · <ChannelTag channel={detail.channel}/> · {detail.campaignName||'-'}</p></div>
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        {(()=>{const key=`${detail.advertiserId}-${detail.channel}-${detail.adId}`;const st=statusOverride[key]||detail.status;return <Badge tone={st==='on'?'success':st==='off'?'neutral':'warning'}>{st==='on'?'ON':st==='off'?'OFF':'확인 필요'}</Badge>;})()}
+        {detail.adId&&<button className="btn secondary" disabled={togglingKey===`${detail.advertiserId}-${detail.channel}-${detail.adId}`} onClick={()=>toggleCreativeStatus(detail)}><Power size={14}/> ON/OFF</button>}
+        {detail.adId&&detail.channel==='naver'&&<button className="btn secondary" onClick={()=>setScheduleTarget(detail)}><CalendarClock size={14}/> 일정 설정</button>}
+        <button className="icon-btn" onClick={()=>setDetail(null)}><X size={18}/></button>
+      </div>
+      </div>
       {(kindOf(detail)==='영상'||kindOf(detail)==='슬라이드')&&previewLoading
         ? <div className="creative-detail-preview" style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:280,background:'#f1f5f9',borderRadius:10,color:'#64748b'}}>미리보기 불러오는 중...</div>
         : previewUrl
@@ -79,5 +113,17 @@ export function MetaCreativeReportPage(){
       )}
       <div className="detail-kpi-grid"><div><span>광고비</span><b>{won(detail.spend)}</b></div><div><span>노출</span><b>{detail.impressions.toLocaleString()}</b></div><div><span>클릭</span><b>{detail.clicks.toLocaleString()}</b></div><div><span>DB 전환</span><b>{detail.dbCount.toLocaleString()}</b></div><div title="상세 리포트가 아직 없는 시점(주로 오늘)이라 확정 분류 못 한 전환"><span>미확인 ⓘ</span><b>{(detail.unconfirmed||0).toLocaleString()}</b></div><div><span>구매 전환</span><b>{(detail.purchases||0).toLocaleString()}</b></div><div><span>장바구니 담기</span><b>{(detail.addToCart||0).toLocaleString()}</b></div><div><span>회원가입</span><b>{(detail.completeRegistration||0).toLocaleString()}</b></div><div><span>매출</span><b>{won(detail.revenue)}</b></div><div><span>ROAS</span><b className={roasClass(Number(detail.roas||0))}>{Number(detail.roas||0).toFixed(0)}%</b></div></div>
     </ModalPortal>}
+    {scheduleTarget && scheduleTarget.adId && (
+      <TargetAutomationModal
+        targetType="creative"
+        targetId={scheduleTarget.adId}
+        targetName={scheduleTarget.adName}
+        channel={scheduleTarget.channel}
+        advertiserId={scheduleTarget.advertiserId}
+        rules={rulesForCreative(scheduleTarget)}
+        onClose={()=>setScheduleTarget(null)}
+        onChanged={reloadAutoRules}
+      />
+    )}
   </>;
 }
