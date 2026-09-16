@@ -15,11 +15,17 @@ function rec(base:Omit<Recommendation,'priorityLabel'|'confidence'|'insufficient
 function totalConv(row:{dbCount:number;purchases?:number;unconfirmed?:number}){return row.dbCount+(row.purchases||0)+(row.unconfirmed||0);}
 function metricEvidence(row:{spend:number;impressions:number;clicks:number;dbCount:number;purchases?:number;unconfirmed?:number;revenue:number;ctr?:number;cpa?:number;roas?:number}){
   const conv=totalConv(row);
+  // 서버가 이 목록 API(캠페인/소재/키워드)에서는 cpa·cvr을 채워주지 않으므로, 있는
+  // 값(광고비·클릭·전환)으로 여기서 직접 계산합니다(roas는 서버 값을 그대로 씁니다).
+  const cpa=conv?row.spend/conv:0;
+  const cvr=row.clicks?conv/row.clicks*100:0;
   return [
     {label:'광고비',detail:`₩${Math.round(row.spend).toLocaleString()}`},
     {label:'CTR',detail:`${(row.ctr||0).toFixed(2)}%`},
-    {label:'전환',detail:`${conv.toLocaleString()}건`},
-    {label:'CPA',detail:conv?`₩${Math.round(row.cpa||0).toLocaleString()}`:'-'},
+    {label:'DB 전환',detail:`${row.dbCount.toLocaleString()}건`},
+    {label:'구매 전환',detail:`${(row.purchases||0).toLocaleString()}건`},
+    {label:'CVR',detail:row.clicks?`${cvr.toFixed(2)}%`:'-'},
+    {label:'CPA',detail:conv?`₩${Math.round(cpa).toLocaleString()}`:'-'},
     {label:'ROAS',detail:row.revenue?`${(row.roas||0).toFixed(1)}%`:'-'},
   ];
 }
