@@ -325,6 +325,8 @@ table.brand-table tbody tr:hover td { background: #fafbfd; }
 
 /* ---------- Operations expansion ---------- */
 .toolbar-actions, .filter-row, .row-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* row-actions는 줄바꿈 없이 1줄로 - 캠페인 테이블 행 높이 유지 */
+.row-actions { flex-wrap:nowrap; gap:3px; }
 .summary-grid-compact { grid-template-columns: repeat(4,minmax(130px,1fr)); }
 .compact-card { padding: 12px 14px; }
 .text-success { color: var(--success); } .text-accent{color:var(--accent)} .text-danger{color:var(--danger)}
@@ -1285,6 +1287,8 @@ button,input,select,textarea{font-size:14px}
 .card-sub{font-size:14px;line-height:1.55}
 .btn{min-height:38px;font-size:14px;padding:8px 15px}
 .icon-btn{width:36px;height:36px}
+/* 캠페인 테이블 작업 버튼: 1줄에 4개 모두 표시되도록 소형화 */
+.campaign-table .row-actions .icon-btn{width:26px;height:26px}
 table.data-table{font-size:14px}
 table.data-table th{font-size:13px;padding:11px 13px}
 table.data-table td{padding:12px 13px}
