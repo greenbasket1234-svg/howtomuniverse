@@ -2236,8 +2236,15 @@ async function reserveUsage(tenantId, advertiserId, feature, action, sourceId, q
         [advertiserId, feature, action, sourceId]
       );
       if (existing.rows.length) {
-        await client.query('COMMIT');
-        return { reserved: true, replayed: true, event: existing.rows[0], check: null };
+        const ev = existing.rows[0];
+        if (ev.status === 'confirmed' || ev.status === 'pending') {
+          // confirmed: 이미 완료된 시도. pending: 처리 중인 시도.
+          // 양쪽 모두 replayed:true로 반환해 외부 AI 재호출을 막습니다.
+          await client.query('COMMIT');
+          return { reserved: true, replayed: true, event: ev, check: null };
+        }
+        // status === 'failed' → 확실히 실패한 시도.
+        // 현재 구독·한도를 다시 확인하고 재예약합니다(즉시 승인하지 않습니다).
       }
     }
     // 같은 광고주+기능에 대한 동시 요청을 직렬화합니다(advisory lock은 트랜잭션 종료 시 자동 해제).
@@ -2274,11 +2281,23 @@ async function reserveUsage(tenantId, advertiserId, feature, action, sourceId, q
       await client.query('COMMIT'); // 아무것도 안 만들었으니 그냥 커밋(=advisory lock 해제)
       return { reserved: false, replayed: false, event: null, check };
     }
-    const insertEvent = await client.query(
-      `INSERT INTO usage_events (tenant_id, advertiser_id, subscription_id, feature, action, quantity, source_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
-      [tenantId, advertiserId, sub.id, feature, action, quantity, sourceId || null]
-    );
+    // 같은 sourceId의 실패 기록이 있으면 UPDATE로 재활성화(INSERT 대신)합니다.
+    let insertEvent;
+    if (sourceId) {
+      const failedRow = await client.query(
+        `UPDATE usage_events SET status='pending', tenant_id=$1, subscription_id=$2, quantity=$3, created_at=now()
+         WHERE advertiser_id=$4 AND feature=$5 AND action=$6 AND source_id=$7 AND status='failed' RETURNING *`,
+        [tenantId, sub.id, quantity, advertiserId, feature, action, sourceId]
+      );
+      if (failedRow.rows.length) insertEvent = failedRow;
+    }
+    if (!insertEvent) {
+      insertEvent = await client.query(
+        `INSERT INTO usage_events (tenant_id, advertiser_id, subscription_id, feature, action, quantity, source_id, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
+        [tenantId, advertiserId, sub.id, feature, action, quantity, sourceId || null]
+      );
+    }
     await client.query('COMMIT');
     return { reserved: true, replayed: false, event: insertEvent.rows[0], check };
   } catch (err) {
@@ -2525,9 +2544,44 @@ async function pgGetMediaAccountForSync(tenantId, advertiserId, channel) {
  * 씁니다. targetType이 'campaign'이면 캠페인 전체를, 'creative'면 개별 소재(광고) 하나만
  * 켜고 끕니다.
  */
+/**
+ * targetId가 실제로 해당 광고주의 연결된 Meta 광고 계정 소속인지 DB에서 확인합니다.
+ * ad_items, campaign_management 등 실제 집계 DB에서 advertiser_id와 일치하는 행이
+ * 있어야만 true를 반환합니다. 확인할 수 없으면 false를 반환해 외부 쓰기를 차단합니다.
+ */
+async function verifyMetaTargetOwnership(tenantId, advertiserId, targetId) {
+  if (!pgPool) return false;
+  // daily_metrics, campaign_management 등에서 (advertiser_id, channel) 조합으로
+  // targetId 소속을 확인합니다. 둘 중 하나에서라도 일치하면 허용합니다.
+  const metricCheck = await pgPool.query(
+    `SELECT 1 FROM daily_metrics
+     WHERE tenant_id=$1 AND advertiser_id::text=$2 AND channel='meta'
+       AND (campaign_id=$3 OR adgroup_id=$3 OR ad_id=$3)
+     LIMIT 1`,
+    [tenantId, advertiserId, targetId]
+  ).catch(() => ({ rows: [] }));
+  if (metricCheck.rows.length > 0) return true;
+  const mgmtCheck = await pgPool.query(
+    `SELECT 1 FROM campaign_management
+     WHERE tenant_id=$1 AND advertiser_id::text=$2 AND channel='meta'
+       AND (campaign_id=$3 OR adgroup_id=$3 OR ad_id=$3)
+     LIMIT 1`,
+    [tenantId, advertiserId, targetId]
+  ).catch(() => ({ rows: [] }));
+  return mgmtCheck.rows.length > 0;
+}
+
 async function toggleAdTargetStatus({ targetType, targetId, channel, advertiserId, targetStatus }) {
   if (channel === 'meta') {
     if (targetType === 'keyword') { const e = new Error('Meta 광고는 검색 키워드 단위 ON/OFF 개념이 없습니다(오디언스 타겟팅 방식). 캠페인·광고 세트·소재 단위로만 지원합니다.'); e.status = 400; throw e; }
+    // 외부 쓰기 전에 targetId가 실제로 이 광고주 소속인지 서버 DB에서 검증합니다.
+    // 공유 토큰에 여러 광고 계정 권한이 있어도, 다른 광고주의 대상 ID를 넘기면 차단됩니다.
+    const tenantId = await getCurrentTenantId();
+    const owned = await verifyMetaTargetOwnership(tenantId, advertiserId, targetId);
+    if (!owned) {
+      const e = new Error(`변경 대상(${targetId})이 광고주(${advertiserId})의 연결된 Meta 계정 소속으로 확인되지 않습니다. 외부 쓰기를 차단합니다.`);
+      e.status = 403; throw e;
+    }
     // 캠페인·광고 세트·광고(소재) 전부 Meta Graph API에서 같은 패턴(POST /{id} {status})을
     // 씁니다. 실제로 API 호출을 시도합니다 - 지금 연결된 토큰이 ads_read 전용이면 Meta가
     // 권한 오류를 그대로 돌려줄 것이고, 나중에 ads_management 권한 토큰으로 교체되면
@@ -2628,6 +2682,8 @@ async function handleApi(req, res, pathname) {
         log.push('스키마를 생성합니다...');
         const schemaSql = fs.readFileSync(path.join(baseDir, 'db', 'schema.sql'), 'utf8');
         await pgPool.query(schemaSql);
+        // 광고·문서·영상 generate 결과 캐싱을 위한 컬럼 추가(이미 있으면 무시)
+        await pgPool.query(`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS result JSONB`);
 
         // 예전에 잘못 번역되어 저장된 CTA 문구('지금 쇼핑하기')를 정확한 번역('지금 구매하기')으로 일괄 수정합니다.
         // 여러 번 실행해도 안전합니다(이미 고쳐진 값은 조건에 안 걸려 그냥 넘어갑니다).
@@ -4236,6 +4292,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const body = await readJson(req);
         const type = cleanText(body.type || '', 20);
         if (!['report', 'ad-copy', 'notification', 'workflow', 'campaign'].includes(type)) return sendJson(res, 400, { error: 'type은 report, ad-copy, notification, workflow, campaign 중 하나여야 합니다.' });
+        // 자동화 규칙 등록은 automation.manage 권한이 필요합니다.
+        if (denyUnlessPermitted(res, requester, 'automation.manage')) return true;
+        // 캠페인 ON/OFF 자동화는 직접 변경과 동일한 campaign.edit 권한까지 요구합니다.
+        if (type === 'campaign' && denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
         const advertiserId = cleanText(body.advertiserId || '', 120) || null;
         if (advertiserId && !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
         const name = cleanText(body.name || '', 200);
@@ -4249,8 +4309,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const ruleMatch = pathname.match(/^\/api\/automation\/rules\/([^/]+)$/);
       if (ruleMatch && req.method === 'PATCH') {
         const id = ruleMatch[1]; const body = await readJson(req);
-        const cur = await pgPool.query('SELECT advertiser_id FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        const cur = await pgPool.query('SELECT advertiser_id, type FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
         if (!cur.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        // advertiser_id가 NULL인 공용 규칙 수정도 automation.manage가 필요합니다.
+        if (denyUnlessPermitted(res, requester, 'automation.manage')) return true;
+        if (cur.rows[0].type === 'campaign' && denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
         if (cur.rows[0].advertiser_id && !canAccessAdvertiser(requester, cur.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
         const sets = ['updated_at=now()']; const params = [];
         if (body.name !== undefined) { params.push(cleanText(body.name, 200)); sets.push(`name=$${params.length}`); }
@@ -4262,8 +4325,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
       if (ruleMatch && req.method === 'DELETE') {
         const id = ruleMatch[1];
-        const cur = await pgPool.query('SELECT advertiser_id FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
+        const cur = await pgPool.query('SELECT advertiser_id, type FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
         if (!cur.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        if (denyUnlessPermitted(res, requester, 'automation.manage')) return true;
+        if (cur.rows[0].type === 'campaign' && denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
         if (cur.rows[0].advertiser_id && !canAccessAdvertiser(requester, cur.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
         await pgPool.query('DELETE FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
         return sendJson(res, 200, { ok: true });
@@ -4273,7 +4338,12 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const id = runNowMatch[1];
         const rule = await pgPool.query('SELECT * FROM automation_rules WHERE tenant_id=$1 AND id=$2', [tenantId, id]);
         if (!rule.rows.length) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        // 수동 실행도 등록·수정과 동일한 권한 검사를 적용합니다(자동화 우회 방지).
+        if (denyUnlessPermitted(res, requester, 'automation.manage')) return true;
+        if (rule.rows[0].type === 'campaign' && denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
         if (rule.rows[0].advertiser_id && !canAccessAdvertiser(requester, rule.rows[0].advertiser_id)) return sendJson(res, 404, { error: '규칙을 찾을 수 없습니다.' });
+        // 계정 정지 후에도 수동 실행이 가능한 문제를 막습니다.
+        if (requester.status && requester.status !== 'active') return sendJson(res, 403, { error: '비활성 계정은 자동화를 실행할 수 없습니다.' });
         try {
           const result = await runAutomationRule(rule.rows[0], 'manual');
           return sendJson(res, 200, result);
@@ -5495,6 +5565,9 @@ function scheduleAutomationRules() {
       const timeNow = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
       const todayDateStr = `${get('year')}-${get('month')}-${get('day')}`;
 
+      // 정기 실행: enabled=true인 규칙만 조회하되, 해당 테넌트가 활성 상태인지도 확인합니다.
+      // 직원 권한 회수·계정 정지 후에도 정기 실행이 계속되지 않도록, 규칙별 소유 광고주의
+      // 상태를 실행 직전에 재확인합니다(광고주 계정이 정지됐으면 건너뜁니다).
       const rules = await pgPool.query(`SELECT * FROM automation_rules WHERE enabled = true AND type IN ('ad-copy','notification','campaign')`);
       for (const rule of rules.rows) {
         if (lastAutomationRunKeys.get(rule.id) === dateKey) continue; // 이 분에 이미 처리함
@@ -5516,6 +5589,14 @@ function scheduleAutomationRules() {
         }
         if (!due) continue;
         lastAutomationRunKeys.set(rule.id, dateKey);
+        // 광고주 계정이 정지됐으면 정기 실행을 건너뜁니다(권한 회수 후 잔존 실행 방지).
+        if (rule.advertiser_id) {
+          const advCheck = await pgPool.query(`SELECT status FROM advertisers WHERE id=$1 AND tenant_id=$2`, [rule.advertiser_id, rule.tenant_id]).catch(() => ({ rows: [] }));
+          if (!advCheck.rows.length || advCheck.rows[0].status === 'suspended' || advCheck.rows[0].status === 'inactive') {
+            console.log(`[AI 자동화] 광고주 비활성 - 규칙 건너뜀(${rule.id}, advertiser_id=${rule.advertiser_id})`);
+            continue;
+          }
+        }
         runAutomationRule(rule, 'scheduled').catch(error => console.error(`[AI 자동화] 규칙 실행 실패(${rule.id}):`, error?.message || error));
       }
     } catch (error) {
