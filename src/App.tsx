@@ -39,6 +39,7 @@ import { CampaignAnalysisPage } from './pages/CampaignAnalysisPage';
 import { CreativeAnalysisPage } from './pages/CreativeAnalysisPage';
 import { DbDataPage } from './pages/DbDataPage';
 import { NaverSearchAdBrandListPage, NaverSearchAdDetailPage, GoogleSearchAdBrandListPage, GoogleSearchAdDetailPage, DaangnSearchAdBrandListPage, DaangnSearchAdDetailPage, KakaoSearchAdBrandListPage, KakaoSearchAdDetailPage } from './pages/SearchAdManagementPages';
+import { MetaAdBrandListPage, MetaAdDetailPage } from './pages/MetaAdManagementPage';
 import { SettingsDetailPage } from './pages/SettingsPage';
 import { DailyReportPage, MonthlyAnalysisPage, NextMonthPlanPage } from './pages/ReportPlanningPages';
 import { KpiGoalsPage, ReportBuilderPage, GoogleCreativeReportPage, AttributionLinksPage, CustomDataUploadPage, ProjectTasksPage, NotificationSendPage, DbManagementPage, CommissionSettlementPage } from './pages/OperationsCenterPages';
@@ -107,6 +108,7 @@ export default function App(){
 
     <Route path="conversion-funnel" element={<ConversionFunnelPage/>}/><Route path="media-performance" element={<Navigate to="/insights/media" replace/>}/>
     <Route path="search-ads/naver" element={<NaverSearchAdBrandListPage/>}/><Route path="search-ads/naver/:brandId" element={<NaverSearchAdDetailPage/>}/>
+    <Route path="meta-ads" element={<MetaAdBrandListPage/>}/><Route path="meta-ads/:brandId" element={<MetaAdDetailPage/>}/>
     <Route path="search-ads/google" element={<GoogleSearchAdBrandListPage/>}/><Route path="search-ads/google/:brandId" element={<GoogleSearchAdDetailPage/>}/>
     <Route path="search-ads/daangn" element={<DaangnSearchAdBrandListPage/>}/><Route path="search-ads/daangn/:brandId" element={<DaangnSearchAdDetailPage/>}/>
     <Route path="search-ads/kakao" element={<KakaoSearchAdBrandListPage/>}/><Route path="search-ads/kakao/:brandId" element={<KakaoSearchAdDetailPage/>}/>
