@@ -48,6 +48,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'db-data', label: 'DB 데이터', path: '/db-management', icon: 'activity' },
       { key: 'kpi-goals', label: 'KPI 관리', path: '/kpi-goals', icon: 'target' },
       { key: 'campaigns', label: '캠페인 관리', path: '/campaigns', icon: 'campaigns' },
+      { key: 'search-ads', label: '네이버 검색광고', path: '/search-ads/naver', prefixPath: '/search-ads', icon: 'keyword-analysis' },
       { key: 'keywords', label: '키워드 관리', path: '/keywords', icon: 'keyword-analysis' },
       { key: 'creative-library', label: '소재 관리', path: '/creatives/library', icon: 'creative-library' },
       { key: 'conversion-funnel', label: '전환 퍼널', path: '/conversion-funnel', icon: 'conversion-funnel' },
