@@ -65,14 +65,22 @@ export function CampaignManagementPage() {
       return;
     }
     setExpandedCampaigns(prev => new Set([...prev, id]));
-    if (adgroupMap[id]) return; // 이미 로드됨
-    if (!['meta','naver'].includes(c.platform)) return; // 지원 안 함
+    // undefined일 때만 로드 (빈 배열 []은 undefined가 아니므로 이미 로드 시도한 것)
+    // 단, 재시도를 허용하려면 adgroupMap에서 해당 키를 삭제하면 됨
+    if (adgroupMap[id] !== undefined) return;
+    if (!['meta','naver'].includes(c.platform)) return;
     setAdgroupLoading(prev => new Set([...prev, id]));
     try {
       const rows = await apiFetch<AdGroupRow[]>(`/api/campaigns/adgroups?campaignId=${encodeURIComponent(id)}&channel=${c.platform}&advertiserId=${encodeURIComponent(c.advertiserId)}`);
       setAdgroupMap(prev => ({ ...prev, [id]: rows || [] }));
-    } catch { setAdgroupMap(prev => ({ ...prev, [id]: [] })); }
-    finally { setAdgroupLoading(prev => { const n = new Set(prev); n.delete(id); return n; }); }
+    } catch (e) {
+      // 오류를 화면에 표시하고, undefined 유지해 재시도 가능하게 함
+      const msg = e instanceof Error ? e.message : '광고그룹·세트 로드 실패';
+      alert(`${c.name}\n${msg}`);
+      setExpandedCampaigns(prev => { const n = new Set(prev); n.delete(id); return n; });
+    } finally {
+      setAdgroupLoading(prev => { const n = new Set(prev); n.delete(id); return n; });
+    }
   };
 
   const saveAdBudget = async (ag: AdGroupRow) => {
