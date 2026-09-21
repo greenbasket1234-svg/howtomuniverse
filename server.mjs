@@ -5246,44 +5246,55 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         for (const acc of metaAccRes.rows) {
           if (!acc.account_id || !scopedAdvertiserIds.has(acc.advertiser_id)) continue;
           try {
-            const rows = await metaListCampaigns(acc.account_id);
-            const campaignNameMap = new Map(rows.map(c => [c.id, c.name]));
-            for (const c of rows) {
-              campaigns.push({
-                id: c.id, advertiserId: acc.advertiser_id, platform: 'meta', name: c.name,
-                adgroupName: null, // 캠페인 레벨
-                accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`, budget: Number(c.daily_budget || c.lifetime_budget || 0),
-                budgetType: c.daily_budget ? 'daily' : 'total',
-                startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
-                status: metaCampaignStatus(c.effective_status || c.status),
-                lastSyncedAt: new Date().toISOString(),
-                level: 'campaign',
-                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
-              });
-            }
-            // 광고세트(adset)도 한 번의 API 호출로 일괄 로드합니다.
+            const campaignRows = await metaListCampaigns(acc.account_id);
+            const campaignNameMap = new Map(campaignRows.map(c => [c.id, c.name]));
+
+            // 광고세트를 먼저 일괄 로드합니다 (계정당 1회 API 호출).
+            let adsets = [];
             try {
               const id = acc.account_id.startsWith('act_') ? acc.account_id : `act_${acc.account_id}`;
               const adsetData = await metaGraphGet(`/${id}/adsets`, {
                 fields: 'id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget',
                 limit: '500',
               });
-              for (const s of (adsetData.data || [])) {
-                campaigns.push({
-                  id: s.id, advertiserId: acc.advertiser_id, platform: 'meta',
-                  name: campaignNameMap.get(s.campaign_id) || s.campaign_id, // 캠페인명
-                  adgroupName: s.name, // 광고세트명
-                  accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`,
-                  budget: Number(s.daily_budget || s.lifetime_budget || 0),
-                  budgetType: s.daily_budget ? 'daily' : 'total',
-                  startAt: new Date().toISOString(), endAt: undefined,
-                  status: metaCampaignStatus(s.effective_status || s.status),
-                  lastSyncedAt: new Date().toISOString(),
-                  level: 'adset', parentCampaignId: s.campaign_id,
-                  capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
-                });
-              }
-            } catch { /* 광고세트 로드 실패는 캠페인 목록에 영향 없음 */ }
+              adsets = adsetData.data || [];
+            } catch { /* 광고세트 로드 실패 시 캠페인만 표시 */ }
+
+            // 광고세트가 있는 캠페인 ID 집합
+            const campaignIdsWithAdsets = new Set(adsets.map(s => s.campaign_id));
+
+            // 광고세트가 없는 캠페인만 캠페인 행으로 추가
+            for (const c of campaignRows) {
+              if (campaignIdsWithAdsets.has(c.id)) continue; // 광고세트 있으면 캠페인 행 생략
+              campaigns.push({
+                id: c.id, advertiserId: acc.advertiser_id, platform: 'meta', name: c.name,
+                adgroupName: null, level: 'campaign',
+                accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`,
+                budget: Number(c.daily_budget || c.lifetime_budget || 0),
+                budgetType: c.daily_budget ? 'daily' : 'total',
+                startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
+                status: metaCampaignStatus(c.effective_status || c.status),
+                lastSyncedAt: new Date().toISOString(),
+                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
+              });
+            }
+
+            // 광고세트 행 추가: 캠페인명 + 광고세트명을 한 행에 표시
+            for (const s of adsets) {
+              campaigns.push({
+                id: s.id, advertiserId: acc.advertiser_id, platform: 'meta',
+                name: campaignNameMap.get(s.campaign_id) || s.campaign_id, // 캠페인명
+                adgroupName: s.name, // 광고세트명
+                accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`,
+                budget: Number(s.daily_budget || s.lifetime_budget || 0),
+                budgetType: s.daily_budget ? 'daily' : 'total',
+                startAt: new Date().toISOString(), endAt: undefined,
+                status: metaCampaignStatus(s.effective_status || s.status),
+                lastSyncedAt: new Date().toISOString(),
+                level: 'adset', parentCampaignId: s.campaign_id,
+                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
+              });
+            }
           } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
         }
       }
