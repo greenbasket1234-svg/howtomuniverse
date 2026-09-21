@@ -103,9 +103,6 @@ export function LoginPage({ onSwitchToSignup, onSwitchToForgotPassword }: { onSw
           </div>
         </form>
 
-        <div className="space-login-notice">
-          관리자 계정으로 로그인하세요. 계정 정보는 서버 환경변수(HOWTOM_ADMIN_EMAIL / HOWTOM_ADMIN_PASSWORD)로 설정합니다.
-        </div>
       </div>
     </div>
   );
