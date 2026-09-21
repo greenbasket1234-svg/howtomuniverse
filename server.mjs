@@ -5247,17 +5247,43 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
           if (!acc.account_id || !scopedAdvertiserIds.has(acc.advertiser_id)) continue;
           try {
             const rows = await metaListCampaigns(acc.account_id);
+            const campaignNameMap = new Map(rows.map(c => [c.id, c.name]));
             for (const c of rows) {
               campaigns.push({
                 id: c.id, advertiserId: acc.advertiser_id, platform: 'meta', name: c.name,
+                adgroupName: null, // 캠페인 레벨
                 accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`, budget: Number(c.daily_budget || c.lifetime_budget || 0),
                 budgetType: c.daily_budget ? 'daily' : 'total',
                 startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
                 status: metaCampaignStatus(c.effective_status || c.status),
                 lastSyncedAt: new Date().toISOString(),
-                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true }, // 실제로 시도해서 결과로 판단합니다 - 지금 연결된 토큰이 소재 단위 ON/OFF에서 이미 성공했으므로 캠페인도 같은 권한으로 시도합니다.
+                level: 'campaign',
+                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
               });
             }
+            // 광고세트(adset)도 한 번의 API 호출로 일괄 로드합니다.
+            try {
+              const id = acc.account_id.startsWith('act_') ? acc.account_id : `act_${acc.account_id}`;
+              const adsetData = await metaGraphGet(`/${id}/adsets`, {
+                fields: 'id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget',
+                limit: '500',
+              });
+              for (const s of (adsetData.data || [])) {
+                campaigns.push({
+                  id: s.id, advertiserId: acc.advertiser_id, platform: 'meta',
+                  name: campaignNameMap.get(s.campaign_id) || s.campaign_id, // 캠페인명
+                  adgroupName: s.name, // 광고세트명
+                  accountName: `${advNameMap.get(acc.advertiser_id) || ''} Meta`,
+                  budget: Number(s.daily_budget || s.lifetime_budget || 0),
+                  budgetType: s.daily_budget ? 'daily' : 'total',
+                  startAt: new Date().toISOString(), endAt: undefined,
+                  status: metaCampaignStatus(s.effective_status || s.status),
+                  lastSyncedAt: new Date().toISOString(),
+                  level: 'adset', parentCampaignId: s.campaign_id,
+                  capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
+                });
+              }
+            } catch { /* 광고세트 로드 실패는 캠페인 목록에 영향 없음 */ }
           } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
         }
       }
@@ -5271,13 +5297,15 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
           for (const c of rows) {
             campaigns.push({
               id: c.nccCampaignId, advertiserId: acc.advertiser_id, platform: 'naver', name: c.name,
+              adgroupName: null, // 캠페인 레벨 - 광고그룹은 펼치기로 로드
               accountName: `${advNameMap.get(acc.advertiser_id) || ''} 네이버`, budget: Number(c.dailyBudget || 0),
               budgetType: c.useDailyBudget === false ? 'total' : 'daily',
               startAt: c.regTm || new Date().toISOString(), endAt: undefined,
               status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
               lastSyncedAt: new Date().toISOString(),
-              campaignType: naverCampaignTypeKo(c.campaignTp), // 파워링크·쇼핑검색·플레이스 등
-              capability: { upload: false, toggle: true, schedule: true, budgetEdit: true }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF·일정 예약이 가능합니다.
+              campaignType: naverCampaignTypeKo(c.campaignTp),
+              level: 'campaign',
+              capability: { upload: false, toggle: true, schedule: true, budgetEdit: true },
             });
           }
         } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }

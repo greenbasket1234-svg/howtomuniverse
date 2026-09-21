@@ -12,16 +12,19 @@ export type Campaign = {
   id: string;
   advertiserId: string;
   platform: PlatformKey;
-  name: string;
+  name: string;           // 캠페인명
+  adgroupName?: string | null; // 광고그룹명(네이버) 또는 광고세트명(메타) — null이면 캠페인 레벨
   accountName: string;
   budget: number;
   budgetType: 'daily' | 'total';
   startAt: string;
   endAt?: string;
   status: CampaignStatus;
-  campaignType?: string; // 네이버: 파워링크·쇼핑검색·플레이스 등
+  campaignType?: string;
   schedule?: { onAt?: string; offAt?: string; repeat?: string; rules?: string[] };
   lastSyncedAt?: string;
+  level?: 'campaign' | 'adset' | 'adgroup';
+  parentCampaignId?: string;
   capability: { upload: boolean; toggle: boolean; schedule: boolean; budgetEdit: boolean };
 };
 
