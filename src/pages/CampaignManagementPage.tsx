@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink } from 'lucide-react';
+import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink, Pencil, Check, X } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
 import { ChannelTag } from '../components/ChannelTag';
@@ -45,6 +45,24 @@ export function CampaignManagementPage() {
   const [query,setQuery] = useState('');
   const [showUpload,setShowUpload] = useState(false);
   const [showSchedule,setShowSchedule] = useState<string|null>(null);
+  // 인라인 예산 편집 상태: {campaignId → 편집 중인 금액}
+  const [editingBudget,setEditingBudget] = useState<string|null>(null);
+  const [budgetInput,setBudgetInput] = useState('');
+  const [budgetSaving,setBudgetSaving] = useState(false);
+
+  const startEditBudget=(c: Campaign)=>{setEditingBudget(c.id);setBudgetInput(String(c.budget));};
+  const cancelEditBudget=()=>{setEditingBudget(null);setBudgetInput('');};
+  const saveBudget=async(c: Campaign)=>{
+    const v=Number(budgetInput.replace(/,/g,''));
+    if(!v||v<=0){alert('유효한 금액을 입력하세요.');return;}
+    setBudgetSaving(true);
+    try{
+      await apiFetch('/api/campaigns/budget',{method:'PATCH',body:JSON.stringify({id:c.id,channel:c.platform,advertiserId:c.advertiserId,budget:v,budgetType:c.budgetType})});
+      setRows(prev=>prev.map(r=>r.id===c.id?{...r,budget:v}:r));
+      setEditingBudget(null);
+    }catch(e){alert(e instanceof Error?e.message:'예산 변경에 실패했습니다.');}
+    finally{setBudgetSaving(false);}
+  };
   type SortKey='name'|'budget'|'status';
   const [sortKey,setSortKey] = useState<SortKey>('name');
   const [sortDir,setSortDir] = useState<'asc'|'desc'>('asc');
@@ -126,9 +144,11 @@ export function CampaignManagementPage() {
 
     <div className="card" style={{padding:0}}>
       <div className="table-scroll fixed-scroll-box"><table className="data-table campaign-table"><thead><tr><th>매체</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>캠페인{sortArrow('name')}</th><th>광고계정</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('budget')}>예산{sortArrow('budget')}</th><th>운영 기간</th><th>자동 일정</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('status')}>상태{sortArrow('status')}</th><th>최근 동기화</th><th>작업</th></tr></thead><tbody>
-        {filtered.map(r=>{const myRules=rulesFor(r);return <tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><strong>{r.name}</strong>{r.campaignType&&<> <CampaignTypeTag type={r.campaignType}/></>}</td><td>{r.accountName}</td><td className="num metric-emphasis">{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</td><td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td>
+        {filtered.map(r=>{const myRules=rulesFor(r);const isEditingBudget=editingBudget===r.id;return <tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><strong>{r.name}</strong>{r.campaignType&&<> <CampaignTypeTag type={r.campaignType}/></>}</td><td>{r.accountName}</td>
+        <td className="num metric-emphasis" style={{minWidth:130}}>{isEditingBudget?<div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}><span style={{fontSize:11,color:'#64748b'}}>{r.budgetType==='daily'?'일':'총'}</span><input type="text" value={budgetInput} onChange={e=>setBudgetInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')saveBudget(r);if(e.key==='Escape')cancelEditBudget();}} style={{width:90,textAlign:'right',fontSize:13,border:'1px solid #3b82f6',borderRadius:5,padding:'2px 6px'}} autoFocus/><button className="icon-btn" style={{color:'#16a34a',width:22,height:22}} disabled={budgetSaving} onClick={()=>saveBudget(r)} title="저장"><Check size={12}/></button><button className="icon-btn" style={{color:'#dc2626',width:22,height:22}} onClick={cancelEditBudget} title="취소"><X size={12}/></button></div>:<span>{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</span>}</td>
+        <td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td>
         <td>{myRules.length===0?'-':<span title={myRules.map(x=>`${x.name}(${x.enabled?'ON':'중지'})`).join('\n')}>{ruleScheduleSummary(myRules[0])} · {myRules[0].config?.action==='on'?'켜기':'끄기'}{myRules.length>1?` 외 ${myRules.length-1}개 규칙`:''}</span>}</td>
-        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="ON/OFF 일정 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리에서 함께 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리에서 함께 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>;})}
+        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="예산 즉시 수정" disabled={!r.capability.budgetEdit||!(['meta','naver'].includes(r.platform))} onClick={()=>startEditBudget(r)}><Pencil size={14}/></button><button className="icon-btn" title="ON/OFF·예산 예약 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>;})}
       </tbody></table></div>
     </div>
 
@@ -163,6 +183,7 @@ export function CampaignManagementPage() {
  * 그대로 보이고, 예약 작업 화면에서 만든 규칙도 여기서 함께 관리할 수 있습니다. */
 export function TargetAutomationModal({targetType,targetId,targetName,channel,advertiserId,rules,onClose,onChanged}:{targetType:'campaign'|'creative'|'keyword';targetId:string;targetName:string;channel:string;advertiserId:string;rules:AutomationRule[];onClose:()=>void;onChanged:()=>void}){
   const WEEKDAYS:[string,number][]=[['일',0],['월',1],['화',2],['수',3],['목',4],['금',5],['토',6]];
+  const [tab,setTab]=useState<'onoff'|'budget'>('onoff');
   const [action,setAction]=useState<'on'|'off'>('on');
   const [cadence,setCadence]=useState<'once'|'daily'|'weekly'|'monthly'>('daily');
   const [weekdays,setWeekdays]=useState<number[]>([1]);
@@ -171,9 +192,31 @@ export function TargetAutomationModal({targetType,targetId,targetName,channel,ad
   const [onceDate,setOnceDate]=useState(todayStr());
   const [time,setTime]=useState('09:00');
   const [saving,setSaving]=useState(false);
+  // 예산 예약 전용 상태
+  const [budgetAmount,setBudgetAmount]=useState('');
+  const [budgetType,setBudgetType]=useState<'daily'|'total'>('daily');
+  const isBudgetChannel=['meta','naver'].includes(channel);
   const label=targetType==='creative'?'소재':targetType==='keyword'?'키워드':'캠페인';
   const toggleWeekday=(v:number)=>setWeekdays(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v].sort());
+  const onoffRules=rules.filter(r=>r.config?.action!=='budget_change');
+  const budgetRules=rules.filter(r=>r.config?.action==='budget_change');
+
   const addRule=async()=>{
+    if(tab==='budget'){
+      const budget=Number(budgetAmount.replace(/,/g,''));
+      if(!budget||budget<=0){alert('유효한 예산 금액을 입력하세요.');return;}
+      if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}
+      if(cadence==='once'&&!onceDate){alert('실행할 날짜를 선택하세요.');return;}
+      setSaving(true);
+      try{
+        const config={targetType,targetId,targetName,channel,action:'budget_change',budget,budgetType,cadence,weekdays,dayOfMonth,date:onceDate,time};
+        const name=`${targetName} 예산 ₩${budget.toLocaleString()} 변경`;
+        await automationApi.rules.create({type:'campaign',advertiserId,name,config});
+        onChanged();setBudgetAmount('');
+      }catch(e){alert(e instanceof Error?e.message:'저장에 실패했습니다.');}
+      finally{setSaving(false);}
+      return;
+    }
     if(cadence==='weekly'&&weekdays.length===0){alert('요일을 하나 이상 선택하세요.');return;}
     if(cadence==='once'&&!onceDate){alert('실행할 날짜를 선택하세요.');return;}
     setSaving(true);
@@ -185,16 +228,25 @@ export function TargetAutomationModal({targetType,targetId,targetName,channel,ad
     }catch(e){alert(e instanceof Error?e.message:'저장에 실패했습니다.');}
     finally{setSaving(false);}
   };
-  const removeRule=async(id:string)=>{ if(!confirm('이 예약을 삭제할까요?'))return; await automationApi.rules.remove(id); onChanged(); };
-  const toggleEnabled=async(rule:AutomationRule)=>{ await automationApi.rules.update(rule.id,{enabled:!rule.enabled}); onChanged(); };
-  return <div className="modal-backdrop" onClick={onClose}><div className="modal-card" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-    <div className="modal-title">{targetName} ON/OFF 일정 설정</div>
-    <p className="muted-text">정해진 요일·시각에 서버가 실제로 이 {label} 상태를 변경합니다. 여러 규칙을 함께 등록할 수 있습니다(예: 평일 09:00 켜기 + 평일 21:00 끄기).</p>
-    {rules.length>0&&<div style={{marginBottom:14}}>
-      <label style={{marginBottom:6,display:'block',fontWeight:700,fontSize:13}}>등록된 규칙 ({rules.length}개)</label>
+  const removeRule=async(id:string)=>{if(!confirm('이 예약을 삭제할까요?'))return;await automationApi.rules.remove(id);onChanged();};
+  const toggleEnabled=async(rule:AutomationRule)=>{await automationApi.rules.update(rule.id,{enabled:!rule.enabled});onChanged();};
+
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal-card" onClick={e=>e.stopPropagation()} style={{maxWidth:540}}>
+    <div className="modal-title">{targetName} 예약 설정</div>
+    <p className="muted-text">정해진 요일·시각에 서버가 실제로 이 {label}의 ON/OFF 또는 예산을 변경합니다.</p>
+
+    {/* 탭 */}
+    <div style={{display:'flex',gap:8,marginBottom:16,borderBottom:'1px solid #e5eaf2',paddingBottom:10}}>
+      <button type="button" className={tab==='onoff'?'btn btn-primary sm':'btn secondary sm'} onClick={()=>setTab('onoff')}>⏱ ON/OFF 예약</button>
+      {isBudgetChannel&&<button type="button" className={tab==='budget'?'btn btn-primary sm':'btn secondary sm'} onClick={()=>setTab('budget')}>💰 예산 변경 예약</button>}
+    </div>
+
+    {/* 등록된 규칙 */}
+    {tab==='onoff'&&onoffRules.length>0&&<div style={{marginBottom:14}}>
+      <label style={{marginBottom:6,display:'block',fontWeight:700,fontSize:13}}>등록된 ON/OFF 규칙 ({onoffRules.length}개)</label>
       <div style={{display:'flex',flexDirection:'column',gap:6}}>
-        {rules.map(r=><div key={r.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#f8fafc',borderRadius:6,padding:'8px 10px',fontSize:12.5}}>
-          <span>{ruleScheduleSummary(r)} · <b>{r.config?.action==='on'?'켜기':'끄기'}</b> {!r.enabled&&<em style={{color:'#94a3b8'}}>(중지됨)</em>}</span>
+        {onoffRules.map(r=><div key={r.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#f8fafc',borderRadius:6,padding:'8px 10px',fontSize:12.5}}>
+          <span>{ruleScheduleSummary(r)} · <b>{r.config?.action==='on'?'켜기':'끄기'}</b>{!r.enabled&&<em style={{color:'#94a3b8'}}> (중지됨)</em>}</span>
           <div style={{display:'flex',gap:6}}>
             <button type="button" className="btn secondary sm" onClick={()=>toggleEnabled(r)}>{r.enabled?'중지':'재개'}</button>
             <button type="button" className="icon-btn danger" onClick={()=>removeRule(r.id)}>×</button>
@@ -202,8 +254,27 @@ export function TargetAutomationModal({targetType,targetId,targetName,channel,ad
         </div>)}
       </div>
     </div>}
+
+    {tab==='budget'&&budgetRules.length>0&&<div style={{marginBottom:14}}>
+      <label style={{marginBottom:6,display:'block',fontWeight:700,fontSize:13}}>등록된 예산 변경 규칙 ({budgetRules.length}개)</label>
+      <div style={{display:'flex',flexDirection:'column',gap:6}}>
+        {budgetRules.map(r=><div key={r.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#f0f9ff',borderRadius:6,padding:'8px 10px',fontSize:12.5}}>
+          <span>{ruleScheduleSummary(r)} · <b>₩{Number(r.config?.budget||0).toLocaleString()}</b> ({r.config?.budgetType==='total'?'총':'일'} 예산){!r.enabled&&<em style={{color:'#94a3b8'}}> (중지됨)</em>}</span>
+          <div style={{display:'flex',gap:6}}>
+            <button type="button" className="btn secondary sm" onClick={()=>toggleEnabled(r)}>{r.enabled?'중지':'재개'}</button>
+            <button type="button" className="icon-btn danger" onClick={()=>removeRule(r.id)}>×</button>
+          </div>
+        </div>)}
+      </div>
+    </div>}
+
+    {/* 규칙 추가 폼 */}
     <div className="final-form">
-      <label style={{display:'block',marginBottom:8}}>동작<select className="form-select" style={{width:'100%',marginTop:4}} value={action} onChange={e=>setAction(e.target.value as any)}><option value="on">켜기(ON)</option><option value="off">끄기(OFF)</option></select></label>
+      {tab==='budget'&&<>
+        <label style={{display:'block',marginBottom:8}}>변경할 예산 금액 (₩)<input type="text" className="form-select" style={{width:'100%',marginTop:4}} placeholder="예: 50000" value={budgetAmount} onChange={e=>setBudgetAmount(e.target.value)}/></label>
+        <label style={{display:'block',marginBottom:8}}>예산 유형<select className="form-select" style={{width:'100%',marginTop:4}} value={budgetType} onChange={e=>setBudgetType(e.target.value as any)}><option value="daily">일 예산</option><option value="total">총 예산</option></select></label>
+      </>}
+      {tab==='onoff'&&<label style={{display:'block',marginBottom:8}}>동작<select className="form-select" style={{width:'100%',marginTop:4}} value={action} onChange={e=>setAction(e.target.value as any)}><option value="on">켜기(ON)</option><option value="off">끄기(OFF)</option></select></label>}
       <label style={{display:'block',marginBottom:8}}>주기<select className="form-select" style={{width:'100%',marginTop:4}} value={cadence} onChange={e=>setCadence(e.target.value as any)}><option value="once">1회(특정 날짜)</option><option value="daily">매일</option><option value="weekly">매주(요일 지정)</option><option value="monthly">매월</option></select></label>
       {cadence==='once'&&<label style={{display:'block',marginBottom:8}}>실행 날짜<input type="date" className="form-select" style={{width:'100%',marginTop:4}} value={onceDate} onChange={e=>setOnceDate(e.target.value)}/></label>}
       {cadence==='weekly'&&<div style={{marginBottom:8}}><span style={{fontSize:13,fontWeight:700}}>요일(복수 선택 가능)</span><div style={{display:'flex',gap:6,marginTop:6}}>{WEEKDAYS.map(([label,v])=><button type="button" key={v} className={weekdays.includes(v)?'btn primary sm':'btn secondary sm'} onClick={()=>toggleWeekday(v)}>{label}</button>)}</div></div>}

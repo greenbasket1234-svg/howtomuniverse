@@ -2625,6 +2625,52 @@ async function toggleCampaignStatus({ campaignId, channel, advertiserId, targetS
   return toggleAdTargetStatus({ targetType: 'campaign', targetId: campaignId, channel, advertiserId, targetStatus });
 }
 
+/**
+ * 캠페인 예산을 Meta / 네이버 API로 즉시 변경합니다.
+ * budgetType: 'daily'(일 예산) | 'total'(총 예산)
+ * budget: 원화 정수 (KRW)
+ */
+async function updateCampaignBudget({ campaignId, channel, advertiserId, budget, budgetType }) {
+  const amount = Math.round(Number(budget));
+  if (!Number.isFinite(amount) || amount <= 0) throw Object.assign(new Error('유효하지 않은 예산 금액입니다.'), { status: 400 });
+
+  if (channel === 'meta') {
+    // Meta API: daily_budget 또는 lifetime_budget (KRW는 원화 단위 그대로 사용)
+    const field = budgetType === 'total' ? 'lifetime_budget' : 'daily_budget';
+    try {
+      await metaGraphPost(`/${campaignId}`, { [field]: String(amount) });
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType } });
+      return { ok: true, budget: amount, budgetType };
+    } catch (error) {
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
+      throw Object.assign(new Error(`Meta 예산 변경 실패: ${error instanceof Error ? error.message : error}`), { status: 502 });
+    }
+  }
+
+  if (channel === 'naver') {
+    const tenantId = await getCurrentTenantId();
+    const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+    if (!account || account.status !== 'connected' || !account.api_key) {
+      throw Object.assign(new Error('네이버 계정이 연결되어 있지 않습니다.'), { status: 400 });
+    }
+    const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+    try {
+      // 네이버 검색광고 캠페인 예산 변경: PUT /ncc/campaigns/{campaignId} with budget 필드
+      await naverApiRequest('PUT', `/ncc/campaigns/${campaignId}`, { fields: 'budget' }, credentials, {
+        nccCampaignId: campaignId,
+        budget: amount,
+      });
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType } });
+      return { ok: true, budget: amount, budgetType };
+    } catch (error) {
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
+      throw Object.assign(new Error(`네이버 예산 변경 실패: ${error instanceof Error ? error.message : error}`), { status: 502 });
+    }
+  }
+
+  throw Object.assign(new Error(`${channel} 매체는 예산 변경을 지원하지 않습니다.`), { status: 400 });
+}
+
 async function handleApi(req, res, pathname) {
   try {
     if (req.method === 'GET' && pathname === '/api/health') {
@@ -5253,6 +5299,33 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
+    // ── 캠페인 예산 즉시 수정 (Meta · 네이버) ─────────────────────────────────
+    if (req.method === 'PATCH' && pathname === '/api/campaigns/budget') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const body = await readJson(req);
+      const campaignId = cleanText(body.id || '', 120);
+      const channel = cleanText(body.channel || '', 20);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      const budget = Number(body.budget);
+      const budgetType = body.budgetType === 'total' ? 'total' : 'daily';
+      if (!campaignId || !channel || !advertiserId || !budget) return sendJson(res, 400, { error: 'id, channel, advertiserId, budget이 필요합니다.' });
+      if (!['meta', 'naver'].includes(channel)) return sendJson(res, 400, { error: `${channel} 매체는 예산 변경을 지원하지 않습니다.` });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+      if (denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
+      try {
+        const result = await updateCampaignBudget({ campaignId, channel, advertiserId, budget, budgetType });
+        // DB에도 반영 (campaigns 테이블이 있는 경우)
+        await pgPool.query(
+          `UPDATE campaigns SET budget=$1, budget_type=$2, updated_at=now() WHERE id=$3 AND tenant_id=$4`,
+          [budget, budgetType, campaignId, requester.tenantId]
+        ).catch(() => {}); // campaigns 테이블 없으면 무시
+        return sendJson(res, 200, result);
+      } catch (error) {
+        return sendJson(res, error?.status || 502, { error: error?.message || '예산 변경에 실패했습니다.' });
+      }
+    }
+
     if (req.method === 'GET' && pathname === '/api/funnels/channels') {
       const tenantId = await getCurrentTenantId();
       const db = await pgReadDb(tenantId);
@@ -5529,14 +5602,25 @@ async function runNotificationAutomationRule(rule) {
   return { triggered: false, pacing };
 }
 
-/** 캠페인 자동 ON/OFF - 이미 검증된 toggleCampaignStatus()를 그대로 재사용합니다. */
+/** 캠페인 자동 ON/OFF + 예산 변경 - 검증된 API 함수들을 재사용합니다. */
 async function runCampaignAutomationRule(rule) {
   const cfg = rule.config || {};
   const targetType = ['adset', 'creative', 'keyword'].includes(cfg.targetType) ? cfg.targetType : 'campaign';
-  const targetId = cfg.targetId || cfg.campaignId; // campaignId는 이전 버전과의 호환을 위해 계속 지원합니다.
-  if (!targetId || !cfg.channel || !rule.advertiser_id || !cfg.action) {
-    throw Object.assign(new Error('캠페인 자동화 설정이 올바르지 않습니다(targetId·channel·advertiserId·action 필요).'), { status: 400 });
+  const targetId = cfg.targetId || cfg.campaignId;
+  if (!targetId || !cfg.channel || !rule.advertiser_id) {
+    throw Object.assign(new Error('캠페인 자동화 설정이 올바르지 않습니다(targetId·channel·advertiserId 필요).'), { status: 400 });
   }
+  if (cfg.action === 'budget_change') {
+    const budget = Number(cfg.budget);
+    if (!budget || budget <= 0) throw Object.assign(new Error('예산 금액이 올바르지 않습니다.'), { status: 400 });
+    const result = await updateCampaignBudget({ campaignId: targetId, channel: cfg.channel, advertiserId: rule.advertiser_id, budget, budgetType: cfg.budgetType || 'daily' });
+    await pgPool.query(
+      `INSERT INTO automation_notifications (tenant_id, rule_id, advertiser_id, title, message, recipient, channels) VALUES ($1,$2,$3,$4,$5,'admin','{internal}')`,
+      [rule.tenant_id, rule.id, rule.advertiser_id, `[자동화] ${rule.name}`, `캠페인 "${cfg.targetName || targetId}"의 ${cfg.budgetType === 'total' ? '총' : '일'} 예산이 ₩${budget.toLocaleString()}으로 변경됐습니다.`]
+    );
+    return result;
+  }
+  if (!cfg.action) throw Object.assign(new Error('캠페인 자동화 설정이 올바르지 않습니다(action 필요).'), { status: 400 });
   const result = await toggleAdTargetStatus({ targetType, targetId, channel: cfg.channel, advertiserId: rule.advertiser_id, targetStatus: cfg.action });
   await pgPool.query(
     `INSERT INTO automation_notifications (tenant_id, rule_id, advertiser_id, title, message, recipient, channels)
