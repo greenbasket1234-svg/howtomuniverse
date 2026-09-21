@@ -5314,6 +5314,9 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 광고그룹·광고세트 목록 조회 (캠페인 하위) ───────────────────────────
     if (req.method === 'GET' && pathname === '/api/campaigns/adgroups') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
       const q = new URL(req.url, 'http://x').searchParams;
       const campaignId = cleanText(q.get('campaignId') || '', 120);
       const channel = cleanText(q.get('channel') || '', 20);
