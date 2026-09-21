@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink, Pencil, Check, X } from 'lucide-react';
+import { Upload, Power, CalendarClock, RefreshCw, Search, Plus, FileSpreadsheet, ExternalLink, Pencil, Check, X, ChevronDown, ChevronRight, Loader } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
 import { ChannelTag } from '../components/ChannelTag';
@@ -8,7 +8,7 @@ import { CampaignTypeTag } from '../components/ChannelTag';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useMetricsQuery } from '../context/MetricsQueryContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
-import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey } from '../types/operations';
+import { PLATFORM_LABEL, type Campaign, type CampaignStatus, type PlatformKey, type AdGroupRow } from '../types/operations';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { apiFetch } from '../hooks/useApi';
@@ -31,7 +31,8 @@ export function CampaignManagementPage() {
   const [autoRules,setAutoRules]=useState<AutomationRule[]>([]);
   const reloadAutoRules=()=>{automationApi.rules.list('campaign').then(setAutoRules).catch(()=>setAutoRules([]));};
   useEffect(()=>{reloadAutoRules();},[]);
-  const rulesFor=(row:Campaign)=>autoRules.filter(r=>r.config?.targetType==='campaign'&&String(r.config?.targetId)===String(row.id)&&r.config?.channel===row.platform);
+  const rulesFor=(row:Campaign)=>autoRules.filter(r=>String(r.config?.targetId)===String(row.id)&&r.config?.channel===row.platform);
+  const rulesForId=(targetId:string)=>autoRules.filter(r=>String(r.config?.targetId)===String(targetId));
   // 다른 인사이트 화면들과 같은 상단 기간 선택기(오늘/7일/30일 등)를 그대로 씁니다.
   const {range}=useMetricsQuery();
   const [perf,setPerf] = useState<CampaignMetricRow[]>([]);
@@ -49,6 +50,42 @@ export function CampaignManagementPage() {
   const [editingBudget,setEditingBudget] = useState<string|null>(null);
   const [budgetInput,setBudgetInput] = useState('');
   const [budgetSaving,setBudgetSaving] = useState(false);
+  // 광고그룹·세트 펼치기 상태: campaignId → 로딩 중 / 완료 / 숨김
+  const [expandedCampaigns,setExpandedCampaigns] = useState<Set<string>>(new Set());
+  const [adgroupMap,setAdgroupMap] = useState<Record<string, AdGroupRow[]>>({});
+  const [adgroupLoading,setAdgroupLoading] = useState<Set<string>>(new Set());
+  // 광고그룹·세트 인라인 예산 편집
+  const [editingAdBudget,setEditingAdBudget] = useState<string|null>(null);
+  const [adBudgetInput,setAdBudgetInput] = useState('');
+
+  const toggleExpand = async (c: Campaign) => {
+    const id = c.id;
+    if (expandedCampaigns.has(id)) {
+      setExpandedCampaigns(prev => { const n = new Set(prev); n.delete(id); return n; });
+      return;
+    }
+    setExpandedCampaigns(prev => new Set([...prev, id]));
+    if (adgroupMap[id]) return; // 이미 로드됨
+    if (!['meta','naver'].includes(c.platform)) return; // 지원 안 함
+    setAdgroupLoading(prev => new Set([...prev, id]));
+    try {
+      const rows = await apiFetch<AdGroupRow[]>(`/api/campaigns/adgroups?campaignId=${encodeURIComponent(id)}&channel=${c.platform}&advertiserId=${encodeURIComponent(c.advertiserId)}`);
+      setAdgroupMap(prev => ({ ...prev, [id]: rows || [] }));
+    } catch { setAdgroupMap(prev => ({ ...prev, [id]: [] })); }
+    finally { setAdgroupLoading(prev => { const n = new Set(prev); n.delete(id); return n; }); }
+  };
+
+  const saveAdBudget = async (ag: AdGroupRow) => {
+    const v = Number(adBudgetInput.replace(/,/g, ''));
+    if (!v || v <= 0) { alert('유효한 금액을 입력하세요.'); return; }
+    setBudgetSaving(true);
+    try {
+      await apiFetch('/api/campaigns/budget', { method: 'PATCH', body: JSON.stringify({ id: ag.id, targetType: 'adset', channel: ag.platform, advertiserId: ag.advertiserId, budget: v, budgetType: ag.budgetType }) });
+      setAdgroupMap(prev => ({ ...prev, [ag.parentCampaignId]: (prev[ag.parentCampaignId] || []).map(r => r.id === ag.id ? { ...r, budget: v } : r) }));
+      setEditingAdBudget(null);
+    } catch (e) { alert(e instanceof Error ? e.message : '예산 변경 실패'); }
+    finally { setBudgetSaving(false); }
+  };
 
   const startEditBudget=(c: Campaign)=>{setEditingBudget(c.id);setBudgetInput(String(c.budget));};
   const cancelEditBudget=()=>{setEditingBudget(null);setBudgetInput('');};
@@ -143,12 +180,26 @@ export function CampaignManagementPage() {
     </div>
 
     <div className="card" style={{padding:0}}>
-      <div className="table-scroll fixed-scroll-box"><table className="data-table campaign-table"><thead><tr><th>매체</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>캠페인{sortArrow('name')}</th><th>광고계정</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('budget')}>예산{sortArrow('budget')}</th><th>운영 기간</th><th>자동 일정</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('status')}>상태{sortArrow('status')}</th><th>최근 동기화</th><th>작업</th></tr></thead><tbody>
-        {filtered.map(r=>{const myRules=rulesFor(r);const isEditingBudget=editingBudget===r.id;return <tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><strong>{r.name}</strong>{r.campaignType&&<> <CampaignTypeTag type={r.campaignType}/></>}</td><td>{r.accountName}</td>
+      <div className="table-scroll fixed-scroll-box"><table className="data-table campaign-table"><thead><tr><th>매체</th><th></th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('name')}>캠페인{sortArrow('name')}</th><th>광고그룹·세트</th><th>광고계정</th><th className="num" style={{cursor:'pointer'}} onClick={()=>toggleSort('budget')}>예산{sortArrow('budget')}</th><th>운영 기간</th><th>자동 일정</th><th style={{cursor:'pointer'}} onClick={()=>toggleSort('status')}>상태{sortArrow('status')}</th><th>최근 동기화</th><th>작업</th></tr></thead><tbody>
+        {filtered.map(r=>{const myRules=rulesFor(r);const isEditingBudget=editingBudget===r.id;const isExpanded=expandedCampaigns.has(r.id);const isLoadingAg=adgroupLoading.has(r.id);const adgroups=adgroupMap[r.id]||[];const supportsAdgroups=['meta','naver'].includes(r.platform);return <><tr key={r.id}><td><ChannelTag channel={r.platform}/></td><td><div style={{display:'flex',alignItems:'center',gap:4}}>{supportsAdgroups&&<button className="icon-btn" style={{width:20,height:20,flexShrink:0}} title={isExpanded?'접기':'광고그룹·세트 펼치기'} onClick={()=>toggleExpand(r)}>{isLoadingAg?<Loader size={12} style={{animation:'spin 1s linear infinite'}}/>:isExpanded?<ChevronDown size={13}/>:<ChevronRight size={13}/>}</button>}<strong>{r.name}</strong>{r.campaignType&&<> <CampaignTypeTag type={r.campaignType}/></>}</div></td><td style={{color:'#94a3b8',fontSize:12}}>—</td><td>{r.accountName}</td>
         <td className="num metric-emphasis" style={{minWidth:130}}>{isEditingBudget?<div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}><span style={{fontSize:11,color:'#64748b'}}>{r.budgetType==='daily'?'일':'총'}</span><input type="text" value={budgetInput} onChange={e=>setBudgetInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')saveBudget(r);if(e.key==='Escape')cancelEditBudget();}} style={{width:90,textAlign:'right',fontSize:13,border:'1px solid #3b82f6',borderRadius:5,padding:'2px 6px'}} autoFocus/><button className="icon-btn" style={{color:'#16a34a',width:22,height:22}} disabled={budgetSaving} onClick={()=>saveBudget(r)} title="저장"><Check size={12}/></button><button className="icon-btn" style={{color:'#dc2626',width:22,height:22}} onClick={cancelEditBudget} title="취소"><X size={12}/></button></div>:<span>{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</span>}</td>
         <td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td>
         <td>{myRules.length===0?'-':<span title={myRules.map(x=>`${x.name}(${x.enabled?'ON':'중지'})`).join('\n')}>{ruleScheduleSummary(myRules[0])} · {myRules[0].config?.action==='on'?'켜기':'끄기'}{myRules.length>1?` 외 ${myRules.length-1}개 규칙`:''}</span>}</td>
-        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="예산 즉시 수정" disabled={!r.capability.budgetEdit||!(['meta','naver'].includes(r.platform))} onClick={()=>startEditBudget(r)}><Pencil size={14}/></button><button className="icon-btn" title="ON/OFF·예산 예약 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>;})}
+        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>toggle(r.id)}><Power size={15}/></button><button className="icon-btn" title="예산 즉시 수정" disabled={!r.capability.budgetEdit||!(['meta','naver'].includes(r.platform))} onClick={()=>startEditBudget(r)}><Pencil size={14}/></button><button className="icon-btn" title="ON/OFF·예산 예약 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>
+      {isExpanded&&adgroups.map(ag=>{const isEditAg=editingAdBudget===ag.id;return <tr key={ag.id} style={{background:'#f8fafc'}}>
+        <td style={{paddingLeft:28}}><span style={{fontSize:10,color:'#94a3b8',background:'#e5e7eb',borderRadius:4,padding:'1px 5px'}}>{ag.level==='adset'?'광고세트':'광고그룹'}</span></td>
+        <td style={{paddingLeft:8,color:'#64748b',fontSize:12}}>└</td>
+        <td style={{fontWeight:600,fontSize:12}}>{ag.name}</td>
+        <td></td>
+        <td className="num metric-emphasis" style={{minWidth:130}}>{isEditAg?<div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}><span style={{fontSize:11,color:'#64748b'}}>{ag.budgetType==='daily'?'일':'총'}</span><input type="text" value={adBudgetInput} onChange={e=>setAdBudgetInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')saveAdBudget(ag);if(e.key==='Escape')setEditingAdBudget(null);}} style={{width:90,textAlign:'right',fontSize:13,border:'1px solid #3b82f6',borderRadius:5,padding:'2px 6px'}} autoFocus/><button className="icon-btn" style={{color:'#16a34a',width:22,height:22}} disabled={budgetSaving} onClick={()=>saveAdBudget(ag)} title="저장"><Check size={12}/></button><button className="icon-btn" style={{color:'#dc2626',width:22,height:22}} onClick={()=>setEditingAdBudget(null)} title="취소"><X size={12}/></button></div>:<span>{ag.budgetType==='daily'?'일 ':'총 '}₩{ag.budget.toLocaleString()}</span>}</td>
+        <td style={{fontSize:12,color:'#94a3b8'}}>-</td><td>-</td>
+        <td><Badge tone={statusTone[ag.status as CampaignStatus]}>{statusLabel[ag.status as CampaignStatus]}</Badge></td>
+        <td></td>
+        <td><div className="row-actions"><button className="icon-btn" title="ON/OFF" onClick={()=>apiFetch('/api/campaigns',{method:'PUT',body:JSON.stringify({id:ag.id,targetType:'adset',channel:ag.platform,advertiserId:ag.advertiserId,status:ag.status==='on'?'off':'on'})})}><Power size={15}/></button><button className="icon-btn" title="예산 수정" onClick={()=>{setEditingAdBudget(ag.id);setAdBudgetInput(String(ag.budget));}}><Pencil size={14}/></button><button className="icon-btn" title="예산·ON/OFF 예약" onClick={()=>setShowSchedule(`adg:${ag.id}:${ag.platform}:${ag.advertiserId}`)}><CalendarClock size={15}/></button></div></td>
+      </tr>;})}
+      {isExpanded&&isLoadingAg&&<tr><td colSpan={10} style={{textAlign:'center',padding:'8px',color:'#94a3b8',fontSize:12}}>광고그룹·세트 로딩 중...</td></tr>}
+      {isExpanded&&!isLoadingAg&&adgroups.length===0&&adgroupMap[r.id]!==undefined&&<tr><td colSpan={10} style={{textAlign:'center',padding:'8px',color:'#94a3b8',fontSize:12}}>광고그룹·세트 없음</td></tr>}
+      </>;})}
       </tbody></table></div>
     </div>
 
@@ -163,18 +214,17 @@ export function CampaignManagementPage() {
     <div className="footnote">고성과·저성과는 선택하신 기간의 실제 매체 성과(캠페인명 기준 매칭)를 ROAS·전환수·CVR·클릭수 종합 기준으로 판단합니다. 성과 데이터가 없는 캠페인(연동 전·집행 전)은 집계에서 제외됩니다.</div>
 
     {showUpload && <div className="modal-backdrop" onClick={()=>setShowUpload(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-title">캠페인 업로드</div><p className="muted-text">개별 등록 또는 CSV/XLSX 대량 업로드를 선택하세요. 실제 API 키가 연결되면 사전 검증 후 매체로 전송됩니다.</p><div className="upload-drop"><Upload size={24}/><strong>파일을 놓거나 선택하세요</strong><span>CSV, XLSX · 최대 10MB</span></div><div className="modal-actions"><button className="btn" onClick={()=>setShowUpload(false)}>취소</button><button className="btn btn-primary" onClick={()=>setShowUpload(false)}>검증만 실행</button></div></div></div>}
-    {scheduleTarget && (
-      <TargetAutomationModal
-        targetType="campaign"
-        targetId={scheduleTarget.id}
-        targetName={scheduleTarget.name}
-        channel={scheduleTarget.platform}
-        advertiserId={scheduleTarget.advertiserId}
-        rules={rulesFor(scheduleTarget)}
-        onClose={()=>setShowSchedule(null)}
-        onChanged={reloadAutoRules}
-      />
-    )}
+    {showSchedule && (()=>{
+      if (showSchedule.startsWith('adg:')) {
+        const parts = showSchedule.split(':');
+        const agId=parts[1], agChannel=parts[2], agAdvId=parts[3];
+        const agName = Object.values(adgroupMap).flat().find(a=>a.id===agId)?.name || agId;
+        return <TargetAutomationModal targetType="campaign" targetId={agId} targetName={agName} channel={agChannel} advertiserId={agAdvId} rules={rulesForId(agId)} onClose={()=>setShowSchedule(null)} onChanged={reloadAutoRules}/>;
+      }
+      const t = rows.find(r=>r.id===showSchedule);
+      if (!t) return null;
+      return <TargetAutomationModal targetType="campaign" targetId={t.id} targetName={t.name} channel={t.platform} advertiserId={t.advertiserId} rules={rulesFor(t)} onClose={()=>setShowSchedule(null)} onChanged={reloadAutoRules}/>;
+    })()}
   </div>
 }
 

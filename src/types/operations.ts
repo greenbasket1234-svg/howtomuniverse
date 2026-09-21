@@ -25,6 +25,20 @@ export type Campaign = {
   capability: { upload: boolean; toggle: boolean; schedule: boolean; budgetEdit: boolean };
 };
 
+/** 광고그룹(네이버) 또는 광고세트(Meta) 하위 행 */
+export type AdGroupRow = {
+  id: string;
+  name: string;
+  level: 'adgroup' | 'adset';
+  budget: number;
+  budgetType: 'daily' | 'total';
+  status: CampaignStatus;
+  platform: PlatformKey;
+  advertiserId: string;
+  parentCampaignId: string;
+  capability: { upload: boolean; toggle: boolean; schedule: boolean; budgetEdit: boolean };
+};
+
 export type FunnelMetricKey =
   | 'spend' | 'impressions' | 'reach' | 'clicks' | 'ctr' | 'cpc' | 'cpm'
   | 'leads' | 'validLeads' | 'contracts' | 'clickToLeadRate' | 'validLeadRate'

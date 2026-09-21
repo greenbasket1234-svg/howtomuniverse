@@ -2630,16 +2630,16 @@ async function toggleCampaignStatus({ campaignId, channel, advertiserId, targetS
  * budgetType: 'daily'(일 예산) | 'total'(총 예산)
  * budget: 원화 정수 (KRW)
  */
-async function updateCampaignBudget({ campaignId, channel, advertiserId, budget, budgetType }) {
+async function updateCampaignBudget({ campaignId, targetType = 'campaign', channel, advertiserId, budget, budgetType }) {
   const amount = Math.round(Number(budget));
   if (!Number.isFinite(amount) || amount <= 0) throw Object.assign(new Error('유효하지 않은 예산 금액입니다.'), { status: 400 });
 
   if (channel === 'meta') {
-    // Meta API: daily_budget 또는 lifetime_budget (KRW는 원화 단위 그대로 사용)
+    // campaign 또는 adset(광고세트) 모두 같은 Meta API 패턴으로 업데이트합니다.
     const field = budgetType === 'total' ? 'lifetime_budget' : 'daily_budget';
     try {
       await metaGraphPost(`/${campaignId}`, { [field]: String(amount) });
-      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType } });
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType, targetType } });
       return { ok: true, budget: amount, budgetType };
     } catch (error) {
       addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
@@ -2655,12 +2655,20 @@ async function updateCampaignBudget({ campaignId, channel, advertiserId, budget,
     }
     const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
     try {
-      // 네이버 검색광고 캠페인 예산 변경: PUT /ncc/campaigns/{campaignId} with budget 필드
-      await naverApiRequest('PUT', `/ncc/campaigns/${campaignId}`, { fields: 'budget' }, credentials, {
-        nccCampaignId: campaignId,
-        budget: amount,
-      });
-      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType } });
+      if (targetType === 'adset') {
+        // 광고그룹 예산 변경: PUT /ncc/adgroups/{id}
+        await naverApiRequest('PUT', `/ncc/adgroups/${campaignId}`, { fields: 'budget' }, credentials, {
+          nccAdgroupId: campaignId,
+          budget: amount,
+        });
+      } else {
+        // 캠페인 예산 변경: PUT /ncc/campaigns/{id}
+        await naverApiRequest('PUT', `/ncc/campaigns/${campaignId}`, { fields: 'budget' }, credentials, {
+          nccCampaignId: campaignId,
+          budget: amount,
+        });
+      }
+      addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'success', data: { budget: amount, budgetType, targetType } });
       return { ok: true, budget: amount, budgetType };
     } catch (error) {
       addLog({ action: 'campaign_budget_update', advertiserId, channel, targetId: campaignId, result: 'fail', error: error instanceof Error ? error.message : String(error) });
@@ -5299,27 +5307,78 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
-    // ── 캠페인 예산 즉시 수정 (Meta · 네이버) ─────────────────────────────────
+    // ── 광고그룹·광고세트 목록 조회 (캠페인 하위) ───────────────────────────
+    if (req.method === 'GET' && pathname === '/api/campaigns/adgroups') {
+      const q = new URL(req.url, 'http://x').searchParams;
+      const campaignId = cleanText(q.get('campaignId') || '', 120);
+      const channel = cleanText(q.get('channel') || '', 20);
+      const advertiserId = cleanText(q.get('advertiserId') || '', 120);
+      if (!campaignId || !channel || !advertiserId) return sendJson(res, 400, { error: 'campaignId, channel, advertiserId가 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+
+      if (channel === 'meta') {
+        if (!metaConfigured()) return sendJson(res, 400, { error: 'Meta API가 설정되지 않았습니다.' });
+        try {
+          const data = await metaGraphGet(`/${campaignId}/adsets`, {
+            fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,bid_amount,optimization_goal',
+            limit: '200',
+          });
+          const adsets = (data.data || []).map(s => ({
+            id: s.id, name: s.name, level: 'adset',
+            budget: Number(s.daily_budget || s.lifetime_budget || 0),
+            budgetType: s.daily_budget ? 'daily' : 'total',
+            status: metaCampaignStatus(s.effective_status || s.status),
+            platform: 'meta', advertiserId, parentCampaignId: campaignId,
+            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
+          }));
+          return sendJson(res, 200, adsets);
+        } catch (error) {
+          return sendJson(res, 502, { error: error?.message || 'Meta 광고세트 조회 실패' });
+        }
+      }
+
+      if (channel === 'naver') {
+        const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+        if (!account || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되지 않았습니다.' });
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        try {
+          const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: campaignId }, credentials);
+          const adgroups = (Array.isArray(rows) ? rows : []).map(ag => ({
+            id: ag.nccAdgroupId, name: ag.name || '', level: 'adgroup',
+            budget: Number(ag.budget || ag.dailyBudget || 0), budgetType: 'daily',
+            status: ag.userLock ? 'off' : (ag.status === 'ELIGIBLE' ? 'on' : 'review'),
+            platform: 'naver', advertiserId, parentCampaignId: campaignId,
+            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
+          }));
+          return sendJson(res, 200, adgroups);
+        } catch (error) {
+          return sendJson(res, 502, { error: error?.message || '네이버 광고그룹 조회 실패' });
+        }
+      }
+      return sendJson(res, 400, { error: `${channel} 매체는 광고그룹 조회를 지원하지 않습니다.` });
+    }
+
+    // ── 캠페인·광고그룹·세트 예산 즉시 수정 (Meta · 네이버) ─────────────────────
     if (req.method === 'PATCH' && pathname === '/api/campaigns/budget') {
       const requester = await resolveRequestUser(req);
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const body = await readJson(req);
-      const campaignId = cleanText(body.id || '', 120);
+      const targetId = cleanText(body.id || '', 120);
+      const targetType = ['adset'].includes(body.targetType) ? body.targetType : 'campaign'; // adset = 네이버 광고그룹·Meta 광고세트
       const channel = cleanText(body.channel || '', 20);
       const advertiserId = cleanText(body.advertiserId || '', 120);
       const budget = Number(body.budget);
       const budgetType = body.budgetType === 'total' ? 'total' : 'daily';
-      if (!campaignId || !channel || !advertiserId || !budget) return sendJson(res, 400, { error: 'id, channel, advertiserId, budget이 필요합니다.' });
+      if (!targetId || !channel || !advertiserId || !budget) return sendJson(res, 400, { error: 'id, channel, advertiserId, budget이 필요합니다.' });
       if (!['meta', 'naver'].includes(channel)) return sendJson(res, 400, { error: `${channel} 매체는 예산 변경을 지원하지 않습니다.` });
       if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
       if (denyUnlessPermitted(res, requester, 'campaign.edit')) return true;
       try {
-        const result = await updateCampaignBudget({ campaignId, channel, advertiserId, budget, budgetType });
-        // DB에도 반영 (campaigns 테이블이 있는 경우)
+        const result = await updateCampaignBudget({ campaignId: targetId, targetType, channel, advertiserId, budget, budgetType });
         await pgPool.query(
           `UPDATE campaigns SET budget=$1, budget_type=$2, updated_at=now() WHERE id=$3 AND tenant_id=$4`,
-          [budget, budgetType, campaignId, requester.tenantId]
-        ).catch(() => {}); // campaigns 테이블 없으면 무시
+          [budget, budgetType, targetId, requester.tenantId]
+        ).catch(() => {});
         return sendJson(res, 200, result);
       } catch (error) {
         return sendJson(res, error?.status || 502, { error: error?.message || '예산 변경에 실패했습니다.' });
