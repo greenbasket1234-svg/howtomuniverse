@@ -5247,7 +5247,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
                 startAt: c.start_time || new Date().toISOString(), endAt: c.stop_time,
                 status: metaCampaignStatus(c.effective_status || c.status),
                 lastSyncedAt: new Date().toISOString(),
-                capability: { upload: false, toggle: true, schedule: true }, // 실제로 시도해서 결과로 판단합니다 - 지금 연결된 토큰이 소재 단위 ON/OFF에서 이미 성공했으므로 캠페인도 같은 권한으로 시도합니다.
+                capability: { upload: false, toggle: true, schedule: true, budgetEdit: true }, // 실제로 시도해서 결과로 판단합니다 - 지금 연결된 토큰이 소재 단위 ON/OFF에서 이미 성공했으므로 캠페인도 같은 권한으로 시도합니다.
               });
             }
           } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
@@ -5269,7 +5269,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
               status: c.userLock || String(c.status || '').includes('PAUSE') ? 'off' : (c.status === 'ELIGIBLE' ? 'on' : 'review'),
               lastSyncedAt: new Date().toISOString(),
               campaignType: naverCampaignTypeKo(c.campaignTp), // 파워링크·쇼핑검색·플레이스 등
-              capability: { upload: false, toggle: true, schedule: true }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF·일정 예약이 가능합니다.
+              capability: { upload: false, toggle: true, schedule: true, budgetEdit: true }, // 네이버 검색광고 API 키는 조회·수정 권한이 함께 부여되어 실제 ON/OFF·일정 예약이 가능합니다.
             });
           }
         } catch { /* 한 광고주에서 실패해도 나머지는 계속 보여줍니다. */ }
