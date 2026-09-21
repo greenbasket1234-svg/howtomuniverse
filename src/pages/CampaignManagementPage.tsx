@@ -71,7 +71,7 @@ export function CampaignManagementPage() {
     if (!['meta','naver'].includes(c.platform)) return;
     setAdgroupLoading(prev => new Set([...prev, id]));
     try {
-      const rows = await apiFetch<AdGroupRow[]>(`/api/campaigns/adgroups?campaignId=${encodeURIComponent(id)}&channel=${c.platform}&advertiserId=${encodeURIComponent(c.advertiserId)}`);
+      const rows = await apiFetch<AdGroupRow[]>(`/campaigns/adgroups?campaignId=${encodeURIComponent(id)}&channel=${c.platform}&advertiserId=${encodeURIComponent(c.advertiserId)}`);
       setAdgroupMap(prev => ({ ...prev, [id]: rows || [] }));
     } catch (e) {
       // 오류를 화면에 표시하고, undefined 유지해 재시도 가능하게 함
@@ -88,7 +88,7 @@ export function CampaignManagementPage() {
     if (!v || v <= 0) { alert('유효한 금액을 입력하세요.'); return; }
     setBudgetSaving(true);
     try {
-      await apiFetch('/api/campaigns/budget', { method: 'PATCH', body: JSON.stringify({ id: ag.id, targetType: 'adset', channel: ag.platform, advertiserId: ag.advertiserId, budget: v, budgetType: ag.budgetType }) });
+      await apiFetch('/campaigns/budget', { method: 'PATCH', body: JSON.stringify({ id: ag.id, targetType: 'adset', channel: ag.platform, advertiserId: ag.advertiserId, budget: v, budgetType: ag.budgetType }) });
       setAdgroupMap(prev => ({ ...prev, [ag.parentCampaignId]: (prev[ag.parentCampaignId] || []).map(r => r.id === ag.id ? { ...r, budget: v } : r) }));
       setEditingAdBudget(null);
     } catch (e) { alert(e instanceof Error ? e.message : '예산 변경 실패'); }
@@ -102,7 +102,7 @@ export function CampaignManagementPage() {
     if(!v||v<=0){alert('유효한 금액을 입력하세요.');return;}
     setBudgetSaving(true);
     try{
-      await apiFetch('/api/campaigns/budget',{method:'PATCH',body:JSON.stringify({id:c.id,targetType:c.level==='adset'||c.level==='adgroup'?'adset':'campaign',channel:c.platform,advertiserId:c.advertiserId,budget:v,budgetType:c.budgetType})});
+      await apiFetch('/campaigns/budget',{method:'PATCH',body:JSON.stringify({id:c.id,targetType:c.level==='adset'||c.level==='adgroup'?'adset':'campaign',channel:c.platform,advertiserId:c.advertiserId,budget:v,budgetType:c.budgetType})});
       setRows(prev=>prev.map(r=>r.id===c.id?{...r,budget:v}:r));
       setEditingBudget(null);
     }catch(e){alert(e instanceof Error?e.message:'예산 변경에 실패했습니다.');}
@@ -193,7 +193,7 @@ export function CampaignManagementPage() {
         <td className="num metric-emphasis" style={{minWidth:130}}>{isEditingBudget?<div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}><span style={{fontSize:11,color:'#64748b'}}>{r.budgetType==='daily'?'일':'총'}</span><input type="text" value={budgetInput} onChange={e=>setBudgetInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')saveBudget(r);if(e.key==='Escape')cancelEditBudget();}} style={{width:90,textAlign:'right',fontSize:13,border:'1px solid #3b82f6',borderRadius:5,padding:'2px 6px'}} autoFocus/><button className="icon-btn" style={{color:'#16a34a',width:22,height:22}} disabled={budgetSaving} onClick={()=>saveBudget(r)} title="저장"><Check size={12}/></button><button className="icon-btn" style={{color:'#dc2626',width:22,height:22}} onClick={cancelEditBudget} title="취소"><X size={12}/></button></div>:<span>{r.budgetType==='daily'?'일 ':'총 '}₩{r.budget.toLocaleString()}</span>}</td>
         <td>{r.startAt.replace('T',' ')}<br/><span className="muted-text">{r.endAt?.replace('T',' ')||'종료일 없음'}</span></td>
         <td>{myRules.length===0?'-':<span title={myRules.map(x=>`${x.name}(${x.enabled?'ON':'중지'})`).join('\n')}>{ruleScheduleSummary(myRules[0])} · {myRules[0].config?.action==='on'?'켜기':'끄기'}{myRules.length>1?` 외 ${myRules.length-1}개 규칙`:''}</span>}</td>
-        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>{if(isAdset){apiFetch('/api/campaigns',{method:'PUT',body:JSON.stringify({id:r.id,targetType:'adset',channel:r.platform,advertiserId:r.advertiserId,status:r.status==='on'?'off':'on'})});}else{toggle(r.id);}}}><Power size={15}/></button><button className="icon-btn" title="예산 즉시 수정" disabled={!r.capability.budgetEdit} onClick={()=>startEditBudget(r)}><Pencil size={14}/></button><button className="icon-btn" title="ON/OFF·예산 예약 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(isAdset?`adg:${r.id}:${r.platform}:${r.advertiserId}`:r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>
+        <td><Badge tone={statusTone[r.status]}>{statusLabel[r.status]}</Badge></td><td>{r.lastSyncedAt||'-'}</td><td><div className="row-actions"><button className="icon-btn" title="ON/OFF" disabled={!r.capability.toggle} onClick={()=>{if(isAdset){apiFetch('/campaigns',{method:'PUT',body:JSON.stringify({id:r.id,targetType:'adset',channel:r.platform,advertiserId:r.advertiserId,status:r.status==='on'?'off':'on'})});}else{toggle(r.id);}}}><Power size={15}/></button><button className="icon-btn" title="예산 즉시 수정" disabled={!r.capability.budgetEdit} onClick={()=>startEditBudget(r)}><Pencil size={14}/></button><button className="icon-btn" title="ON/OFF·예산 예약 설정" disabled={!r.capability.schedule} onClick={()=>setShowSchedule(isAdset?`adg:${r.id}:${r.platform}:${r.advertiserId}`:r.id)}><CalendarClock size={15}/></button><button className="icon-btn" title="업로드" disabled={!r.capability.upload}><Upload size={15}/></button>{r.platform==='naver' && <Link className="icon-btn" title="네이버 검색광고 관리" to="/search-ads/naver"><ExternalLink size={15}/></Link>}{r.platform==='meta' && <Link className="icon-btn" title="메타 광고 관리" to="/meta-ads"><ExternalLink size={15}/></Link>}</div></td></tr>
       {isExpanded&&adgroups.map(ag=>{const isEditAg=editingAdBudget===ag.id;return <tr key={ag.id} style={{background:'#f8fafc'}}>
         <td style={{paddingLeft:28}}><span style={{fontSize:10,color:'#94a3b8',background:'#e5e7eb',borderRadius:4,padding:'1px 5px'}}>{ag.level==='adset'?'광고세트':'광고그룹'}</span></td>
         <td style={{paddingLeft:8,color:'#64748b',fontSize:12}}>└</td>
@@ -203,7 +203,7 @@ export function CampaignManagementPage() {
         <td style={{fontSize:12,color:'#94a3b8'}}>-</td><td>-</td>
         <td><Badge tone={statusTone[ag.status as CampaignStatus]}>{statusLabel[ag.status as CampaignStatus]}</Badge></td>
         <td></td>
-        <td><div className="row-actions"><button className="icon-btn" title="ON/OFF" onClick={()=>apiFetch('/api/campaigns',{method:'PUT',body:JSON.stringify({id:ag.id,targetType:'adset',channel:ag.platform,advertiserId:ag.advertiserId,status:ag.status==='on'?'off':'on'})})}><Power size={15}/></button><button className="icon-btn" title="예산 수정" onClick={()=>{setEditingAdBudget(ag.id);setAdBudgetInput(String(ag.budget));}}><Pencil size={14}/></button><button className="icon-btn" title="예산·ON/OFF 예약" onClick={()=>setShowSchedule(`adg:${ag.id}:${ag.platform}:${ag.advertiserId}`)}><CalendarClock size={15}/></button></div></td>
+        <td><div className="row-actions"><button className="icon-btn" title="ON/OFF" onClick={()=>apiFetch('/campaigns',{method:'PUT',body:JSON.stringify({id:ag.id,targetType:'adset',channel:ag.platform,advertiserId:ag.advertiserId,status:ag.status==='on'?'off':'on'})})}><Power size={15}/></button><button className="icon-btn" title="예산 수정" onClick={()=>{setEditingAdBudget(ag.id);setAdBudgetInput(String(ag.budget));}}><Pencil size={14}/></button><button className="icon-btn" title="예산·ON/OFF 예약" onClick={()=>setShowSchedule(`adg:${ag.id}:${ag.platform}:${ag.advertiserId}`)}><CalendarClock size={15}/></button></div></td>
       </tr>;})}
       {isExpanded&&isLoadingAg&&<tr><td colSpan={10} style={{textAlign:'center',padding:'8px',color:'#94a3b8',fontSize:12}}>광고그룹·세트 로딩 중...</td></tr>}
       {isExpanded&&!isLoadingAg&&adgroups.length===0&&adgroupMap[r.id]!==undefined&&<tr><td colSpan={10} style={{textAlign:'center',padding:'8px',color:'#94a3b8',fontSize:12}}>광고그룹·세트 없음</td></tr>}
