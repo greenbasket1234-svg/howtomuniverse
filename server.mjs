@@ -3824,6 +3824,61 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const rows = groupMetrics(source, r => `${r.advertiserId}`, r => ({ advertiserId: r.advertiserId, advertiserName: names.get(String(r.advertiserId)) || String(r.advertiserId), impressions:0, clicks:0, spend:0, dbCount:0, purchases:0, revenue:0 })).sort((a,b)=>b.spend-a.spend);
       return sendJson(res, 200, { rows, meta: metricMeta(db, filters) });
     }
+
+    // ── 광고그룹·광고세트 목록 조회 (캠페인 하위) ───────────────────────────
+    if (req.method === 'GET' && pathname === '/api/campaigns/adgroups') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      const q = new URL(req.url, 'http://x').searchParams;
+      const campaignId = cleanText(q.get('campaignId') || '', 120);
+      const channel = cleanText(q.get('channel') || '', 20);
+      const advertiserId = cleanText(q.get('advertiserId') || '', 120);
+      if (!campaignId || !channel || !advertiserId) return sendJson(res, 400, { error: 'campaignId, channel, advertiserId가 필요합니다.' });
+      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
+
+      if (channel === 'meta') {
+        if (!metaConfigured()) return sendJson(res, 400, { error: 'Meta API가 설정되지 않았습니다.' });
+        try {
+          const data = await metaGraphGet(`/${campaignId}/adsets`, {
+            fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,bid_amount,optimization_goal',
+            limit: '200',
+          });
+          const adsets = (data.data || []).map(s => ({
+            id: s.id, name: s.name, level: 'adset',
+            budget: Number(s.daily_budget || s.lifetime_budget || 0),
+            budgetType: s.daily_budget ? 'daily' : 'total',
+            status: metaCampaignStatus(s.effective_status || s.status),
+            platform: 'meta', advertiserId, parentCampaignId: campaignId,
+            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
+          }));
+          return sendJson(res, 200, adsets);
+        } catch (error) {
+          return sendJson(res, 502, { error: error?.message || 'Meta 광고세트 조회 실패' });
+        }
+      }
+
+      if (channel === 'naver') {
+        const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
+        if (!account || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되지 않았습니다.' });
+        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
+        try {
+          const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: campaignId }, credentials);
+          const adgroups = (Array.isArray(rows) ? rows : []).map(ag => ({
+            id: ag.nccAdgroupId, name: ag.name || '', level: 'adgroup',
+            budget: Number(ag.budget || ag.dailyBudget || 0), budgetType: 'daily',
+            status: ag.userLock ? 'off' : (ag.status === 'ELIGIBLE' ? 'on' : 'review'),
+            platform: 'naver', advertiserId, parentCampaignId: campaignId,
+            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
+          }));
+          return sendJson(res, 200, adgroups);
+        } catch (error) {
+          return sendJson(res, 502, { error: error?.message || '네이버 광고그룹 조회 실패' });
+        }
+      }
+      return sendJson(res, 400, { error: `${channel} 매체는 광고그룹 조회를 지원하지 않습니다.` });
+    }
+
     if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
       // 광고주 계정(내부 직원 아님)은 INSIGHT 등급(2) 이상이어야 캠페인별 분석을 볼 수 있습니다.
       const requesterForTier = await resolveRequestUser(req);
@@ -5312,59 +5367,6 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
-    // ── 광고그룹·광고세트 목록 조회 (캠페인 하위) ───────────────────────────
-    if (req.method === 'GET' && pathname === '/api/campaigns/adgroups') {
-      const requester = await resolveRequestUser(req);
-      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
-      const tenantId = await getCurrentTenantId();
-      const q = new URL(req.url, 'http://x').searchParams;
-      const campaignId = cleanText(q.get('campaignId') || '', 120);
-      const channel = cleanText(q.get('channel') || '', 20);
-      const advertiserId = cleanText(q.get('advertiserId') || '', 120);
-      if (!campaignId || !channel || !advertiserId) return sendJson(res, 400, { error: 'campaignId, channel, advertiserId가 필요합니다.' });
-      if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
-
-      if (channel === 'meta') {
-        if (!metaConfigured()) return sendJson(res, 400, { error: 'Meta API가 설정되지 않았습니다.' });
-        try {
-          const data = await metaGraphGet(`/${campaignId}/adsets`, {
-            fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,bid_amount,optimization_goal',
-            limit: '200',
-          });
-          const adsets = (data.data || []).map(s => ({
-            id: s.id, name: s.name, level: 'adset',
-            budget: Number(s.daily_budget || s.lifetime_budget || 0),
-            budgetType: s.daily_budget ? 'daily' : 'total',
-            status: metaCampaignStatus(s.effective_status || s.status),
-            platform: 'meta', advertiserId, parentCampaignId: campaignId,
-            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
-          }));
-          return sendJson(res, 200, adsets);
-        } catch (error) {
-          return sendJson(res, 502, { error: error?.message || 'Meta 광고세트 조회 실패' });
-        }
-      }
-
-      if (channel === 'naver') {
-        const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
-        if (!account || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되지 않았습니다.' });
-        const credentials = { customerId: account.account_id, apiKey: account.api_key, secretKey: account.secret_key };
-        try {
-          const rows = await naverApiRequest('GET', '/ncc/adgroups', { nccCampaignId: campaignId }, credentials);
-          const adgroups = (Array.isArray(rows) ? rows : []).map(ag => ({
-            id: ag.nccAdgroupId, name: ag.name || '', level: 'adgroup',
-            budget: Number(ag.budget || ag.dailyBudget || 0), budgetType: 'daily',
-            status: ag.userLock ? 'off' : (ag.status === 'ELIGIBLE' ? 'on' : 'review'),
-            platform: 'naver', advertiserId, parentCampaignId: campaignId,
-            capability: { toggle: true, schedule: true, budgetEdit: true, upload: false },
-          }));
-          return sendJson(res, 200, adgroups);
-        } catch (error) {
-          return sendJson(res, 502, { error: error?.message || '네이버 광고그룹 조회 실패' });
-        }
-      }
-      return sendJson(res, 400, { error: `${channel} 매체는 광고그룹 조회를 지원하지 않습니다.` });
-    }
 
     // ── 캠페인·광고그룹·세트 예산 즉시 수정 (Meta · 네이버) ─────────────────────
     if (req.method === 'PATCH' && pathname === '/api/campaigns/budget') {
