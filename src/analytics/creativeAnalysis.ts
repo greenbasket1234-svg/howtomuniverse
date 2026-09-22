@@ -117,7 +117,15 @@ function goalFor(brand:string){
 function matchPerformance(creative:Creative):LiveCreativePerformance|undefined{
   const has=Number(creative.spend||0)>0||Number(creative.impressions||0)>0||Number(creative.clicks||0)>0||Number(creative.dbCount||0)>0||Number(creative.revenue||0)>0;
   if(!has)return undefined;
-  return{creativeId:creative.id,name:creative.name,advertiser:creative.brand,media:normalizeCreativeMedia(creative.platform),campaign:creative.campaignName,spend:Number(creative.spend)||0,impressions:Number(creative.impressions)||0,clicks:Number(creative.clicks)||0,dbCount:Number(creative.dbCount)||0,unconfirmed:Number(creative.unconfirmed)||0,revenue:Number(creative.revenue)||0,purchases:Number(creative.purchases)||0,addToCart:Number(creative.addToCart)||0,completeRegistration:Number(creative.completeRegistration)||0,trend:[],days:1};
+  // API 응답에 trend(일별 CTR 배열)와 days(집계 일수)가 포함됩니다.
+  // 서버의 /api/metrics/creatives가 daily_metrics에서 계산해 반환합니다.
+  const trend=Array.isArray((creative as Record<string,unknown>).trend)
+    ?((creative as Record<string,unknown>).trend as number[]).filter(Number.isFinite)
+    :[];
+  const days=typeof (creative as Record<string,unknown>).days==='number'
+    ?(creative as Record<string,unknown>).days as number
+    :Math.max(1,trend.length);
+  return{creativeId:creative.id,name:creative.name,advertiser:creative.brand,media:normalizeCreativeMedia(creative.platform),campaign:creative.campaignName,spend:Number(creative.spend)||0,impressions:Number(creative.impressions)||0,clicks:Number(creative.clicks)||0,dbCount:Number(creative.dbCount)||0,unconfirmed:Number(creative.unconfirmed)||0,revenue:Number(creative.revenue)||0,purchases:Number(creative.purchases)||0,addToCart:Number(creative.addToCart)||0,completeRegistration:Number(creative.completeRegistration)||0,trend,days};
 }
 
 function matchDbRows(creative:Creative, all:DbDataRow[]){

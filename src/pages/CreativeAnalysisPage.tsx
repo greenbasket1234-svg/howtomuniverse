@@ -1,6 +1,7 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useState, useCallback, type CSSProperties, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { CONTENT_STUDIO_URL, contentStudioPath } from '../data/universeMenu';
+import { apiFetch } from '../hooks/useApi';
 import {
   AlertTriangle, ArrowDownRight, ArrowLeft, ArrowUpRight, BarChart3, ChevronRight,
   CircleDollarSign, Clapperboard, CopyPlus, Database, FileText, Gauge, Image as ImageIcon,
@@ -42,6 +43,31 @@ export function CreativeAnalysisPage(){
   const navigate=useNavigate(); const [params,setParams]=useSearchParams();
   const {range}=useMetricsQuery();
   const [query,setQuery]=useState(''); const [sort,setSort]=useState<'score'|'spend'|'ctr'|'cpa'|'db'|'fatigue'>('score'); const [dir,setDir]=useState<'desc'|'asc'>('desc');
+  const [aiStatus,setAiStatus]=useState<'idle'|'loading'|'error'>('idle');
+  const [aiResult,setAiResult]=useState<string>('');
+  const [aiError,setAiError]=useState('');
+
+  const handleAiAnalysis = useCallback(async()=>{
+    if(aiStatus==='loading')return;
+    const sample=scored.slice(0,20);
+    if(!sample.length){setAiError('분석할 소재 데이터가 없습니다.');setAiStatus('error');return;}
+    setAiStatus('loading');setAiError('');setAiResult('');
+    const lines=[
+      `광고주: ${advertiser||'전체'}`,
+      `분석 기간: 현재 선택 기간`,
+      `총 소재 수: ${rows.length}개 / 유효 성과: ${usable.length}개`,
+      `총 광고비: ₩${Math.round(totalSpend).toLocaleString()} / 평균 CTR: ${avgCtr.toFixed(2)}% / 평균 CPA: ${avgCpa?'₩'+Math.round(avgCpa).toLocaleString():'-'}`,
+      '',
+      '아래는 소재별 성과 데이터입니다. 각 소재의 강약점, 교체/확대 우선순위, 크리에이티브 개선 방향을 구체적인 소재명을 인용해 분석해주세요.',
+      '',
+      ...sample.map(r=>`- [${r.analysisStatus}] "${r.creative.name}" (${normalizeCreativeMedia(r.creative.platform)}) | 광고비:₩${Math.round(r.spend).toLocaleString()} CTR:${r.ctr.toFixed(2)}% CPA:${r.cpa?'₩'+Math.round(r.cpa).toLocaleString():'-'} 점수:${r.score??'-'} 피로도:${r.fatigueScore??'-'} 추이:${r.performance?.trend?.length?`${r.performance.trend[0].toFixed(1)}→${r.performance.trend[r.performance.trend.length-1].toFixed(1)}%`:'데이터없음'}`),
+    ];
+    try{
+      const data=await apiFetch<{analysis?:string;error?:string}>('/ai/recommendations',{method:'POST',body:JSON.stringify({prompt:lines.join('\n')})});
+      setAiResult(data.analysis||JSON.stringify(data));
+      setAiStatus('idle');
+    }catch(e){setAiError(e instanceof Error?e.message:'AI 분석에 실패했습니다.');setAiStatus('error');}
+  },[scored,rows,usable,advertiser,totalSpend,avgCtr,avgCpa,aiStatus]);
   const rawDb=loadDbRows();
   const scopedDb=rawDb.filter(row=>(!range.from||row.date>=range.from)&&(!range.to||row.date<=range.to));
   const liveCreatives=useLiveCreatives();
@@ -95,7 +121,8 @@ export function CreativeAnalysisPage(){
     </div>;
   }
 
-  return <div className="creative-analysis-page"><PageHeader title="소재 분석" description="이미지·영상·카피의 광고 성과, 실제 DB 품질, 피로도와 성공 패턴을 분석하고 콘텐츠 제작으로 연결합니다."/>
+  return <div className="creative-analysis-page"><PageHeader title="소재 분석" description="이미지·영상·카피의 광고 성과, 실제 DB 품질, 피로도와 성공 패턴을 분석하고 콘텐츠 제작으로 연결합니다." actions={<button className="btn primary" onClick={handleAiAnalysis} disabled={aiStatus==='loading'||!usable.length}><Sparkles size={14}/>{aiStatus==='loading'?'AI 분석 중...':'AI 심층 분석'}</button>}/>
+    {(aiResult||aiError)&&<section className="card" style={{marginBottom:12,position:'relative'}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}><b style={{display:'flex',alignItems:'center',gap:6}}><Sparkles size={14}/>소재 AI 심층 분석 결과</b><button className="icon-btn" onClick={()=>{setAiResult('');setAiError('');setAiStatus('idle');}} title="닫기">×</button></div>{aiError?<p style={{color:'#dc2626',fontSize:13}}>{aiError}</p>:<div className="ai-analysis-body" style={{fontSize:13.5,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{aiResult}</div>}</section>}
     <MetricsDateBar/><section className="card creative-analysis-filters"><label>광고주<select value={advertiser} onChange={e=>updateParam('advertiser',e.target.value)}><option value="">전체</option>{advertisers.map(v=><option key={v}>{v}</option>)}</select></label><label>매체<select value={media} onChange={e=>updateParam('media',e.target.value)}><option value="">전체</option>{medias.map(v=><option key={v}>{v}</option>)}</select></label><label>캠페인<select value={campaign} onChange={e=>updateParam('campaign',e.target.value)}><option value="">전체</option>{campaigns.map(v=><option key={v}>{v}</option>)}</select></label><label>소재 유형<select value={type} onChange={e=>updateParam('type',e.target.value)}><option value="">전체</option>{types.map(v=><option key={v}>{v}</option>)}</select></label><button className="btn secondary" onClick={()=>{setParams({}, {replace:true});setQuery('')}}><RefreshCw size={14}/> 필터 초기화</button></section>
     <section className="creative-analysis-kpi-grid"><MiniKpi icon={<ImageIcon/>} label="분석 소재" value={`${rows.length}개`} sub={`성과 연결 ${usable.length}개`}/><MiniKpi icon={<WalletCards/>} label="광고비" value={money(totalSpend)} sub="연결 소재 합계"/><MiniKpi icon={<MousePointerClick/>} label="클릭" value={totalClicks?totalClicks.toLocaleString():'-'} sub={totalImpressions?`평균 CTR ${pct(avgCtr,2)}`:'광고 성과 미연결'}/><MiniKpi icon={<Database/>} label="실제 DB" value={totalDb?totalDb.toLocaleString():'-'} sub={totalValid?`유효 DB ${totalValid.toLocaleString()}`:'Google Sheets 소재ID 연결 시 집계'}/><MiniKpi icon={<CircleDollarSign/>} label="평균 DB 비용" value={avgCpa?money(avgCpa):'-'} sub="실제 DB 연결 기준"/><MiniKpi icon={<Target/>} label="성과 우수" value={`${scored.filter(r=>(r.score??0)>=80).length}개`} sub="성과점수 80+"/><MiniKpi icon={<Gauge/>} label="피로 주의" value={`${rows.filter(r=>(r.fatigueScore??0)>=60).length}개`} sub="피로도 60+"/><MiniKpi icon={<Sparkles/>} label="패턴 표본" value={`${patterns.patterns.length}개`} sub={`우수 패턴 ${patterns.winning.length}개`}/></section>
 
