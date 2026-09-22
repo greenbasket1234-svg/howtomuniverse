@@ -17,13 +17,20 @@ function rec(base:Omit<Recommendation,'priorityLabel'|'confidence'|'insufficient
  * 이 유형은 CPC·CTR·도달 기준으로 판단해야 합니다.
  */
 const TRAFFIC_CAMPAIGN_OBJECTIVES = new Set([
-  // Meta 캠페인 목표
+  // Meta 캠페인 목표 (영문 코드)
   'TRAFFIC', 'VIDEO_VIEWS', 'REACH', 'BRAND_AWARENESS',
   'ENGAGEMENT', 'PAGE_LIKES', 'MESSAGES', 'STORE_VISITS',
   'LINK_CLICKS', 'POST_ENGAGEMENT',
-  // 한국어 표기
+  // Meta 한국어 표기
   '트래픽', '동영상 조회', '도달', '브랜드 인지도',
   '참여', '페이지 좋아요', '메시지', '매장 방문',
+  // 네이버 캠페인 유형 코드 (campaignTp)
+  'POWER_CONTENTS', // 파워컨텐츠 — 도달·클릭 목적
+  'BRAND_SEARCH',   // 브랜드검색 — 인지도·방어 목적, 전환 추적 거의 없음
+  'PLACE',          // 플레이스 — 방문·클릭 목적, 전환 개념 없음
+  // 네이버 캠페인 유형 한국어 (naverCampaignTypeKo 변환 후 값)
+  '파워컨텐츠', '브랜드검색', '플레이스',
+  // WEB_SITE(파워링크)·SHOPPING(쇼핑검색)은 전환 추적이 핵심이므로 제외
 ]);
 
 function isTrafficCampaign(row: CampaignMetricRow | CreativeMetricRow | KeywordMetricRow): boolean {
