@@ -104,6 +104,17 @@ function getClientIp(req) {
   if (forwarded) return String(forwarded).split(',')[0].trim();
   return req.socket?.remoteAddress || 'unknown';
 }
+// ── 로그인 Rate Limit ─────────────────────────────────────────────────────────
+const _loginAttempts = new Map();
+function checkLoginRateLimit(ip) {
+  const now = Date.now();
+  const e = _loginAttempts.get(ip);
+  if (!e || e.resetAt < now) { _loginAttempts.set(ip, { count: 1, resetAt: now + 60_000 }); return true; }
+  if (e.count >= 10) return false;
+  e.count++;
+  return true;
+}
+setInterval(() => { const now = Date.now(); for (const [k, v] of _loginAttempts) if (v.resetAt < now) _loginAttempts.delete(k); }, 3_600_000);
 /** 접속/보안 기록(로그인 성공·실패 등)을 DB에 남깁니다. 최근 500건만 보관합니다. */
 function cleanText(value, max = 5000) {
   return String(value ?? '').trim().slice(0, max);
@@ -2519,11 +2530,14 @@ async function handleAuth(req, res, pathname) {
       sendJson(res, 500, { error: '서버에 로그인 정보가 설정되지 않았습니다. Railway 환경변수(HOWTOM_ADMIN_EMAIL, HOWTOM_ADMIN_PASSWORD, JWT_SECRET)를 확인하세요.' });
       return true;
     }
-    let body;
+    const ip = getClientIp(req);
+    if (!checkLoginRateLimit(ip)) {
+      sendJson(res, 429, { error: '로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.' });
+      return true;
+    }
     try { body = await readJson(req); } catch (e) { sendJson(res, 400, { error: e instanceof Error ? e.message : '요청 본문이 올바르지 않습니다.' }); return true; }
     const email = String(body.email ?? '').trim();
     const password = String(body.password ?? '');
-    const ip = getClientIp(req);
     if (!email || !password) { sendJson(res, 400, { error: '아이디와 비밀번호를 입력하세요.' }); return true; }
 
     const now = Math.floor(Date.now() / 1000);
