@@ -2535,6 +2535,7 @@ async function handleAuth(req, res, pathname) {
       sendJson(res, 429, { error: '로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.' });
       return true;
     }
+    let body;
     try { body = await readJson(req); } catch (e) { sendJson(res, 400, { error: e instanceof Error ? e.message : '요청 본문이 올바르지 않습니다.' }); return true; }
     const email = String(body.email ?? '').trim();
     const password = String(body.password ?? '');
