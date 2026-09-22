@@ -22,8 +22,10 @@ export function buildAIRecommendationContext(
   return {
     advertiser,
     period,
-    recommendations: recommendations.map(({ title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName, metrics }) => ({
-      title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName, metrics,
+    recommendations: recommendations.map(({ title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName, campaignType, campaignName, adgroupName, metrics }) => ({
+      title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName,
+      // campaignType을 포함해야 AI가 트래픽·전환 구분 기준을 올바르게 적용할 수 있습니다.
+      campaignType, campaignName, adgroupName, metrics,
     })),
     guidelines,
   };

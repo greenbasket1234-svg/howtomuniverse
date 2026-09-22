@@ -246,6 +246,14 @@ if (pgPool) {
       await client.query(`SET statement_timeout = '20s'`);
       await client.query(schemaSql);
       console.log('[스키마] db/schema.sql 자동 적용 완료 - 새 테이블/컬럼이 반영됐습니다.');
+      // 기존 DB 업그레이드를 위한 독립 마이그레이션:
+      // schema.sql에 없는 신규 컬럼은 여기서 IF NOT EXISTS로 안전하게 추가합니다.
+      // 전체 마이그레이션 재실행 없이 기존 운영 환경에 적용됩니다.
+      await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ai_guidelines JSONB`);
+      await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_sync_last_run_at TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS auto_sync_last_result JSONB`);
+      await client.query(`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS result JSONB`);
+      console.log('[스키마] 독립 컬럼 마이그레이션 완료');
     } finally {
       client.release();
     }
@@ -332,7 +340,7 @@ async function pgReadDb(tenantId, filters = {}) {
               )) FILTER (WHERE m.id IS NOT NULL), '[]') as accounts
        FROM advertisers a LEFT JOIN media_accounts m ON m.advertiser_id = a.id
        WHERE a.tenant_id = $1 GROUP BY a.id`, [tenantId]),
-    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM daily_metrics WHERE ${dm.where}`, dm.params),
+    pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM daily_metrics WHERE ${dm.where} ${AD_CHANNELS_EXCLUDE_CLAUSE}`, dm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM campaign_daily_metrics WHERE ${cm.where}`, cm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", ad_id as "adId", ad_name as "adName", impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed", thumbnail_url as "thumbnailUrl", media_type as "mediaType", video_url as "videoUrl", title, body, description, cta, carousel_images as "carouselImages" FROM creative_daily_metrics WHERE ${cdm.where}`, cdm.params),
     pgPool.query(`SELECT advertiser_id as "advertiserId", channel, to_char(date,'YYYY-MM-DD') as date, campaign_id as "campaignId", campaign_name as "campaignName", campaign_type as "campaignType", adgroup_id as "adgroupId", adgroup_name as "adgroupName", keyword_id as "keywordId", keyword, impressions, clicks, spend, db_count as "dbCount", purchases, revenue, add_to_cart as "addToCart", complete_registration as "completeRegistration", initiate_checkout as "initiateCheckout", unconfirmed_count as "unconfirmed" FROM keyword_daily_metrics WHERE ${kdm.where}`, kdm.params),
@@ -1427,6 +1435,10 @@ async function naverFetchKeywordDailyMetrics(credentials, since, until) {
 /** 구글/카카오 등 미구현 커넥터는 데이터를 0으로 가장하지 않고 명시적으로 미구현 상태를 반환합니다. */
 const KEYWORD_CAPABLE_CHANNELS = ['naver', 'google', 'kakao'];
 const IMPLEMENTED_METRIC_CHANNELS = new Set(['meta', 'naver']);
+// 쇼핑몰 채널: 광고 성과 집계에서 분리합니다.
+// 같은 구매가 광고 플랫폼과 쇼핑몰에 각각 잡혀 매출이 중복되는 것을 방지합니다.
+const STORE_CHANNELS = new Set(['cafe24', 'naver_store']);
+const AD_CHANNELS_EXCLUDE_CLAUSE = `AND channel NOT IN ('cafe24','naver_store')`;
 
 /* ========================================================================
    네이버 검색광고 API 연동
@@ -1441,9 +1453,21 @@ const NAVER_API_BASE = 'https://api.searchad.naver.com';
 // ── 카페24 (Cafe24) API ───────────────────────────────────────────────────────
 // 인증: client_credentials (mall_id + client_id + client_secret → access_token 자동 발급)
 // 토큰은 2시간 유효 → 매 동기화 시 새로 발급합니다.
+/** mallId SSRF 방지: 영문소문자·숫자·하이픈만, cafe24api.com 호스트만 허용 */
+function validateCafe24MallId(mallId) {
+  if (!/^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(mallId)) throw new Error('쇼핑몰 ID 형식이 올바르지 않습니다(영문 소문자·숫자·하이픈, 최대 40자).');
+  return `${mallId}.cafe24api.com`;
+}
+
+/** 카페24 client_credentials 토큰 발급
+ * ※ 참고: 카페24 Admin API는 공식적으로 Authorization Code OAuth를 권장합니다.
+ *   client_credentials는 제한된 범위(shop 정보·통계)에서만 동작할 수 있으며,
+ *   실제 주문 데이터 접근은 관리자 승인 OAuth 흐름이 필요할 수 있습니다.
+ *   공식 가이드: https://apidocs.cafe24.com/ko/docs/guide/oauth2-authentication */
 async function cafe24GetAccessToken(mallId, clientId, clientSecret) {
+  const host = validateCafe24MallId(mallId); // SSRF 검증
   const cred = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-  const res = await fetch(`https://${mallId}.cafe24api.com/api/v2/oauth/token`, {
+  const res = await fetch(`https://${host}/api/v2/oauth/token`, {
     method: 'POST',
     headers: { 'Authorization': `Basic ${cred}`, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'grant_type=client_credentials&scope=mall.read_order,mall.read_analytics',
@@ -1452,21 +1476,26 @@ async function cafe24GetAccessToken(mallId, clientId, clientSecret) {
   if (!res.ok || !data.access_token) {
     throw new Error(data.error_description || data.error || `카페24 토큰 발급 실패 (${res.status})`);
   }
-  return data.access_token;
+  return { token: data.access_token, host };
 }
 
+/**
+ * 카페24 일별 주문 집계 — 결제완료 주문만, 페이지별 처리(메모리 누적 없음)
+ * 집계 기준: 주문일, 결제완료(paid/confirmed) 상태, KRW 기준 실결제금액
+ */
+const CAFE24_PAID_STATUSES = new Set(['paid', 'prepared_product', 'preparing_product', 'prepared_shipping', 'shipping', 'shipped', 'waiting_confirm', 'confirmed']);
 async function cafe24FetchDailyOrders(mallId, clientId, clientSecret, since, until) {
-  const token = await cafe24GetAccessToken(mallId, clientId, clientSecret);
-  const base = `https://${mallId}.cafe24api.com/api/v2/admin/orders`;
-  const allOrders = [];
+  const { token, host } = await cafe24GetAccessToken(mallId, clientId, clientSecret);
+  const byDate = new Map();
   let offset = 0;
-  // 페이지네이션: 200건씩 순차 조회
+  const PAGE_SIZE = 200;
+  // 페이지별 집계·저장(메모리에 전체 누적 없음)
   while (true) {
-    const url = new URL(base);
+    const url = new URL(`https://${host}/api/v2/admin/orders`);
     url.searchParams.set('start_date', since);
     url.searchParams.set('end_date', until);
-    url.searchParams.set('order_date_type', 'order'); // 주문일 기준
-    url.searchParams.set('limit', '200');
+    url.searchParams.set('order_date_type', 'order');
+    url.searchParams.set('limit', String(PAGE_SIZE));
     url.searchParams.set('offset', String(offset));
     const res = await fetch(url.toString(), {
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
@@ -1474,26 +1503,35 @@ async function cafe24FetchDailyOrders(mallId, clientId, clientSecret, since, unt
     const data = await res.json();
     if (!res.ok) throw new Error(data.error?.message || `카페24 주문 조회 실패 (${res.status})`);
     const batch = data.orders || [];
-    allOrders.push(...batch);
-    if (batch.length < 200) break; // 마지막 페이지
-    offset += 200;
-  }
-  // 일별 집계: 날짜→ {purchases: 건수, revenue: 결제금액}
-  const byDate = new Map();
-  for (const o of allOrders) {
-    const date = (o.order_date || '').slice(0, 10);
-    if (!date) continue;
-    const cur = byDate.get(date) || { date, purchases: 0, revenue: 0 };
-    cur.purchases += 1;
-    cur.revenue += Number(o.actual_payment_amount || o.total_amount || 0);
-    byDate.set(date, cur);
+    if (!Array.isArray(batch)) throw new Error('카페24 API 응답 형식이 올바르지 않습니다(orders 필드 없음).');
+    // 결제완료 주문만 집계
+    for (const o of batch) {
+      const orderStatus = String(o.order_status || o.status || '').toLowerCase();
+      const payStatus = String(o.payment_status || '').toLowerCase();
+      // 취소·환불·미결제 제외
+      if (orderStatus.includes('cancel') || orderStatus.includes('refund') || orderStatus.includes('return') || payStatus === 'unpaid') continue;
+      if (!CAFE24_PAID_STATUSES.has(orderStatus) && !CAFE24_PAID_STATUSES.has(payStatus)) continue;
+      const date = (o.order_date || '').slice(0, 10);
+      if (!date) continue;
+      // 실결제금액(actual_payment_amount) 우선, 없으면 total_amount — 추정이므로 명시
+      const amount = o.actual_payment_amount != null
+        ? Number(o.actual_payment_amount)
+        : o.total_amount != null ? Number(o.total_amount) : null;
+      if (amount === null || amount < 0) continue; // 필수 필드 없으면 저장 안 함
+      const cur = byDate.get(date) || { date, purchases: 0, revenue: 0 };
+      cur.purchases += 1;
+      cur.revenue += amount;
+      byDate.set(date, cur);
+    }
+    if (batch.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
   return [...byDate.values()];
 }
 
 async function cafe24TestConnection(mallId, clientId, clientSecret) {
-  const token = await cafe24GetAccessToken(mallId, clientId, clientSecret);
-  const res = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/store`, {
+  const { token, host } = await cafe24GetAccessToken(mallId, clientId, clientSecret);
+  const res = await fetch(`https://${host}/api/v2/admin/store`, {
     headers: { 'Authorization': `Bearer ${token}` },
   });
   const data = await res.json();
@@ -3437,11 +3475,17 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     /** 동기화(백엔드 내부용)에서만 사용합니다 - 실제 API 호출을 위해 복호화된 값을 반환합니다. 프론트로는 절대 내려보내지 않습니다. */
     // ── AI 분석 지침 (관리자 커스텀 프롬프트) ───────────────────────────────
     if (req.method === 'GET' && pathname === '/api/ai-guidelines') {
+      const tenantId = await getCurrentTenantId();
+      if (!tenantId) return sendJson(res, 500, { error: '테넌트를 확인할 수 없습니다.' });
       const r = await pgPool.query(`SELECT ai_guidelines FROM tenants WHERE id=$1`, [tenantId]);
-      return sendJson(res, 200, r.rows[0]?.ai_guidelines || { customRules: [], campaignTypeRules: {} });
+      // 저장된 지침이 없으면 빈 객체 반환 (기본값은 프론트에서 처리)
+      return sendJson(res, 200, r.rows[0]?.ai_guidelines || null);
     }
     if (req.method === 'PUT' && pathname === '/api/ai-guidelines') {
-      if (denyUnlessPermitted(res, payload, 'settings.manage')) return true;
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
+      if (denyUnlessPermitted(res, requester, 'settings.manage')) return true;
       const body = await readJson(req);
       // customRules: string[] — AI에게 추가로 전달할 분석 규칙
       // campaignTypeRules: Record<string, string> — 캠페인 유형별 분석 기준
@@ -5419,14 +5463,23 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 카페24 데이터 동기화 ─────────────────────────────────────────────────
     if (req.method === 'POST' && pathname === '/api/integrations/sync-cafe24') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
       if (!advertiserId || !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '광고주 접근 권한이 없습니다.' });
       const acc = await pgGetMediaAccountForSync(tenantId, advertiserId, 'cafe24');
-      if (!acc || !acc.account_id || !acc.api_key) return sendJson(res, 400, { error: '카페24 계정이 연결되지 않았습니다.' });
-      const mallId = acc.account_id;
-      const clientId = decryptSecret(acc.api_key_encrypted);
-      const clientSecret = decryptSecret(acc.secret_key_encrypted);
+      // pgGetMediaAccountForSync는 이미 복호화된 api_key, secret_key를 반환합니다.
+      if (!acc || !acc.account_id || !acc.api_key || !acc.secret_key) return sendJson(res, 400, { error: '카페24 계정이 연결되지 않았습니다.' });
+      const rawMallId = acc.account_id;
+      // SSRF 방지: mallId는 영문 소문자·숫자·하이픈만 허용합니다.
+      if (!/^[a-z0-9-]{1,40}$/.test(rawMallId)) return sendJson(res, 400, { error: '유효하지 않은 쇼핑몰 ID입니다.' });
+      const mallId = rawMallId;
+      // 완성된 URL 호스트 검증
+      const expectedHost = `${mallId}.cafe24api.com`;
+      const clientId = acc.api_key;
+      const clientSecret = acc.secret_key;
       const days = Math.min(Number(body.days) || 90, 730);
       const until = new Date().toISOString().slice(0, 10);
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
@@ -5465,13 +5518,17 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 네이버 스마트스토어 데이터 동기화 ───────────────────────────────────
     if (req.method === 'POST' && pathname === '/api/integrations/sync-naver-store') {
+      const requester = await resolveRequestUser(req);
+      if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
+      const tenantId = await getCurrentTenantId();
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
       if (!advertiserId || !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '광고주 접근 권한이 없습니다.' });
       const acc = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver_store');
-      if (!acc || !acc.api_key) return sendJson(res, 400, { error: '네이버 스마트스토어 계정이 연결되지 않았습니다.' });
-      const clientId = decryptSecret(acc.api_key_encrypted);
-      const clientSecret = decryptSecret(acc.secret_key_encrypted);
+      // pgGetMediaAccountForSync는 이미 복호화된 api_key, secret_key를 반환합니다.
+      if (!acc || !acc.api_key || !acc.secret_key) return sendJson(res, 400, { error: '네이버 스마트스토어 계정이 연결되지 않았습니다.' });
+      const clientId = acc.api_key;
+      const clientSecret = acc.secret_key;
       const days = Math.min(Number(body.days) || 90, 730);
       const until = new Date().toISOString().slice(0, 10);
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
@@ -5777,7 +5834,7 @@ async function runScheduledSyncForAllAccounts(days = 3) {
   const accounts = await pgPool.query(
     `SELECT m.tenant_id, m.advertiser_id, m.channel, a.name as advertiser_name
      FROM media_accounts m JOIN advertisers a ON a.id = m.advertiser_id
-     WHERE m.status='connected' AND m.channel IN ('meta','naver')
+     WHERE m.status='connected' AND m.channel IN ('meta','naver','cafe24','naver_store')
      ORDER BY m.channel, a.name`
   );
   console.log(`[자동 동기화] 시작 - 연결된 계정 ${accounts.rows.length}개(meta ${accounts.rows.filter(r => r.channel === 'meta').length}, naver ${accounts.rows.filter(r => r.channel === 'naver').length}), 최근 ${days}일 기준`);

@@ -26,10 +26,17 @@ export function AIRecommendationsPage(){
   const [aiStatus,setAiStatus]=useState<'idle'|'loading'|'not_ready'|'error'>('idle');
   const [aiResult,setAiResult]=useState<AIAnalysisResult|null>(null);
   const [aiError,setAiError]=useState('');
-  const [guidelines,setGuidelines]=useState<AIGuidelinesConfig>({});
+  const [guidelines,setGuidelines]=useState<AIGuidelinesConfig|null>(null);
+  const [guidelinesError,setGuidelinesError]=useState('');
 
   useEffect(()=>{
-    apiFetch<AIGuidelinesConfig>('/ai-guidelines').then(setGuidelines).catch(()=>{});
+    apiFetch<AIGuidelinesConfig|null>('/ai-guidelines')
+      .then(g=>setGuidelines(g||{}))
+      .catch(e=>{
+        console.warn('[AI 지침] 로드 실패 — 기본값으로 분석합니다:', e?.message||e);
+        setGuidelinesError('AI 분석 지침을 불러오지 못했습니다. 기본 설정으로 분석합니다.');
+        setGuidelines({});
+      });
   },[]);
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||'');
   const [media,setMedia]=useState(params.get('media')||'');
@@ -62,6 +69,7 @@ export function AIRecommendationsPage(){
   return <div>
     <PageHeader title="AI 추천" description="캠페인·소재·키워드의 실제 Metrics API 성과만 사용해 운영 점검 후보를 만듭니다."/>
     <MetricsDateBar/>
+    {guidelinesError&&<div className="card" style={{borderColor:'#f59e0b',background:'#fffbeb',color:'#92400e',fontSize:13,padding:'8px 14px',marginBottom:8}}>{guidelinesError}</div>}
     <div className="card" style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'center'}}>
       <select className="form-select" value={advertiser} onChange={e=>{setAdvertiser(e.target.value);updateParam('advertiser',e.target.value)}}><option value="">광고주 전체</option>{advertisers.map(name=><option key={name}>{name}</option>)}</select>
       <select className="form-select" value={media} onChange={e=>{setMedia(e.target.value);updateParam('media',e.target.value)}}><option value="">매체 전체</option>{medias.map(name=><option key={name}>{name}</option>)}</select>

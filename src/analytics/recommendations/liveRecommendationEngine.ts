@@ -34,14 +34,21 @@ const TRAFFIC_CAMPAIGN_OBJECTIVES = new Set([
 ]);
 
 function isTrafficCampaign(row: CampaignMetricRow | CreativeMetricRow | KeywordMetricRow): boolean {
-  const type = (row.campaignType || '').toUpperCase();
-  // campaignType 필드 직접 확인
-  if (TRAFFIC_CAMPAIGN_OBJECTIVES.has(row.campaignType || '')) return true;
-  if (TRAFFIC_CAMPAIGN_OBJECTIVES.has(type)) return true;
-  // 캠페인명에 트래픽·인지도 키워드 포함 여부 확인
-  const name = (('campaignName' in row ? row.campaignName : '') || '').toLowerCase();
-  const targetLabel = (row as CampaignMetricRow).campaignName?.toLowerCase() || '';
-  return /트래픽|traffic|동영상|video_view|도달|reach|인지도|awareness|참여|engagement/.test(name + targetLabel);
+  const campaignType = row.campaignType || '';
+  const type = campaignType.toUpperCase();
+  // campaignType 필드가 명확하면 이를 우선합니다(이름 추정으로 덮어쓰지 않음).
+  if (campaignType && TRAFFIC_CAMPAIGN_OBJECTIVES.has(campaignType)) return true;
+  if (type && TRAFFIC_CAMPAIGN_OBJECTIVES.has(type)) return true;
+  // 전환 목적 유형이 명확하면 트래픽으로 분류하지 않습니다.
+  const CONVERSION_OBJECTIVES = new Set(['CONVERSIONS', 'CATALOG_SALES', 'LEAD_GENERATION', 'SHOPPING', 'WEB_SITE', '쇼핑검색', '파워링크']);
+  if (campaignType && CONVERSION_OBJECTIVES.has(campaignType)) return false;
+  if (type && CONVERSION_OBJECTIVES.has(type)) return false;
+  // campaignType이 없는 경우에만 캠페인명으로 추정합니다.
+  if (!campaignType) {
+    const name = (('campaignName' in row ? row.campaignName : '') || '').toLowerCase();
+    return /트래픽|traffic|동영상(?!.*전환)|video_view|도달(?!.*전환)|reach|인지도|awareness|참여(?!.*전환)|engagement/.test(name);
+  }
+  return false;
 }
 
 function totalConv(row:{dbCount:number;purchases?:number;unconfirmed?:number}){return row.dbCount+(row.purchases||0)+(row.unconfirmed||0);}
@@ -105,8 +112,10 @@ export function buildLiveRecommendations(campaigns:CampaignMetricRow[],creatives
   }
   for(const row of creatives){
     const conv=totalConv(row);
+    // 소재가 속한 캠페인 유형 확인 — 트래픽 캠페인의 소재에는 전환 없음 경고 안 함
+    const isTraffic = isTrafficCampaign(row);
     if(row.impressions>=1000&&(row.ctr||0)<0.5)out.push(makeActualRecommendation(row,'replace_creative',70,'낮은 CTR 소재 교체 검토','충분한 노출 대비 클릭률이 낮습니다. 후킹·첫 화면·카피 변형 테스트를 검토하세요.','creative',row.adId,row.adName,'/insights/creatives'));
-    else if(row.spend>0&&row.clicks>=10&&conv===0)out.push(makeActualRecommendation(row,'replace_creative',68,'전환 없는 소재 점검','클릭은 발생하지만 전환이 없습니다. 소재 메시지와 랜딩페이지 일치 여부를 확인하세요.','creative',row.adId,row.adName,'/insights/creatives'));
+    else if(!isTraffic&&row.spend>0&&row.clicks>=10&&conv===0)out.push(makeActualRecommendation(row,'replace_creative',68,'전환 없는 소재 점검','클릭은 발생하지만 전환이 없습니다. 소재 메시지와 랜딩페이지 일치 여부를 확인하세요.','creative',row.adId,row.adName,'/insights/creatives'));
   }
   for(const row of keywords){
     const conv=totalConv(row);
