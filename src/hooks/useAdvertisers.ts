@@ -19,6 +19,7 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
         Meta: 'meta', '네이버': 'naver', '구글': 'google',
         '당근': 'daangn', '틱톡': 'tiktok', '카카오': 'kakao',
       };
+      const STORE_CHANNELS: Array<'cafe24' | 'naver_store'> = ['cafe24', 'naver_store'];
 
       const mapped: Advertiser[] = data.map((adv) => {
         const accounts = (adv.accounts as Record<string, unknown>[] | null) ?? [];
@@ -43,6 +44,19 @@ export function useAdvertisers(): [Advertiser[], SetAdvertisers, () => Promise<v
               accountId: acc ? String(acc.account_id ?? '') : undefined,
               lastSync:  acc?.last_synced_at ? new Date(String(acc.last_synced_at)).toLocaleDateString('ko-KR') : undefined,
               keyRegistered: status === '연결됨',
+            };
+          }),
+          // 쇼핑몰 채널 연동 상태 (카페24·네이버 스마트스토어)
+          storeLinks: STORE_CHANNELS.map(ch => {
+            const acc = accounts.find((a) => (a as Record<string,unknown>).channel === ch) as Record<string,unknown> | undefined;
+            const status = acc?.status === 'connected' ? '연결됨' : acc?.status === 'error' ? '수집 실패' : '미연동';
+            return {
+              channel: ch,
+              status,
+              accountId: acc ? String(acc.account_id ?? '') : undefined,
+              lastSync:  acc?.last_synced_at ? new Date(String(acc.last_synced_at)).toLocaleDateString('ko-KR') : undefined,
+              lastError: acc?.last_sync_error ? String(acc.last_sync_error) : undefined,
+              rowCount:  acc?.last_row_count ? Number(acc.last_row_count) : undefined,
             };
           }),
         };

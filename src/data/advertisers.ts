@@ -11,6 +11,16 @@ export type AccountLink = {
   keyRegistered?: boolean;
 };
 
+export type StoreChannel = 'cafe24' | 'naver_store';
+export type StoreLink = {
+  channel: StoreChannel;
+  status: LinkStatus;
+  accountId?: string;  // cafe24: mall_id, naver_store: application_id
+  lastSync?: string;
+  lastError?: string;
+  rowCount?: number;
+};
+
 export type Advertiser = {
   id: string;
   name: string;
@@ -18,6 +28,7 @@ export type Advertiser = {
   color: string;
   initial: string;
   links: AccountLink[];
+  storeLinks: StoreLink[];  // 카페24·네이버 스마트스토어 연동 상태
   industry?: string;
   website?: string;
   phone?: string;

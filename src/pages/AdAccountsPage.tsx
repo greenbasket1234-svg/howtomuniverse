@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, KeyRound, Plus, RefreshCw, Search, X, Sparkles } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
-import { CHANNELS, Channel } from '../data/advertisers';
+import { CHANNELS, Channel, type StoreLink } from '../data/advertisers';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
@@ -371,7 +371,117 @@ export function AdAccountsPage() {
                 )}
               </section>
             );
-          })}
+          })}{/* /CHANNELS.map */}
+
+          {/* ── 쇼핑몰 연동 카드 (카페24 · 네이버 스마트스토어) ── */}
+          {selected && (() => {
+            const STORE_META: Record<string, { label: string; color: string; abbr: string; desc: string }> = {
+              cafe24:      { label: '카페24',              color: '#ef4444', abbr: 'C24', desc: 'mall_id + Client ID + Secret → 일별 주문·매출 동기화' },
+              naver_store: { label: '네이버 스마트스토어', color: '#16a34a', abbr: 'NS',  desc: 'Application ID + Secret → 일별 주문·매출 동기화' },
+            };
+            const storeLinks: StoreLink[] = selected.storeLinks ?? [];
+
+            const syncStore = async (channel: string) => {
+              if (!selected) return;
+              setSyncing(channel);
+              try {
+                const endpoint = channel === 'cafe24' ? '/integrations/sync-cafe24' : '/integrations/sync-naver-store';
+                await apiFetch(endpoint, { method: 'POST', body: JSON.stringify({ advertiserId: selected.id, days: 90 }) });
+                showToast('동기화가 완료됐습니다.');
+                await reload();
+              } catch (e) { showToast(e instanceof Error ? e.message : '동기화 실패'); }
+              finally { setSyncing(''); }
+            };
+
+            const disconnectStore = async (channel: string) => {
+              if (!confirm(`${STORE_META[channel]?.label} 연결을 해제할까요?`)) return;
+              try {
+                await apiFetch(`/advertisers/${encodeURIComponent(selected.id)}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ accounts: [{ channel, status: 'disconnected', account_id: '', api_key: '', secret_key: '' }] }),
+                });
+                showToast('연결을 해제했습니다.');
+                await reload();
+              } catch (e) { showToast(e instanceof Error ? e.message : '해제 실패'); }
+            };
+
+            return Object.entries(STORE_META).map(([ch, meta]) => {
+              const link = storeLinks.find(l => l.channel === ch);
+              const isConnected = link?.status === '연결됨';
+              const isCafe24 = ch === 'cafe24';
+
+              return (
+                <section key={ch} className={`card account-channel-card ${isConnected ? 'connected' : ''}`}>
+                  <div className="account-channel-head">
+                    <div className="account-channel-title">
+                      <span className="account-channel-icon" style={{ background: meta.color, fontSize: 11, fontWeight: 800 }}>{meta.abbr}</span>
+                      <div>
+                        <h3>{meta.label} 연동</h3>
+                        <p>{isConnected ? `연결됨 — ${link?.accountId ?? ''}` : meta.desc}</p>
+                      </div>
+                    </div>
+                    <span className={`status-pill ${isConnected ? 'success' : 'warning'}`}>{link?.status ?? '미연동'}</span>
+                  </div>
+
+                  {isConnected ? (
+                    <div className="account-sync-box">
+                      <div>
+                        <b>동기화 상태</b>
+                        <p>마지막 동기화 {link?.lastSync ?? '-'}{link?.rowCount ? ` · ${link.rowCount}건` : ''}</p>
+                        {link?.lastError && <p style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>오류: {link.lastError}</p>}
+                      </div>
+                      <div className="account-sync-actions">
+                        <button className="btn secondary" onClick={() => syncStore(ch)} disabled={syncing === ch}>
+                          <RefreshCw size={14} className={syncing === ch ? 'is-spinning' : ''} />
+                          {syncing === ch ? '동기화 중' : '재동기화 (90일)'}
+                        </button>
+                        <button className="btn danger" onClick={() => disconnectStore(ch)}>연결 해제</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="account-empty-connect" style={{ display: 'block' }}>
+                      {isCafe24 ? (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                            <label className="field-label" style={{ margin: 0 }}>쇼핑몰 ID (mall_id)
+                              <input value={cafe24Form.mallId} onChange={e => setCafe24Form({ ...cafe24Form, mallId: e.target.value })} placeholder="예: mymall" />
+                            </label>
+                            <label className="field-label" style={{ margin: 0 }}>Client ID
+                              <input value={cafe24Form.clientId} onChange={e => setCafe24Form({ ...cafe24Form, clientId: e.target.value })} placeholder="Cafe24 API 클라이언트 ID" />
+                            </label>
+                          </div>
+                          <label className="field-label" style={{ marginBottom: 8 }}>Client Secret
+                            <input type="password" value={cafe24Form.clientSecret} onChange={e => setCafe24Form({ ...cafe24Form, clientSecret: e.target.value })} placeholder="Client Secret" />
+                          </label>
+                          <div className="api-help" style={{ marginBottom: 10 }}>카페24 개발자센터(developers.cafe24.com)에서 앱 등록 후 발급받은 키를 입력하세요. 권한 범위: mall.read_order</div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button className="btn secondary" onClick={testCafe24} disabled={cafe24Testing}>{cafe24Testing ? '테스트 중...' : '연결 테스트'}</button>
+                            <button className="btn primary" onClick={() => connectCafe24(selected.id)} disabled={cafe24Saving}>{cafe24Saving ? '연결 중...' : '연결 및 동기화'}</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                            <label className="field-label" style={{ margin: 0 }}>Application ID
+                              <input value={storeForm.clientId} onChange={e => setStoreForm({ ...storeForm, clientId: e.target.value })} placeholder="네이버 커머스 Application ID" />
+                            </label>
+                            <label className="field-label" style={{ margin: 0 }}>Application Secret
+                              <input type="password" value={storeForm.clientSecret} onChange={e => setStoreForm({ ...storeForm, clientSecret: e.target.value })} placeholder="Application Secret" />
+                            </label>
+                          </div>
+                          <div className="api-help" style={{ marginBottom: 10 }}>네이버 API 센터(apicenter.commerce.naver.com)에서 애플리케이션 등록 후 발급받은 키를 입력하세요.</div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button className="btn secondary" onClick={testNaverStore} disabled={storeTesting}>{storeTesting ? '테스트 중...' : '연결 테스트'}</button>
+                            <button className="btn primary" onClick={() => connectNaverStore(selected.id)} disabled={storeSaving}>{storeSaving ? '연결 중...' : '연결 및 동기화'}</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            });
+          })()}
         </main>
       </div>
 
@@ -427,45 +537,6 @@ export function AdAccountsPage() {
         </div>
       )}
 
-      {/* ── 카페24 · 네이버 스마트스토어 연동 ── */}
-      {selected && (
-        <div className="card" style={{marginTop:20}}>
-          <div className="card-title" style={{fontSize:16,fontWeight:700,marginBottom:16}}>🛒 쇼핑몰 연동 (주문·매출 데이터)</div>
-          <div style={{borderBottom:'1px solid #edf0f4',paddingBottom:20,marginBottom:20}}>
-            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-              <span style={{width:32,height:32,borderRadius:8,background:'#ef4444',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:13}}>C24</span>
-              <div><b style={{fontSize:14}}>카페24</b><div style={{fontSize:12,color:'#64748b'}}>mall_id + Client ID + Client Secret → 일별 주문·매출 자동 동기화</div></div>
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
-              <label className="field-label" style={{margin:0}}>쇼핑몰 ID (mall_id)<input value={cafe24Form.mallId} onChange={e=>setCafe24Form({...cafe24Form,mallId:e.target.value})} placeholder="예: mymall"/></label>
-              <label className="field-label" style={{margin:0}}>Client ID<input value={cafe24Form.clientId} onChange={e=>setCafe24Form({...cafe24Form,clientId:e.target.value})} placeholder="Cafe24 API 클라이언트 ID"/></label>
-            </div>
-            <label className="field-label" style={{marginBottom:10}}>Client Secret<input type="password" value={cafe24Form.clientSecret} onChange={e=>setCafe24Form({...cafe24Form,clientSecret:e.target.value})} placeholder="Client Secret"/></label>
-            <div className="api-help" style={{marginBottom:10}}>카페24 개발자센터(developers.cafe24.com)에서 앱을 등록한 뒤 발급받은 키를 입력하세요. 권한 범위: mall.read_order</div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button className="btn secondary" onClick={testCafe24} disabled={cafe24Testing}>{cafe24Testing?'테스트 중...':'연결 테스트'}</button>
-              <button className="btn primary" onClick={()=>connectCafe24(selected.id)} disabled={cafe24Saving}>{cafe24Saving?'연결 중...':'연결 및 동기화'}</button>
-              <button className="btn secondary" onClick={()=>apiFetch('/integrations/sync-cafe24',{method:'POST',body:JSON.stringify({advertiserId:selected.id,days:90})}).then(()=>showToast('카페24 동기화 완료')).catch(e=>showToast(e instanceof Error?e.message:'동기화 실패'))}>재동기화 (90일)</button>
-            </div>
-          </div>
-          <div>
-            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-              <span style={{width:32,height:32,borderRadius:8,background:'#16a34a',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:13}}>NS</span>
-              <div><b style={{fontSize:14}}>네이버 스마트스토어</b><div style={{fontSize:12,color:'#64748b'}}>Application ID + Secret → 일별 주문·매출 자동 동기화</div></div>
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
-              <label className="field-label" style={{margin:0}}>Application ID<input value={storeForm.clientId} onChange={e=>setStoreForm({...storeForm,clientId:e.target.value})} placeholder="네이버 커머스 Application ID"/></label>
-              <label className="field-label" style={{margin:0}}>Application Secret<input type="password" value={storeForm.clientSecret} onChange={e=>setStoreForm({...storeForm,clientSecret:e.target.value})} placeholder="Application Secret"/></label>
-            </div>
-            <div className="api-help" style={{marginBottom:10}}>네이버 API 센터(apicenter.commerce.naver.com)에서 애플리케이션을 등록한 뒤 발급받은 키를 입력하세요.</div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button className="btn secondary" onClick={testNaverStore} disabled={storeTesting}>{storeTesting?'테스트 중...':'연결 테스트'}</button>
-              <button className="btn primary" onClick={()=>connectNaverStore(selected.id)} disabled={storeSaving}>{storeSaving?'연결 중...':'연결 및 동기화'}</button>
-              <button className="btn secondary" onClick={()=>apiFetch('/integrations/sync-naver-store',{method:'POST',body:JSON.stringify({advertiserId:selected.id,days:90})}).then(()=>showToast('스마트스토어 동기화 완료')).catch(e=>showToast(e instanceof Error?e.message:'동기화 실패'))}>재동기화 (90일)</button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
