@@ -1,5 +1,5 @@
 import { apiFetch } from '../hooks/useApi';
-import { buildAIRecommendationPrompt, type AIRecommendationContext } from './aiRecommendationPrompt';
+import { buildAIRecommendationPrompt, type AIRecommendationContext, type AIGuidelinesConfig } from './aiRecommendationPrompt';
 import { parseAIAnalysisResult, type AIAnalysisResult } from './aiRecommendationSchema';
 
 // HOWTOM 추천 엔진이 이미 계산한 추천 목록을 Claude(Anthropic API)로 요약·해석합니다.
@@ -14,8 +14,10 @@ export class AIGatewayNotImplementedError extends Error {
   }
 }
 
-export async function requestAIDeepDive(context: AIRecommendationContext): Promise<AIAnalysisResult> {
-  const prompt = buildAIRecommendationPrompt(context);
+export async function requestAIDeepDive(context: AIRecommendationContext & { guidelines?: AIGuidelinesConfig }): Promise<AIAnalysisResult> {
+  // guidelines를 분리해 buildAIRecommendationPrompt에 전달합니다.
+  const { guidelines, ...baseContext } = context;
+  const prompt = buildAIRecommendationPrompt(baseContext, guidelines);
   try {
     const data = await apiFetch<AIAnalysisResult & { error?: string; configured?: boolean }>('/ai/recommendations', {
       method: 'POST',
