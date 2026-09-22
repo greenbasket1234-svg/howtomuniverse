@@ -191,7 +191,9 @@ function RolesAdmin(){
   </ControlPanel>;
 }
 function FeaturePermissionAdmin(){
-  const {roles,loading,error,refresh}=useTeamData();
+  const {roles: allRoles,loading,error,refresh}=useTeamData();
+  // 같은 이름의 역할이 중복 저장된 경우 첫 번째만 유지합니다.
+  const roles = allRoles.filter((r, idx) => allRoles.findIndex(x => x.name === r.name) === idx);
   const locked=(role:AppRole)=>role.is_system&&role.name==='관리자';
   const toggle=async(role:AppRole,featureKey:string)=>{
     if(locked(role))return;
