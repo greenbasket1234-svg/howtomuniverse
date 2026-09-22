@@ -12,5 +12,8 @@ export function useLiveCreatives(): Creative[] {
     status:r.clicks>0&&r.dbCount/Math.max(1,r.clicks)>0.05?'성과 좋음':r.clicks>0?'보통':'피로',liveStatus:'노출중',fatigue:'데이터 부족',tags:[],spend:r.spend,uses:1,date:new Date().toISOString().slice(0,10),
     campaignId:r.campaignId,campaignName:r.campaignName,headline:r.title,primaryText:r.body,description:r.description,cta:r.cta,
     impressions:r.impressions,clicks:r.clicks,dbCount:r.dbCount,unconfirmed:r.unconfirmed,purchases:r.purchases,addToCart:r.addToCart,completeRegistration:r.completeRegistration,revenue:r.revenue,ctr:r.ctr,cpc:r.cpc,cpm:r.cpm,cpa:r.cpa,roas:r.roas,
+    // 일별 CTR 추이 — 서버의 /api/metrics/creatives에서 계산해 반환합니다.
+    trend:Array.isArray((r as Record<string,unknown>).trend)?(r as Record<string,unknown>).trend as number[]:[],
+    days:typeof (r as Record<string,unknown>).days==='number'?(r as Record<string,unknown>).days as number:1,
   })),[rows]);
 }

@@ -88,8 +88,30 @@ export function CreativeAnalysisPage(){
       ...sample.map(r=>`- [${r.analysisStatus}] "${r.creative.name}" (${normalizeCreativeMedia(r.creative.platform)}) | 광고비:₩${Math.round(r.spend).toLocaleString()} CTR:${r.ctr.toFixed(2)}% CPA:${r.cpa?'₩'+Math.round(r.cpa).toLocaleString():'-'} 점수:${r.score??'-'} 피로도:${r.fatigueScore??'-'} 추이:${r.performance?.trend?.length?`${r.performance.trend[0].toFixed(1)}→${r.performance.trend[r.performance.trend.length-1].toFixed(1)}%`:'데이터없음'}`),
     ];
     try{
-      const data=await apiFetch<{analysis?:string;error?:string}>('/ai/recommendations',{method:'POST',body:JSON.stringify({prompt:lines.join('\n')})});
-      setAiResult(data.analysis||JSON.stringify(data));
+      const data=await apiFetch<Record<string,unknown>>('/ai/recommendations',{method:'POST',body:JSON.stringify({prompt:lines.join('\n')})});
+      // 구조화된 JSON 응답을 읽기 좋은 텍스트로 변환합니다.
+      let text='';
+      if(typeof data.executiveSummary==='string'){
+        text+=`📋 요약\n${data.executiveSummary}\n\n`;
+      }
+      if(Array.isArray(data.findings)&&data.findings.length){
+        text+=`🔍 주요 발견\n`;
+        for(const f of data.findings as Record<string,unknown>[]){
+          text+=`\n▸ ${f.title||''} ${f.confidence?`[신뢰도 ${f.confidence}]`:''}\n${f.description||''}\n`;
+          if(Array.isArray(f.evidenceIds)&&f.evidenceIds.length) text+=`  근거: ${(f.evidenceIds as string[]).join(', ')}\n`;
+        }
+        text+='\n';
+      }
+      if(Array.isArray(data.priorityActions)&&data.priorityActions.length){
+        text+=`✅ 권장 액션\n`;
+        (data.priorityActions as Record<string,unknown>[]).forEach((a,i)=>{text+=`${i+1}. ${a.action||''}\n   ${a.reason||''}\n`;});
+        text+='\n';
+      }
+      if(Array.isArray(data.cautions)&&data.cautions.length){
+        text+=`⚠️ 주의사항\n${(data.cautions as string[]).map(c=>`• ${c}`).join('\n')}\n`;
+      }
+      if(!text) text=typeof data==='string'?data:JSON.stringify(data,null,2);
+      setAiResult(text.trim());
       setAiStatus('idle');
     }catch(e){setAiError(e instanceof Error?e.message:'AI 분석에 실패했습니다.');setAiStatus('error');}
   },[scored,rows,usable,advertiser,totalSpend,avgCtr,avgCpa,aiStatus]);
