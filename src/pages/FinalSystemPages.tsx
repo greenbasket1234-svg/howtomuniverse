@@ -196,7 +196,7 @@ export function AdvertiserManagementPage(){
  const [metaLoading,setMetaLoading]=useState(false);
  const [metaError,setMetaError]=useState('');
  const filtered=advertisers.filter(r=>matchesAdvertiserFilter(r.name,filterValue)&&r.name.includes(query.trim()));
- const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',businessRegNo:'',autopostProIndustry:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false}))});
+ const createBlank=():Advertiser=>({id:'',name:'',monthlyBudget:0,color:'#2563eb',initial:'',industry:'',website:'',phone:'',address:'',businessRegNo:'',autopostProIndustry:'',links:CHANNELS.map(channel=>({channel,status:'미연동',keyRegistered:false})),storeLinks:[]});
  const loadMetaAccounts=async()=>{
    setMetaLoading(true);setMetaError('');
    try{
