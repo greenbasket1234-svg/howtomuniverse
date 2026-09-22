@@ -48,6 +48,9 @@ export type Creative = {
   cpm?: number;
   cpa?: number;
   roas?: number;
+  // 일별 CTR 추이 배열 — 서버의 /api/metrics/creatives에서 계산해 반환합니다.
+  trend?: number[];
+  days?: number;
 };
 
 export const CREATIVE_LIBRARY: Creative[] = [];
