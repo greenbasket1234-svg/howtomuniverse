@@ -59,7 +59,7 @@ export function AIRecommendationsPage(){
       // 예전엔 유형별 상위 몇 개(총 12개)만 뽑아서 보냈는데, 화면에 필터링된 발견 사항
       // 전체를 종합적으로 분석해달라는 요청에 따라 지금 필터에 걸린 추천 전체를 보냅니다.
       const sample=[...recommendations].sort((a,b)=>b.priorityScore-a.priorityScore);
-      const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample,guidelines);
+      const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample,guidelines??undefined);
       const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')
     }catch(error){
       if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');setAiError(error.message);return}
