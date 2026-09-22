@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
+import { apiFetch } from '../hooks/useApi';
 import {
-  Bell, Bot, Building2, ChevronLeft, Database, FileSpreadsheet, FileText, HardDrive, KeyRound, MessageSquare, Monitor, Save, Settings2, ShieldCheck, Sparkles, UserRound, Users, WalletCards, Workflow,
+  Bell, Bot, Building2, ChevronLeft, Database, FileSpreadsheet, FileText, HardDrive, KeyRound, MessageSquare, Monitor, Plus, Save, Settings2, ShieldCheck, Sparkles, UserRound, Users, WalletCards, Workflow,
 } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { loadAssets } from '../utils/assetStore';
@@ -94,7 +95,8 @@ function SimpleSettings({kind}:{kind:'display'|'notifications'|'content'|'ai'|'a
   if(kind==='display')return <ControlPanel title="화면 설정" description="HOWTOM UI 개인 환경 설정은 브라우저에 저장됩니다."><div className="ctrl-form-grid"><label>시작 화면<select value={state.startPage} onChange={e=>patch('startPage',e.target.value)}><option value="/home">통합 홈</option><option value="/dashboard">전체 대시보드</option><option value="/insights">인사이트</option></select></label><label>화면 밀도<select value={state.displayDensity} onChange={e=>patch('displayDensity',e.target.value)}><option value="comfortable">기본</option><option value="compact">컴팩트</option></select></label><label>날짜 표시<input value={state.dateFormat} onChange={e=>patch('dateFormat',e.target.value)}/></label></div><button className="btn primary" onClick={save}><Save size={14}/> 저장</button></ControlPanel>;
   if(kind==='notifications')return <ControlPanel title="알림 기본 설정" description="알림 규칙 자체는 AI 자동화 → 알림 자동화에서 관리합니다."><div className="ctrl-toggle-list"><label><input type="checkbox" checked={state.notifyInternal} onChange={e=>patch('notifyInternal',e.target.checked)}/><span><b>HOWTOM 내부 알림</b><small>프론트에서 실제 사용할 수 있는 기본 알림 채널</small></span></label><label><input type="checkbox" checked={state.notifyFailure} onChange={e=>patch('notifyFailure',e.target.checked)}/><span><b>자동화 실패 알림</b><small>실패/데이터 수집 오류를 내부 알림으로 받습니다.</small></span></label></div><div className="ctrl-action-line"><button className="btn primary" onClick={save}><Save size={14}/> 저장</button><Link className="btn secondary" to="/automation/notifications">알림 자동화 열기</Link></div></ControlPanel>;
   if(kind==='content')return <ControlPanel title="콘텐츠 제작 기본값" description="광고·블로그·문서 제작의 공통 검토 정책입니다."><div className="ctrl-toggle-list"><label><input type="checkbox" checked={state.contentReviewRequired} onChange={e=>patch('contentReviewRequired',e.target.checked)}/><span><b>완료 전 담당자 검토 필수</b><small>AI/자동화 결과를 바로 발행하지 않고 Human-in-the-loop를 유지합니다.</small></span></label></div><button className="btn primary" onClick={save}><Save size={14}/> 저장</button></ControlPanel>;
-  if(kind==='ai')return <><div className="ctrl-grid-2"><ControlPanel title="AI 사용 정책" description="초기 Pre-Revenue에서는 수동 호출을 기본으로 유지합니다."><div className="ctrl-form-grid"><label>기본 실행<select value={state.aiMode} onChange={e=>patch('aiMode',e.target.value)}><option value="manual">수동 심층 분석</option><option value="hybrid">규칙 + 선택적 AI</option></select></label><label>월 예산 한도<input type="number" value={state.aiMonthlyBudget} onChange={e=>patch('aiMonthlyBudget',Number(e.target.value))}/></label></div><button className="btn primary" onClick={save}><Save size={14}/> 정책 저장</button></ControlPanel><ControlPanel title="Provider 연결" description="API Key와 Secret은 브라우저 localStorage에 저장하지 않습니다."><div className="ctrl-info-list"><div><span>OpenAI API</span><BackendBadge/></div><div><span>Claude API</span><BackendBadge/></div><div><span>비밀키 저장</span><b>서버 Secret Store만 허용</b></div></div></ControlPanel></div></>;
+  if(kind==='ai')return <AISettingsPanel/>; // replaced
+  
   return <ControlPanel title="자동화 기본 정책" description="예약·보고서·콘텐츠 자동화의 공통 안전 기준입니다."><div className="ctrl-toggle-list"><label><input type="checkbox" checked={state.automationApproval} onChange={e=>patch('automationApproval',e.target.checked)}/><span><b>외부 반영 전 승인 단계</b><small>보고서·콘텐츠·광고 변경은 담당자 확인 후 진행합니다.</small></span></label></div><div className="ctrl-form-grid"><label>실패 처리<select value={state.automationFailure} onChange={e=>patch('automationFailure',e.target.value)}><option value="notify">실패 기록 + 내부 알림</option><option value="pause">실패 기록 + 작업 일시중지</option></select></label></div><div className="ctrl-action-line"><button className="btn primary" onClick={save}><Save size={14}/> 저장</button><Link className="btn secondary" to="/automation/overview">자동화 현황 열기</Link></div></ControlPanel>
 }
 
@@ -118,3 +120,113 @@ function SubscriptionSettings(){
 }
 
 function SecuritySettings(){const original=loadSecurityPolicy();const [p,setP]=useState(original);return <div className="ctrl-grid-2"><ControlPanel title="프론트 보안 정책" description="서버 인증 전에도 비밀정보를 브라우저에 저장하지 않는 원칙을 유지합니다."><div className="ctrl-form-grid"><label>자동 로그아웃 기준(분)<input type="number" value={p.sessionTimeoutMinutes} onChange={e=>setP({...p,sessionTimeoutMinutes:Number(e.target.value)})}/></label><label>광고주 공유 승인<select value={p.requireApprovalForExternalShare?'yes':'no'} onChange={e=>setP({...p,requireApprovalForExternalShare:e.target.value==='yes'})}><option value="yes">승인 필요</option><option value="no">승인 생략</option></select></label></div><div className="ctrl-toggle-list"><label><input type="checkbox" checked={p.maskSensitiveInfo} onChange={e=>setP({...p,maskSensitiveInfo:e.target.checked})}/><span><b>민감정보 마스킹</b><small>계정·연락처 화면에서 최소 정보만 표시합니다.</small></span></label></div><button className="btn primary" onClick={()=>saveSecurityPolicy(p)}><Save size={14}/> 정책 저장</button></ControlPanel><ControlPanel title="서버 보안 기능" description="실제 로그인·세션·2FA·SSO는 백엔드 회원 시스템 구축 단계에서 연결합니다."><div className="ctrl-info-list"><div><span>2단계 인증</span><BackendBadge/></div><div><span>네이버웍스 SSO</span><BackendBadge/></div><div><span>API Key / Secret</span><b>서버 Secret Store</b></div><div><span>감사로그</span><b>프론트 이벤트 → 서버 append-only 전환 예정</b></div></div></ControlPanel></div>}
+
+// ── AI 분석 지침 편집기 ───────────────────────────────────────────────────────
+type AIGuidelines = { customRules?: string[]; campaignTypeRules?: Record<string,string>; };
+const DEFAULT_CAMPAIGN_TYPE_RULES: Record<string,string> = {
+  '트래픽·도달·인지도 캠페인': 'CPC·CTR 기준으로 판단합니다. 전환이 KPI가 아니므로 전환 없음 경고를 내지 않습니다. CPC가 높거나 CTR이 낮으면 소재/타깃을 점검하세요.',
+  '전환·구매·리드 캠페인': 'CPA·ROAS·전환수 기준으로 판단합니다. 클릭이 10회 이상 발생했으나 전환이 없으면 랜딩·타깃·전환 추적을 점검하세요.',
+  '쇼핑 캠페인': 'ROAS·구매전환수 기준으로 판단합니다. 상품 피드 상태와 가격 경쟁력도 함께 검토하세요.',
+};
+
+function AISettingsPanel() {
+  const [guidelines, setGuidelines] = useState<AIGuidelines>({ customRules: [], campaignTypeRules: DEFAULT_CAMPAIGN_TYPE_RULES });
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [newRule, setNewRule] = useState('');
+  const [newTypeName, setNewTypeName] = useState('');
+  const [newTypeRule, setNewTypeRule] = useState('');
+
+  useEffect(() => {
+    apiFetch<AIGuidelines>('/ai-guidelines').then(g => {
+      setGuidelines({
+        customRules: g.customRules?.length ? g.customRules : [],
+        campaignTypeRules: Object.keys(g.campaignTypeRules || {}).length ? g.campaignTypeRules : DEFAULT_CAMPAIGN_TYPE_RULES,
+      });
+    }).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiFetch('/ai-guidelines', { method: 'PUT', body: JSON.stringify(guidelines) });
+      setNotice('저장됐습니다.');
+      setTimeout(() => setNotice(''), 3000);
+    } catch (e) { setNotice(e instanceof Error ? e.message : '저장 실패'); }
+    finally { setSaving(false); }
+  };
+
+  const addCustomRule = () => {
+    if (!newRule.trim()) return;
+    setGuidelines(prev => ({ ...prev, customRules: [...(prev.customRules || []), newRule.trim()] }));
+    setNewRule('');
+  };
+  const removeCustomRule = (i: number) => setGuidelines(prev => ({ ...prev, customRules: (prev.customRules || []).filter((_, idx) => idx !== i) }));
+  const updateCustomRule = (i: number, val: string) => setGuidelines(prev => ({ ...prev, customRules: (prev.customRules || []).map((r, idx) => idx === i ? val : r) }));
+  const addTypeRule = () => {
+    if (!newTypeName.trim() || !newTypeRule.trim()) return;
+    setGuidelines(prev => ({ ...prev, campaignTypeRules: { ...(prev.campaignTypeRules || {}), [newTypeName.trim()]: newTypeRule.trim() } }));
+    setNewTypeName(''); setNewTypeRule('');
+  };
+  const removeTypeRule = (key: string) => setGuidelines(prev => { const next = { ...(prev.campaignTypeRules || {}) }; delete next[key]; return { ...prev, campaignTypeRules: next }; });
+
+  return (
+    <div className="ctrl-page">
+      {notice && <div className="ctrl-notice" style={{ marginBottom: 16 }}>{notice}</div>}
+
+      {/* 캠페인 유형별 분석 기준 */}
+      <ControlPanel
+        title="캠페인 유형별 분석 기준"
+        description="유형별로 다른 KPI를 적용합니다. AI 심층 분석 시 이 기준을 프롬프트에 자동으로 포함합니다. 코드에도 트래픽·전환 구분이 반영되어 있습니다."
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+          {Object.entries(guidelines.campaignTypeRules || {}).map(([typeName, rule]) => (
+            <div key={typeName} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <b style={{ fontSize: 13 }}>{typeName}</b>
+                <button className="btn secondary sm" onClick={() => removeTypeRule(typeName)}>삭제</button>
+              </div>
+              <textarea
+                value={rule}
+                onChange={e => setGuidelines(prev => ({ ...prev, campaignTypeRules: { ...(prev.campaignTypeRules || {}), [typeName]: e.target.value } }))}
+                rows={2}
+                style={{ width: '100%', fontSize: 13, resize: 'vertical', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px' }}
+              />
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: 8, alignItems: 'end' }}>
+          <label className="field-label" style={{ margin: 0 }}>유형 이름<input value={newTypeName} onChange={e => setNewTypeName(e.target.value)} placeholder="예: 트래픽 캠페인" /></label>
+          <label className="field-label" style={{ margin: 0 }}>분석 기준<input value={newTypeRule} onChange={e => setNewTypeRule(e.target.value)} placeholder="CPC·CTR 기준으로 판단합니다..." /></label>
+          <button className="btn primary" onClick={addTypeRule} style={{ alignSelf: 'flex-end' }}><Plus size={14} /> 추가</button>
+        </div>
+      </ControlPanel>
+
+      {/* 추가 분석 지침 */}
+      <ControlPanel
+        title="추가 분석 지침"
+        description="AI 심층 분석 시 항상 포함되는 추가 규칙입니다. '트래픽 캠페인의 전환 부재는 지적하지 않는다' 같은 업무 규칙을 자유롭게 입력하세요."
+        
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          {(guidelines.customRules || []).map((rule, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8 }}>
+              <span style={{ minWidth: 24, fontWeight: 700, color: 'var(--text-muted)', paddingTop: 8 }}>{i + 1}.</span>
+              <input value={rule} onChange={e => updateCustomRule(i, e.target.value)} style={{ flex: 1 }} />
+              <button className="icon-btn danger" onClick={() => removeCustomRule(i)} style={{ alignSelf: 'center' }}>×</button>
+            </div>
+          ))}
+          {!(guidelines.customRules || []).length && <p className="ctrl-muted">아직 추가된 지침이 없습니다.</p>}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={newRule} onChange={e => setNewRule(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCustomRule()} placeholder="새 지침 입력 후 Enter 또는 추가 버튼" style={{ flex: 1 }} />
+          <button className="btn primary" onClick={addCustomRule}><Plus size={14} /> 추가</button>
+        </div>
+      </ControlPanel>
+
+      <div >
+        <button className="btn primary" onClick={save} disabled={saving}><Save size={14} /> {saving ? '저장 중...' : '지침 저장'}</button>
+      </div>
+    </div>
+  );
+}

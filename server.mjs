@@ -1438,6 +1438,134 @@ const IMPLEMENTED_METRIC_CHANNELS = new Set(['meta', 'naver']);
    ======================================================================== */
 const NAVER_API_BASE = 'https://api.searchad.naver.com';
 
+// ── 카페24 (Cafe24) API ───────────────────────────────────────────────────────
+// 인증: client_credentials (mall_id + client_id + client_secret → access_token 자동 발급)
+// 토큰은 2시간 유효 → 매 동기화 시 새로 발급합니다.
+async function cafe24GetAccessToken(mallId, clientId, clientSecret) {
+  const cred = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const res = await fetch(`https://${mallId}.cafe24api.com/api/v2/oauth/token`, {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${cred}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials&scope=mall.read_order,mall.read_analytics',
+  });
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || `카페24 토큰 발급 실패 (${res.status})`);
+  }
+  return data.access_token;
+}
+
+async function cafe24FetchDailyOrders(mallId, clientId, clientSecret, since, until) {
+  const token = await cafe24GetAccessToken(mallId, clientId, clientSecret);
+  const base = `https://${mallId}.cafe24api.com/api/v2/admin/orders`;
+  const allOrders = [];
+  let offset = 0;
+  // 페이지네이션: 200건씩 순차 조회
+  while (true) {
+    const url = new URL(base);
+    url.searchParams.set('start_date', since);
+    url.searchParams.set('end_date', until);
+    url.searchParams.set('order_date_type', 'order'); // 주문일 기준
+    url.searchParams.set('limit', '200');
+    url.searchParams.set('offset', String(offset));
+    const res = await fetch(url.toString(), {
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error?.message || `카페24 주문 조회 실패 (${res.status})`);
+    const batch = data.orders || [];
+    allOrders.push(...batch);
+    if (batch.length < 200) break; // 마지막 페이지
+    offset += 200;
+  }
+  // 일별 집계: 날짜→ {purchases: 건수, revenue: 결제금액}
+  const byDate = new Map();
+  for (const o of allOrders) {
+    const date = (o.order_date || '').slice(0, 10);
+    if (!date) continue;
+    const cur = byDate.get(date) || { date, purchases: 0, revenue: 0 };
+    cur.purchases += 1;
+    cur.revenue += Number(o.actual_payment_amount || o.total_amount || 0);
+    byDate.set(date, cur);
+  }
+  return [...byDate.values()];
+}
+
+async function cafe24TestConnection(mallId, clientId, clientSecret) {
+  const token = await cafe24GetAccessToken(mallId, clientId, clientSecret);
+  const res = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/store`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || `카페24 연결 실패 (${res.status})`);
+  return { mallName: data.store?.shop_name || mallId, status: 'connected' };
+}
+
+// ── 네이버 스마트스토어 (Commerce API) ───────────────────────────────────────
+// 인증: application_id + application_secret → Bearer access_token
+// API: https://api.commerce.naver.com/external/
+const NAVER_COMMERCE_BASE = 'https://api.commerce.naver.com/external';
+
+async function naverStoreGetAccessToken(clientId, clientSecret) {
+  const cred = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const res = await fetch(`${NAVER_COMMERCE_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${cred}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials&type=SELLER',
+  });
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.message || data.error_description || `네이버 스마트스토어 토큰 발급 실패 (${res.status})`);
+  }
+  return data.access_token;
+}
+
+async function naverStoreFetchDailyStats(clientId, clientSecret, since, until) {
+  const token = await naverStoreGetAccessToken(clientId, clientSecret);
+  // 채널별 판매 통계: 일별 주문 건수 + 결제금액
+  const url = new URL(`${NAVER_COMMERCE_BASE}/v1/seller-stats/channel-groups/all/order-stats`);
+  url.searchParams.set('from', since);
+  url.searchParams.set('to', until);
+  url.searchParams.set('timeUnitType', 'DAY');
+  const res = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    // fallback: 채널그룹 없이 전체 판매 통계 시도
+    const url2 = new URL(`${NAVER_COMMERCE_BASE}/v1/seller-stats/order-stats`);
+    url2.searchParams.set('from', since);
+    url2.searchParams.set('to', until);
+    url2.searchParams.set('timeUnitType', 'DAY');
+    const res2 = await fetch(url2.toString(), {
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    const data2 = await res2.json();
+    if (!res2.ok) throw new Error(data2.message || `네이버 스마트스토어 통계 조회 실패 (${res2.status})`);
+    return mapNaverStoreStats(data2);
+  }
+  return mapNaverStoreStats(data);
+}
+
+function mapNaverStoreStats(data) {
+  const rows = data.data || data.statList || data.items || [];
+  return rows.map(row => ({
+    date: row.date || row.baseDate || row.statisticDate || '',
+    purchases: Number(row.orderCount || row.payCount || row.purchaseCount || 0),
+    revenue: Number(row.paymentAmount || row.totalPaymentAmount || row.saleAmount || 0),
+  })).filter(r => r.date);
+}
+
+async function naverStoreTestConnection(clientId, clientSecret) {
+  const token = await naverStoreGetAccessToken(clientId, clientSecret);
+  const res = await fetch(`${NAVER_COMMERCE_BASE}/v1/seller/info`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || `네이버 스마트스토어 연결 실패 (${res.status})`);
+  return { sellerName: data.sellerName || data.name || '스토어', status: 'connected' };
+}
+
 function naverSignature(timestamp, method, uri, secretKey) {
   const message = `${timestamp}.${method}.${uri}`;
   return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
@@ -2738,6 +2866,8 @@ async function handleApi(req, res, pathname) {
         await pgPool.query(schemaSql);
         // 광고·문서·영상 generate 결과 캐싱을 위한 컬럼 추가(이미 있으면 무시)
         await pgPool.query(`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS result JSONB`);
+        // AI 분석 지침 커스텀 프롬프트를 테넌트별로 저장합니다.
+        await pgPool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ai_guidelines JSONB`);
 
         // 예전에 잘못 번역되어 저장된 CTA 문구('지금 쇼핑하기')를 정확한 번역('지금 구매하기')으로 일괄 수정합니다.
         // 여러 번 실행해도 안전합니다(이미 고쳐진 값은 조건에 안 걸려 그냥 넘어갑니다).
@@ -3305,6 +3435,25 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 }
 
     /** 동기화(백엔드 내부용)에서만 사용합니다 - 실제 API 호출을 위해 복호화된 값을 반환합니다. 프론트로는 절대 내려보내지 않습니다. */
+    // ── AI 분석 지침 (관리자 커스텀 프롬프트) ───────────────────────────────
+    if (req.method === 'GET' && pathname === '/api/ai-guidelines') {
+      const r = await pgPool.query(`SELECT ai_guidelines FROM tenants WHERE id=$1`, [tenantId]);
+      return sendJson(res, 200, r.rows[0]?.ai_guidelines || { customRules: [], campaignTypeRules: {} });
+    }
+    if (req.method === 'PUT' && pathname === '/api/ai-guidelines') {
+      if (denyUnlessPermitted(res, payload, 'settings.manage')) return true;
+      const body = await readJson(req);
+      // customRules: string[] — AI에게 추가로 전달할 분석 규칙
+      // campaignTypeRules: Record<string, string> — 캠페인 유형별 분석 기준
+      const guidelines = {
+        customRules: Array.isArray(body.customRules) ? body.customRules.map(r => String(r).slice(0, 500)).filter(Boolean) : [],
+        campaignTypeRules: body.campaignTypeRules && typeof body.campaignTypeRules === 'object' ? Object.fromEntries(Object.entries(body.campaignTypeRules).map(([k,v]) => [String(k).slice(0,100), String(v).slice(0,1000)])) : {},
+        updatedAt: new Date().toISOString(),
+      };
+      await pgPool.query(`UPDATE tenants SET ai_guidelines=$1 WHERE id=$2`, [JSON.stringify(guidelines), tenantId]);
+      return sendJson(res, 200, guidelines);
+    }
+
     if (req.method === 'GET' && pathname === '/api/integrations/auto-sync-status') {
       // 서버 메모리(autoSyncStatus)는 배포 등으로 서버가 재시작되면 사라지므로, DB에 저장된
       // 이력을 우선 사용합니다. DB 조회가 안 되는 경우에만 메모리 값을 fallback으로 씁니다.
@@ -5255,6 +5404,98 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // 진단 전용: 네이버 '전환 유형별 상세' 리포트(AD_CONVERSION_DETAIL)를 실제로 한 번 요청해서
     // 실제 응답 컬럼 구조를 로그로 확인합니다. 저장은 전혀 하지 않아 위험이 없고, 매 동기화마다
     // 자동 실행되지 않고 이 버튼을 눌렀을 때만 실행됩니다(보고서 생성은 시간이 걸릴 수 있음).
+    // ── 카페24 연결 테스트 ────────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/integrations/cafe24/test') {
+      const body = await readJson(req);
+      const mallId = cleanText(body.mallId || '', 80);
+      const clientId = cleanText(body.clientId || '', 200);
+      const clientSecret = cleanText(body.clientSecret || '', 200);
+      if (!mallId || !clientId || !clientSecret) return sendJson(res, 400, { error: '쇼핑몰 ID·Client ID·Secret이 필요합니다.' });
+      try {
+        const info = await cafe24TestConnection(mallId, clientId, clientSecret);
+        return sendJson(res, 200, { ok: true, ...info });
+      } catch (e) { return sendJson(res, 502, { error: e?.message || '카페24 연결에 실패했습니다.' }); }
+    }
+
+    // ── 카페24 데이터 동기화 ─────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/integrations/sync-cafe24') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      if (!advertiserId || !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '광고주 접근 권한이 없습니다.' });
+      const acc = await pgGetMediaAccountForSync(tenantId, advertiserId, 'cafe24');
+      if (!acc || !acc.account_id || !acc.api_key) return sendJson(res, 400, { error: '카페24 계정이 연결되지 않았습니다.' });
+      const mallId = acc.account_id;
+      const clientId = decryptSecret(acc.api_key_encrypted);
+      const clientSecret = decryptSecret(acc.secret_key_encrypted);
+      const days = Math.min(Number(body.days) || 90, 730);
+      const until = new Date().toISOString().slice(0, 10);
+      const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+      const since = sinceDate.toISOString().slice(0, 10);
+      try {
+        const rows = await cafe24FetchDailyOrders(mallId, clientId, clientSecret, since, until);
+        if (rows.length) {
+          await pgPool.query(
+            `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+             SELECT $1,$2,'cafe24',d,0,0,0,0,pur,rev,0,0,0,0
+             FROM UNNEST($3::date[],$4::bigint[],$5::numeric[]) AS t(d,pur,rev)
+             ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
+               purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+            [tenantId, advertiserId, rows.map(r=>r.date), rows.map(r=>r.purchases), rows.map(r=>r.revenue)]
+          );
+        }
+        await pgPool.query(`UPDATE media_accounts SET last_synced_at=now(), last_row_count=$1, status='connected' WHERE tenant_id=$2 AND advertiser_id=$3 AND channel='cafe24'`, [rows.length, tenantId, advertiserId]);
+        return sendJson(res, 200, { ok: true, days, rowCount: rows.length, since, until });
+      } catch (e) {
+        await pgPool.query(`UPDATE media_accounts SET last_sync_error=$1 WHERE tenant_id=$2 AND advertiser_id=$3 AND channel='cafe24'`, [e?.message||'동기화 실패', tenantId, advertiserId]).catch(()=>{});
+        return sendJson(res, 502, { error: e?.message || '카페24 동기화에 실패했습니다.' });
+      }
+    }
+
+    // ── 네이버 스마트스토어 연결 테스트 ─────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/integrations/naver-store/test') {
+      const body = await readJson(req);
+      const clientId = cleanText(body.clientId || '', 200);
+      const clientSecret = cleanText(body.clientSecret || '', 200);
+      if (!clientId || !clientSecret) return sendJson(res, 400, { error: 'Application ID와 Secret Key가 필요합니다.' });
+      try {
+        const info = await naverStoreTestConnection(clientId, clientSecret);
+        return sendJson(res, 200, { ok: true, ...info });
+      } catch (e) { return sendJson(res, 502, { error: e?.message || '네이버 스마트스토어 연결에 실패했습니다.' }); }
+    }
+
+    // ── 네이버 스마트스토어 데이터 동기화 ───────────────────────────────────
+    if (req.method === 'POST' && pathname === '/api/integrations/sync-naver-store') {
+      const body = await readJson(req);
+      const advertiserId = cleanText(body.advertiserId || '', 120);
+      if (!advertiserId || !canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '광고주 접근 권한이 없습니다.' });
+      const acc = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver_store');
+      if (!acc || !acc.api_key) return sendJson(res, 400, { error: '네이버 스마트스토어 계정이 연결되지 않았습니다.' });
+      const clientId = decryptSecret(acc.api_key_encrypted);
+      const clientSecret = decryptSecret(acc.secret_key_encrypted);
+      const days = Math.min(Number(body.days) || 90, 730);
+      const until = new Date().toISOString().slice(0, 10);
+      const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+      const since = sinceDate.toISOString().slice(0, 10);
+      try {
+        const rows = await naverStoreFetchDailyStats(clientId, clientSecret, since, until);
+        if (rows.length) {
+          await pgPool.query(
+            `INSERT INTO daily_metrics (tenant_id, advertiser_id, channel, date, impressions, clicks, spend, db_count, purchases, revenue, add_to_cart, complete_registration, initiate_checkout, unconfirmed_count)
+             SELECT $1,$2,'naver_store',d,0,0,0,0,pur,rev,0,0,0,0
+             FROM UNNEST($3::date[],$4::bigint[],$5::numeric[]) AS t(d,pur,rev)
+             ON CONFLICT (advertiser_id, channel, date) DO UPDATE SET
+               purchases=EXCLUDED.purchases, revenue=EXCLUDED.revenue, updated_at=now()`,
+            [tenantId, advertiserId, rows.map(r=>r.date), rows.map(r=>r.purchases), rows.map(r=>r.revenue)]
+          );
+        }
+        await pgPool.query(`UPDATE media_accounts SET last_synced_at=now(), last_row_count=$1, status='connected' WHERE tenant_id=$2 AND advertiser_id=$3 AND channel='naver_store'`, [rows.length, tenantId, advertiserId]);
+        return sendJson(res, 200, { ok: true, days, rowCount: rows.length, since, until });
+      } catch (e) {
+        await pgPool.query(`UPDATE media_accounts SET last_sync_error=$1 WHERE tenant_id=$2 AND advertiser_id=$3 AND channel='naver_store'`, [e?.message||'동기화 실패', tenantId, advertiserId]).catch(()=>{});
+        return sendJson(res, 502, { error: e?.message || '네이버 스마트스토어 동기화에 실패했습니다.' });
+      }
+    }
+
     if (req.method === 'POST' && pathname === '/api/integrations/naver-conversion-report-probe') {
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);

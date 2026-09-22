@@ -17,13 +17,15 @@ export function buildAIRecommendationContext(
   advertiser: string,
   period: string,
   recommendations: Recommendation[],
-): AIRecommendationContext {
+  guidelines?: AIGuidelinesConfig,
+): AIRecommendationContext & { guidelines?: AIGuidelinesConfig } {
   return {
     advertiser,
     period,
     recommendations: recommendations.map(({ title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName, metrics }) => ({
       title, summary, type, priorityLabel, evidence, confidence, advertiserName, targetLabel, targetType, mediaName, metrics,
     })),
+    guidelines,
   };
 }
 
@@ -43,7 +45,16 @@ export const AI_RECOMMENDATION_SYSTEM_RULES = [
 
 const TARGET_TYPE_LABEL: Record<string, string> = { campaign: '캠페인', creative: '소재', keyword: '키워드' };
 
-export function buildAIRecommendationPrompt(context: AIRecommendationContext): string {
+export type AIGuidelinesConfig = {
+  customRules?: string[];
+  campaignTypeRules?: Record<string, string>;
+};
+
+export function buildAIRecommendationPrompt(context: AIRecommendationContext, guidelines?: AIGuidelinesConfig): string {
+  const customRules = guidelines?.customRules?.filter(Boolean) ?? [];
+  const campaignTypeRules = guidelines?.campaignTypeRules ?? {};
+  const hasCampaignTypeRules = Object.keys(campaignTypeRules).length > 0;
+
   const lines = [
     `광고주: ${context.advertiser}`,
     `기간: ${context.period}`,
@@ -53,19 +64,34 @@ export function buildAIRecommendationPrompt(context: AIRecommendationContext): s
     '4) 권장 액션 5) 주의할 사항 순서로 종합해 주세요.',
     '각 발견 사항을 쓸 때는 반드시 아래 목록에 있는 실제 광고주명·캠페인/소재/키워드 이름·매체명·수치를',
     '그대로 인용하세요. "여러 캠페인", "일부 소재"처럼 뭉뚱그리지 말고 이름을 명시하세요.',
-    '',
-    ...context.recommendations.map(rec => {
-      const targetKind = rec.targetType ? TARGET_TYPE_LABEL[rec.targetType] || rec.targetType : '';
-      const target = rec.targetLabel ? `${targetKind ? `${targetKind} "` : ''}${rec.targetLabel}${targetKind ? '"' : ''}` : '';
-      const media = rec.mediaName ? ` (${rec.mediaName})` : '';
-      const metricsText = rec.metrics?.length ? rec.metrics.map(m => `${m.label}=${m.detail}`).join(', ') : '';
-      return [
-        `- [${rec.priorityLabel}] 광고주 "${rec.advertiserName}"${target ? ` / ${target}${media}` : media}`,
-        `  ${rec.title}: ${rec.summary}`,
-        metricsText ? `  지표: ${metricsText}` : '',
-        `  근거: ${rec.evidence.join(' / ')}`,
-      ].filter(Boolean).join('\n');
-    }),
   ];
+
+  // 캠페인 유형별 분석 기준 (관리자 설정)
+  if (hasCampaignTypeRules) {
+    lines.push('', '[캠페인 유형별 분석 기준 — 아래 기준을 우선 적용하세요]');
+    for (const [type, rule] of Object.entries(campaignTypeRules)) {
+      lines.push(`- ${type}: ${rule}`);
+    }
+  }
+
+  // 관리자 커스텀 규칙
+  if (customRules.length > 0) {
+    lines.push('', '[추가 분석 지침 — 반드시 아래 규칙을 따르세요]');
+    customRules.forEach((rule, i) => lines.push(`${i + 1}. ${rule}`));
+  }
+
+  lines.push('', ...context.recommendations.map(rec => {
+    const targetKind = rec.targetType ? TARGET_TYPE_LABEL[rec.targetType] || rec.targetType : '';
+    const target = rec.targetLabel ? `${targetKind ? `${targetKind} "` : ''}${rec.targetLabel}${targetKind ? '"' : ''}` : '';
+    const media = rec.mediaName ? ` (${rec.mediaName})` : '';
+    const metricsText = rec.metrics?.length ? rec.metrics.map(m => `${m.label}=${m.detail}`).join(', ') : '';
+    return [
+      `- [${rec.priorityLabel}] 광고주 "${rec.advertiserName}"${target ? ` / ${target}${media}` : media}`,
+      `  ${rec.title}: ${rec.summary}`,
+      metricsText ? `  지표: ${metricsText}` : '',
+      `  근거: ${rec.evidence.join(' / ')}`,
+    ].filter(Boolean).join('\n');
+  }));
+
   return lines.join('\n');
 }

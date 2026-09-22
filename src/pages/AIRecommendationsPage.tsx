@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Eye, Sparkles, TrendingUp, Wrench } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
@@ -12,8 +12,9 @@ import type { CampaignMetricRow, CreativeMetricRow, KeywordMetricRow } from '../
 import { buildLiveRecommendations, summarizeLiveRecommendations } from '../analytics/recommendations/liveRecommendationEngine';
 import type { Recommendation, RecommendationType } from '../analytics/recommendations/recommendationTypes';
 import { AIGatewayNotImplementedError, requestAIDeepDive } from '../ai/aiGateway';
-import { buildAIRecommendationContext } from '../ai/aiRecommendationPrompt';
+import { buildAIRecommendationContext, type AIGuidelinesConfig } from '../ai/aiRecommendationPrompt';
 import type { AIAnalysisResult } from '../ai/aiRecommendationSchema';
+import { apiFetch } from '../hooks/useApi';
 
 const TYPE_LABEL:Record<RecommendationType,string>={urgent:'긴급 대응',increase_budget:'확대 후보',decrease_budget:'축소 검토',replace_creative:'소재 교체',review_campaign:'캠페인 점검',adjust_keyword:'키워드 정리',monitor:'모니터링'};
 const TYPE_TONE:Record<RecommendationType,BadgeTone>={urgent:'danger',increase_budget:'success',decrease_budget:'warning',replace_creative:'warning',review_campaign:'warning',adjust_keyword:'warning',monitor:'neutral'};
@@ -25,6 +26,11 @@ export function AIRecommendationsPage(){
   const [aiStatus,setAiStatus]=useState<'idle'|'loading'|'not_ready'|'error'>('idle');
   const [aiResult,setAiResult]=useState<AIAnalysisResult|null>(null);
   const [aiError,setAiError]=useState('');
+  const [guidelines,setGuidelines]=useState<AIGuidelinesConfig>({});
+
+  useEffect(()=>{
+    apiFetch<AIGuidelinesConfig>('/ai-guidelines').then(setGuidelines).catch(()=>{});
+  },[]);
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||'');
   const [media,setMedia]=useState(params.get('media')||'');
   const [typeFilter,setTypeFilter]=useState<RecommendationType|''>((params.get('type') as RecommendationType)||'');
@@ -46,7 +52,7 @@ export function AIRecommendationsPage(){
       // 예전엔 유형별 상위 몇 개(총 12개)만 뽑아서 보냈는데, 화면에 필터링된 발견 사항
       // 전체를 종합적으로 분석해달라는 요청에 따라 지금 필터에 걸린 추천 전체를 보냅니다.
       const sample=[...recommendations].sort((a,b)=>b.priorityScore-a.priorityScore);
-      const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample);
+      const context=buildAIRecommendationContext(advertiser||'전체','현재 선택 기간',sample,guidelines);
       const result=await requestAIDeepDive(context);setAiResult(result);setAiStatus('idle')
     }catch(error){
       if(error instanceof AIGatewayNotImplementedError){setAiStatus('not_ready');setAiError(error.message);return}

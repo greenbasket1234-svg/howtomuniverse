@@ -12,6 +12,31 @@ function rec(base:Omit<Recommendation,'priorityLabel'|'confidence'|'insufficient
 }
 /** 예전엔 DB(리드) 전환만 봐서, 구매(이커머스) 전환 위주인 캠페인·소재·키워드가 전부
  * "전환 없음"으로 잘못 판정되던 문제가 있었습니다. 총 전환(DB+구매+미확인) 기준으로 봅니다. */
+/**
+ * 트래픽·인지도·참여 목적 캠페인은 전환이 KPI가 아닙니다.
+ * 이 유형은 CPC·CTR·도달 기준으로 판단해야 합니다.
+ */
+const TRAFFIC_CAMPAIGN_OBJECTIVES = new Set([
+  // Meta 캠페인 목표
+  'TRAFFIC', 'VIDEO_VIEWS', 'REACH', 'BRAND_AWARENESS',
+  'ENGAGEMENT', 'PAGE_LIKES', 'MESSAGES', 'STORE_VISITS',
+  'LINK_CLICKS', 'POST_ENGAGEMENT',
+  // 한국어 표기
+  '트래픽', '동영상 조회', '도달', '브랜드 인지도',
+  '참여', '페이지 좋아요', '메시지', '매장 방문',
+]);
+
+function isTrafficCampaign(row: CampaignMetricRow | CreativeMetricRow | KeywordMetricRow): boolean {
+  const type = (row.campaignType || '').toUpperCase();
+  // campaignType 필드 직접 확인
+  if (TRAFFIC_CAMPAIGN_OBJECTIVES.has(row.campaignType || '')) return true;
+  if (TRAFFIC_CAMPAIGN_OBJECTIVES.has(type)) return true;
+  // 캠페인명에 트래픽·인지도 키워드 포함 여부 확인
+  const name = (('campaignName' in row ? row.campaignName : '') || '').toLowerCase();
+  const targetLabel = (row as CampaignMetricRow).campaignName?.toLowerCase() || '';
+  return /트래픽|traffic|동영상|video_view|도달|reach|인지도|awareness|참여|engagement/.test(name + targetLabel);
+}
+
 function totalConv(row:{dbCount:number;purchases?:number;unconfirmed?:number}){return row.dbCount+(row.purchases||0)+(row.unconfirmed||0);}
 function metricEvidence(row:{spend:number;impressions:number;clicks:number;dbCount:number;purchases?:number;unconfirmed?:number;addToCart?:number;completeRegistration?:number;revenue:number;ctr?:number;cpa?:number;roas?:number}){
   const conv=totalConv(row);
@@ -51,9 +76,25 @@ export function buildLiveRecommendations(campaigns:CampaignMetricRow[],creatives
   const out:Recommendation[]=[];
   for(const row of campaigns){
     const conv=totalConv(row);
-    if(row.spend>0&&row.clicks>=10&&conv===0)out.push(makeActualRecommendation(row,'review_campaign',78,'전환 없는 캠페인 점검','광고비와 클릭이 발생했지만 선택 기간 전환이 없습니다. 랜딩·타깃·전환 추적을 점검하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
-    else if(row.revenue>0&&(row.roas||0)<100&&row.spend>=100000)out.push(makeActualRecommendation(row,'decrease_budget',72,'낮은 ROAS 캠페인 점검','선택 기간 ROAS가 100% 미만입니다. 수익성과 전환 품질을 확인한 뒤 예산 조정을 검토하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
-    else if((row.roas||0)>=300&&conv>=3)out.push(makeActualRecommendation(row,'increase_budget',58,'확대 후보 캠페인','실제 전환과 ROAS가 양호합니다. 예산 확대 전 최근 추세와 재고·운영 여력을 함께 확인하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+    const isTraffic = isTrafficCampaign(row);
+
+    if (isTraffic) {
+      // ── 트래픽·인지도 캠페인: CPC·CTR 기준으로 판단 ──────────────────
+      // 전환이 KPI가 아니므로 "전환 없음" 경고를 띄우지 않습니다.
+      const cpc = row.clicks > 0 ? row.spend / row.clicks : 0;
+      const ctr = row.impressions > 0 ? (row.clicks / row.impressions) * 100 : 0;
+      if (row.spend > 0 && row.clicks >= 20 && cpc > 2000)
+        out.push(makeActualRecommendation(row,'review_campaign',60,'CPC 높은 트래픽 캠페인 점검',`CPC ₩${Math.round(cpc).toLocaleString()}로 높습니다. 타깃·입찰 방식·소재 관련도를 점검해 클릭 비용 효율을 개선하세요.`,'campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+      else if (row.impressions >= 5000 && ctr < 0.3)
+        out.push(makeActualRecommendation(row,'replace_creative',55,'클릭률 낮은 트래픽 소재 검토',`CTR ${ctr.toFixed(2)}%로 낮습니다. 트래픽 캠페인은 클릭률이 핵심 KPI입니다. 후킹·비주얼 개선을 검토하세요.`,'campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+      else if((row.roas||0)>=300&&conv>=3)
+        out.push(makeActualRecommendation(row,'increase_budget',58,'확대 후보 캠페인','실제 전환과 ROAS가 양호합니다. 예산 확대 전 최근 추세와 재고·운영 여력을 함께 확인하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+    } else {
+      // ── 전환 목적 캠페인: CPA·ROAS 기준으로 판단 ────────────────────
+      if(row.spend>0&&row.clicks>=10&&conv===0)out.push(makeActualRecommendation(row,'review_campaign',78,'전환 없는 캠페인 점검','광고비와 클릭이 발생했지만 선택 기간 전환이 없습니다. 랜딩·타깃·전환 추적을 점검하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+      else if(row.revenue>0&&(row.roas||0)<100&&row.spend>=100000)out.push(makeActualRecommendation(row,'decrease_budget',72,'낮은 ROAS 캠페인 점검','선택 기간 ROAS가 100% 미만입니다. 수익성과 전환 품질을 확인한 뒤 예산 조정을 검토하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+      else if((row.roas||0)>=300&&conv>=3)out.push(makeActualRecommendation(row,'increase_budget',58,'확대 후보 캠페인','실제 전환과 ROAS가 양호합니다. 예산 확대 전 최근 추세와 재고·운영 여력을 함께 확인하세요.','campaign',row.campaignId,row.campaignName,'/insights/campaigns'));
+    }
   }
   for(const row of creatives){
     const conv=totalConv(row);
