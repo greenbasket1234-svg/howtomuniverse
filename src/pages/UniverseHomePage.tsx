@@ -46,6 +46,22 @@ export function UniverseHomePage(){
   const greetingName=isAdmin?'관리자':(user?.nickname?.trim()||user?.name?.trim()||user?.advertiser_name?.trim()||'사용자');
   const advertiserNames=advertisers.map(a=>a.name);const selectedAdvertiser=advertiserNames.includes(filterValue)?filterValue:'';
   const visibleDaily=useMemo(()=>daily.rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue)),[daily.rows,filterValue]);
+
+  // 매체별 성과 집계 (홈 화면용)
+  const byChannel = useMemo(()=>{
+    const map = new Map<string, {channel:string;spend:number;impressions:number;clicks:number;dbCount:number;unconfirmed:number;purchases:number;addToCart:number;completeRegistration:number;revenue:number}>();
+    for(const r of visibleDaily){
+      const ch = r.channel || 'unknown';
+      const cur = map.get(ch) || {channel:ch,spend:0,impressions:0,clicks:0,dbCount:0,unconfirmed:0,purchases:0,addToCart:0,completeRegistration:0,revenue:0};
+      cur.spend += r.spend||0; cur.impressions += r.impressions||0; cur.clicks += r.clicks||0;
+      cur.dbCount += r.dbCount||0; cur.unconfirmed += (r as Record<string,number>).unconfirmed||0;
+      cur.purchases += r.purchases||0; cur.addToCart += (r as Record<string,number>).addToCart||0;
+      cur.completeRegistration += (r as Record<string,number>).completeRegistration||0;
+      cur.revenue += r.revenue||0;
+      map.set(ch, cur);
+    }
+    return [...map.values()].sort((a,b)=>b.spend-a.spend);
+  }, [visibleDaily]);
   // 단순 광고비 순이 아니라, 실제 "성과가 좋은" 순으로 정렬합니다.
   // 클릭이 거의 없는 항목이 우연히 높은 효율로 1위를 차지하지 않도록, 최소 활동량 기준을 둡니다.
   const visibleKeywords=useMemo(()=>[...keyword.rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||'',filterValue))].sort((a,b)=>{
@@ -140,6 +156,42 @@ export function UniverseHomePage(){
     </section>
     {!advertisers.length&&<section className="home-dashboard-card" style={{padding:32,textAlign:'center'}}><Sparkles size={34} style={{margin:'0 auto 10px'}}/><h2>HOWTOM 유니버스를 처음 시작합니다.</h2><p style={{color:'#64748b'}}>샘플 데이터가 없는 Zero State입니다.</p><Link className="btn primary" to="/advertisers">첫 광고주 등록</Link></section>}
     <section className="home-dashboard-main-row home-dashboard-main-row-v14"><article className="home-dashboard-card performance-card"><div className="home-card-head home-card-head-compact"><div><h2>광고 성과 요약</h2></div></div>{hasPerformance?<div className="home-summary-numbers" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,padding:'4px 4px 16px'}}><div><small>광고비</small><div style={{fontSize:20,fontWeight:700}}>{money(overview.spend)}</div></div><div><small>전환매출</small><div style={{fontSize:20,fontWeight:700}}>{money(overview.revenue)}</div></div><div><small>클릭</small><div style={{fontSize:20,fontWeight:700}}>{overview.clicks.toLocaleString()}</div></div><div title={conversionTooltip('dbCount','DB 전환')}><small>DB 전환</small><div style={{fontSize:20,fontWeight:700}}>{overview.dbCount.toLocaleString()}</div></div><div title={conversionTooltip('purchases','구매 전환')}><small>구매 전환</small><div style={{fontSize:20,fontWeight:700}}>{overview.purchases.toLocaleString()}</div></div><div title={conversionTooltip('addToCart','장바구니 담기')}><small>장바구니 담기</small><div style={{fontSize:20,fontWeight:700}}>{overview.addToCart.toLocaleString()}</div></div><div title={conversionTooltip('initiateCheckout','결제시작')}><small>결제시작</small><div style={{fontSize:20,fontWeight:700}}>{overview.initiateCheckout.toLocaleString()}</div></div><div title={conversionTooltip('completeRegistration','회원가입')}><small>회원가입</small><div style={{fontSize:20,fontWeight:700}}>{overview.completeRegistration.toLocaleString()}</div></div><div title={`네이버 상세 리포트가 아직 없는 시점(주로 오늘)이라 구매/장바구니/DB 등으로 확정 분류하지 못한 전환입니다. 다음날 자동으로 정확한 값으로 갱신됩니다.\n\n${conversionTooltip('unconfirmed','미확인 전환')}`}><small>미확인 전환 ⓘ</small><div style={{fontSize:20,fontWeight:700,color:overview.unconfirmed>0?'#b45309':undefined}}>{overview.unconfirmed.toLocaleString()}</div></div></div>:<div className="home-empty-data"><TrendingUp size={28}/><b>광고 성과 데이터가 없습니다.</b><span>매체 계정을 연결하고 동기화하면 실제 데이터가 표시됩니다.</span></div>}</article><article className="home-dashboard-card notice-card"><div className="home-card-head home-card-head-compact"><div><h2>최근 동기화</h2></div></div>{(() => { const connected = daily.meta?.connections.filter(c=>c.status==='connected') || []; if (!connected.length) return <div className="home-empty-data"><CheckCircle2 size={26}/><b>연결된 매체가 없습니다.</b><span>매체 계정 연동에서 연결하세요.</span></div>; return <div className="home-sync-list">{connected.slice(0,6).map((c,i)=><div className="home-sync-row" key={i}><span className={`home-sync-chip ${c.channel}`}>{c.channel==='meta'?'Meta':c.channel==='naver'?'네이버':c.channel}</span><span className="home-sync-time">{c.lastSyncedAt?new Date(c.lastSyncedAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'동기화 대기'}</span></div>)}</div>; })()}</article><article className="home-dashboard-card insight-card"><div className="home-card-head home-card-head-compact"><div><h2>AI 추천 인사이트</h2></div></div><div className="home-empty-data"><Bot size={26}/><b>{hasPerformance?'실제 성과를 분석할 수 있습니다.':'분석할 데이터가 없습니다.'}</b><span><Link to="/insights/ai-recommendations">AI 추천 보기</Link></span></div></article></section>
+    {/* 매체별 성과 — 홈 요약 아래 */}
+    {byChannel.length > 0 && <section className="card home-channel-perf-card">
+      <div className="home-card-head home-card-head-compact" style={{marginBottom:10}}>
+        <div><h2>매체별 성과</h2><small>선택 기간 채널별 합계</small></div>
+        <Link to="/insights/performance" className="home-card-more">자세히 보기</Link>
+      </div>
+      <div style={{overflowX:'auto'}}>
+        <table className="home-channel-table">
+          <thead><tr>
+            <th>매체</th><th>광고비</th><th>노출</th><th>클릭</th><th>CTR</th>
+            <th>DB 전환</th><th>미확인</th><th>구매 전환</th><th>CPA</th><th>매출</th><th>ROAS</th>
+          </tr></thead>
+          <tbody>{byChannel.map(r=>{
+            const totalConv = r.dbCount + r.purchases;
+            const ctr = r.impressions > 0 ? (r.clicks/r.impressions*100).toFixed(2)+'%' : '-';
+            const cpa = totalConv > 0 ? money(r.spend/totalConv) : '-';
+            const roas = r.spend > 0 && r.revenue > 0 ? (r.revenue/r.spend*100).toFixed(0)+'%' : '-';
+            const roasNum = r.spend > 0 && r.revenue > 0 ? r.revenue/r.spend*100 : 0;
+            return <tr key={r.channel}>
+              <td><ChannelTag channel={r.channel}/></td>
+              <td className="num">{money(r.spend)}</td>
+              <td className="num">{r.impressions.toLocaleString()}</td>
+              <td className="num">{r.clicks.toLocaleString()}</td>
+              <td className="num">{ctr}</td>
+              <td className="num">{r.dbCount||'-'}</td>
+              <td className="num" style={{color:r.unconfirmed?'#b45309':undefined}}>{r.unconfirmed||'-'}</td>
+              <td className="num">{r.purchases||'-'}</td>
+              <td className="num">{cpa}</td>
+              <td className="num">{r.revenue>0?money(r.revenue):'-'}</td>
+              <td className={`num ${roasNum>=100?'positive':roasNum>0?'warn':''}`}>{roas}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </section>}
+
     <nav className="home-quick-menu home-quick-menu-v14" aria-label="빠른 메뉴"><Link to="/dashboard"><TrendingUp size={17}/> 전체 대시보드</Link><Link to="/reports"><FileText size={17}/> 광고 데이터</Link><Link to="/kpi-goals"><CheckCircle2 size={17}/> KPI 관리</Link><Link to="/campaigns"><Megaphone size={17}/> 캠페인 관리</Link><Link to="/creatives/performance"><Sparkles size={17}/> 소재 성과</Link><Link to="/keywords"><Search size={17}/> 키워드 관리</Link><a href={CONTENT_STUDIO_URL.replace(/\/$/,'')+'/production/blog'} target="_blank" rel="noreferrer"><FileText size={17}/> 블로그 제작 ↗</a><Link to="/automation/overview"><Bot size={17}/> AI 자동화</Link></nav>
     <section className="home-bottom-grid home-bottom-grid-v14">
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2><small>전환율 높은 순</small></div></div><div className="home-mini-list">{visibleKeywords.slice(0,5).map((r,i)=>{const nType=r.channel==='naver'?naverTypeLabel(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.keywordId||r.keyword}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.keyword}</b><small><ChannelTag channel={r.channel}/>{nType&&<span className="home-naver-type">{nType}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">전환 <em>{r.dbCount+(r.purchases||0)+(r.unconfirmed||0)}</em></small></div></div>;})}</div>{!keyword.loading&&!visibleKeywords.length&&<div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div>}</article>
