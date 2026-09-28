@@ -17,12 +17,12 @@ import { TargetAutomationModal } from './CampaignManagementPage';
 
 const won=(n:number)=>`₩${Math.round(n||0).toLocaleString()}`;
 type SortKey='spend'|'impressions'|'clicks'|'ctr'|'cpc'|'cpm'|'dbCount'|'unconfirmed'|'purchases'|'addToCart'|'completeRegistration'|'revenue'|'cpa'|'roas';
-const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지';
+const kindOf=(r:CreativeMetricRow)=>r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':'이미지';
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
 
 export function MetaCreativeReportPage(){
   const {rows,meta,loading,error}=useMetricRows<CreativeMetricRow>('/metrics/creatives');
-  const [query,setQuery]=useState('');const [channel,setChannel]=useState('all');const [kind,setKind]=useState<'전체'|'이미지'|'영상'|'키워드'>('전체');const [sortKey,setSortKey]=useState<SortKey>('spend');const [sortDir,setSortDir]=useState<'desc'|'asc'>('desc');const [detail,setDetail]=useState<CreativeMetricRow|null>(null);
+  const [query,setQuery]=useState('');const [channel,setChannel]=useState('all');const [kind,setKind]=useState<'전체'|'이미지'|'영상'>('전체');const [sortKey,setSortKey]=useState<SortKey>('spend');const [sortDir,setSortDir]=useState<'desc'|'asc'>('desc');const [detail,setDetail]=useState<CreativeMetricRow|null>(null);
   const [previewUrl,setPreviewUrl]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
   useEffect(()=>{
@@ -58,18 +58,18 @@ export function MetaCreativeReportPage(){
   const [scheduleTarget,setScheduleTarget]=useState<CreativeMetricRow|null>(null);
   const rangeDays=useMemo(()=>{const from=new Date(range.from),to=new Date(range.to);return Math.round((to.getTime()-from.getTime())/86400000)+1;},[range.from,range.to]);
   const channels=useMemo(()=>['all',...new Set(rows.map(r=>r.channel))],[rows]);
-  const filtered=useMemo(()=>[...rows].filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(kind==='전체'||kindOf(r)===kind)&&(`${r.adName} ${r.campaignName||''} ${r.advertiserName||''}`).toLowerCase().includes(query.trim().toLowerCase())).sort((a,b)=>{const av=Number(a[sortKey]||0),bv=Number(b[sortKey]||0);return sortDir==='desc'?bv-av:av-bv}),[rows,filterValue,channel,kind,query,sortKey,sortDir]);
+  const filtered=useMemo(()=>[...rows].filter(r=>r.mediaType!=='text'&&matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)&&(channel==='all'||r.channel===channel)&&(kind==='전체'||kindOf(r)===kind)&&(`${r.adName} ${r.campaignName||''} ${r.advertiserName||''}`).toLowerCase().includes(query.trim().toLowerCase())).sort((a,b)=>{const av=Number(a[sortKey]||0),bv=Number(b[sortKey]||0);return sortDir==='desc'?bv-av:av-bv}),[rows,filterValue,channel,kind,query,sortKey,sortDir]);
   const toggleSort=(k:SortKey)=>{if(k===sortKey)setSortDir(v=>v==='desc'?'asc':'desc');else{setSortKey(k);setSortDir('desc')}};
   const arrow=(k:SortKey)=>sortKey===k?(sortDir==='desc'?' ▼':' ▲'):'';
   const connected=meta?.connections?.filter(c=>c.status==='connected')||[];const unimplemented=meta?.connections?.filter(c=>c.status==='connector_unimplemented')||[];
-  const kindCount=(k:'이미지'|'영상'|'키워드')=>rows.filter(r=>kindOf(r)===k).length;
+  const kindCount=(k:'이미지'|'영상')=>rows.filter(r=>kindOf(r)===k).length;
   return <>
     <PageHeader title="소재 성과" description="Meta·네이버 등 연결된 매체의 실제 소재 일별 성과를 선택 기간으로 집계합니다." action={<a className="btn secondary" href="https://adsmanager.facebook.com/adsmanager/manage/campaigns" target="_blank" rel="noreferrer">Meta 광고 관리자 <ExternalLink size={14}/></a>}/>
     <MetricsDateBar/>
     {rangeDays>90&&<div className="card" style={{color:'#a35b00',background:'#fff7e6',borderColor:'#ffe4b3',marginBottom:12,padding:'10px 14px',fontSize:13}}>선택하신 기간이 90일을 넘어서, 소재(광고) 단위 데이터는 <b>최근 90일까지만</b> 집계됩니다(소재 수가 많으면 수집 시간이 오래 걸려 성능상 제한). 캠페인 분석·통합 홈의 합계와 다를 수 있어요.</div>}
     <div className="card" style={{color:'#5a5a5a',background:'#f5f5f5',borderColor:'#e0e0e0',marginBottom:12,padding:'10px 14px',fontSize:13}}>네이버는 소재가 많으면 동기화 시간이 오래 걸려 <b>상위 2000개까지만</b> 수집됩니다. 그 이상인 계정은 캠페인 분석·통합 홈의 합계보다 이 화면 합계가 적을 수 있어요.</div>
     <div className="media-type-toggle" style={{marginBottom:12}}>
-      {(['전체','이미지','영상','키워드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
+      {(['전체','이미지','영상'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k)})`}</button>)}
     </div>
     <section className="card media-report-card">
       <div className="media-report-toolbar"><div><b>실제 소재 {filtered.length}개</b><small className="footnote">{connected.length?`연동: ${[...new Set(connected.map(c=>c.channel))].join(', ')}`:'연동된 성과 매체 없음'}{unimplemented.length?` · 커넥터 미구현: ${[...new Set(unimplemented.map(c=>c.channel))].join(', ')}`:''}</small></div><div className="media-report-actions"><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option value={c} key={c}>{c==='all'?'전체 매체':c==='meta'?'Meta':c==='naver'?'네이버':c}</option>)}</select><div className="campaign-search-box"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="소재·캠페인 검색"/></div></div></div>
@@ -106,7 +106,7 @@ export function MetaCreativeReportPage(){
                   </div>)}
                 </div>
               : detail.thumbnailUrl&&<img className="creative-detail-preview" src={detail.thumbnailUrl} alt=""/>}
-      {kindOf(detail)!=='키워드'&&(detail.title||detail.body||detail.description||detail.cta)&&(
+      {(detail.title||detail.body||detail.description||detail.cta)&&(
         <div style={{margin:'14px 0',padding:12,background:'#f8fafc',borderRadius:10}}>
           {detail.title&&<div style={{marginBottom:6}}><small className="muted">제목</small><div style={{fontWeight:700}}>{detail.title}</div></div>}
           {detail.body&&<div style={{marginBottom:6}}><small className="muted">광고 문구(설명란)</small><div style={{whiteSpace:'pre-wrap'}}>{detail.body}</div></div>}
