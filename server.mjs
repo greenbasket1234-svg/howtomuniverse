@@ -4145,14 +4145,35 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       if (adId && metaConfigured()) {
         try {
           const d = await metaGraphGet(`/${adId}`, {
-            fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),object_story_spec{link_data{picture},video_data{image_url}},effective_instagram_media_id}',
+            fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),effective_instagram_media_id,effective_object_story_id,object_story_id,object_story_spec{link_data{picture},video_data{image_url}}}',
           });
           const c = d?.creative;
-          // 인스타그램 미디어가 있으면 IG API에서 media_url 재조회
+
+          // 1순위: 인스타그램 미디어 ID → IG API media_url
           if (c?.effective_instagram_media_id) {
-            const ig = await metaGraphGet(`/${c.effective_instagram_media_id}`, { fields: 'media_url,thumbnail_url' });
-            imageUrl = ig?.media_url || ig?.thumbnail_url || c?.image_url || c?.thumbnail_url || null;
-          } else {
+            try {
+              const ig = await metaGraphGet(`/${c.effective_instagram_media_id}`, { fields: 'media_url,thumbnail_url' });
+              imageUrl = ig?.media_url || ig?.thumbnail_url || null;
+            } catch (igErr) {
+              console.warn('[proxy-thumb] IG media 조회 실패:', igErr?.message);
+            }
+          }
+
+          // 2순위: Facebook 페이지 게시물 → full_picture (더 장기간 유효)
+          if (!imageUrl) {
+            const postId = c?.effective_object_story_id || c?.object_story_id;
+            if (postId) {
+              try {
+                const post = await metaGraphGet(`/${postId}`, { fields: 'full_picture' });
+                imageUrl = post?.full_picture || null;
+              } catch (postErr) {
+                console.warn('[proxy-thumb] 페이스북 게시물 조회 실패:', postErr?.message);
+              }
+            }
+          }
+
+          // 3순위: creative 직접 필드
+          if (!imageUrl) {
             imageUrl = c?.image_url ||
               c?.object_story_spec?.link_data?.picture ||
               c?.object_story_spec?.video_data?.image_url ||
@@ -4163,7 +4184,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         }
       }
 
-      if (!imageUrl) return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
+      if (!imageUrl) {
+        console.warn(`[proxy-thumb] 이미지 URL 없음 - adId:${adId}`);
+        return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
+      }
 
       // 허용 도메인만 프록시 (SSRF 방지)
       const ALLOWED = ['fbcdn.net','cdninstagram.com','instagram.com','fbsbx.com','akamaihd.net','scontent'];

@@ -79,14 +79,19 @@ const previewCache = new Map<string, string | null>();
 function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|null;name:string}){
   const [previewUrl,setPreviewUrl]=useState<string|null|undefined>(previewCache.get(adId));
   const [iframeLoaded,setIframeLoaded]=useState(false);
-  const [imgError,setImgError]=useState(false);
+  const [thumbSrc,setThumbSrc]=useState<string|null>(
+    adId ? `/api/proxy-thumb?adId=${encodeURIComponent(adId)}` : proxiedThumbUrl(posterUrl)
+  );
+  const [imgFailed,setImgFailed]=useState(false);
   const hasTriedRef=useRef(false);
   const ref=useRef<HTMLDivElement>(null);
+
   useEffect(()=>{
     const el=ref.current; if(!el) return;
     const io=new IntersectionObserver(([entry])=>{
       if(entry.isIntersecting&&!hasTriedRef.current){
         hasTriedRef.current=true;
+        // ad_preview iframe도 병렬로 가져옵니다 (프록시 이미지 실패 시 폴백)
         if(!previewCache.has(adId)){
           apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(adId)}`)
             .then(r=>{previewCache.set(adId,r.previewUrl);setPreviewUrl(r.previewUrl)})
@@ -98,22 +103,30 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
     return ()=>io.disconnect();
   },[adId]);
 
-  // adId 기반 프록시 URL - Meta API에서 신선한 이미지를 가져옵니다 (URL 만료 문제 해결)
-  const thumbSrc = adId ? `/api/proxy-thumb?adId=${encodeURIComponent(adId)}` : proxiedThumbUrl(posterUrl);
+  const handleImgError=()=>{
+    // 프록시 실패 → posterUrl 직접 시도
+    if(thumbSrc?.startsWith('/api/proxy-thumb')&&posterUrl){
+      setThumbSrc(proxiedThumbUrl(posterUrl));
+    } else {
+      setImgFailed(true);
+    }
+  };
+
   const showIframe = previewUrl && iframeLoaded;
 
   return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
-    {!imgError && thumbSrc && <img
+    {thumbSrc && !imgFailed && <img
       src={thumbSrc} alt={name}
       style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
-      onError={()=>setImgError(true)}
+      onError={handleImgError}
     />}
-    {previewUrl && <iframe
+    {/* 이미지 실패 시 ad_preview iframe이 최종 폴백 */}
+    {previewUrl && (imgFailed || showIframe) && <iframe
       title={name} src={previewUrl} loading="lazy"
-      style={{position:'absolute',inset:0,width:'100%',height:'100%',border:'none',opacity:iframeLoaded?1:0,transition:'opacity .3s'}}
+      style={{position:'absolute',inset:0,width:'100%',height:'100%',border:'none',opacity:showIframe?1:0,transition:'opacity .3s'}}
       onLoad={()=>setIframeLoaded(true)}
     />}
-    {imgError && !showIframe && <span style={{color:'#64748b',fontSize:11}}>소재</span>}
+    {imgFailed && !previewUrl && !showIframe && <span style={{color:'#94a3b8',fontSize:12}}>미리보기 없음</span>}
   </div>;
 }
 
