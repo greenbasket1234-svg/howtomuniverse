@@ -2958,7 +2958,7 @@ body{font-size:15.5px;line-height:1.55}
 
 
 
-/* ── 소재명 행 전체 가로 스크롤 (주요 소재 성과 · 소재 효율 Top/Worst) ─── */
+
 /* 행 자체를 가로 스크롤 컨테이너로 만들어 잘림 없이 1줄 표시 */
 .home-scroll-row {
   display: flex;
@@ -3040,4 +3040,81 @@ body{font-size:15.5px;line-height:1.55}
   justify-content: center;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+/* ── 소재 카드 목록 가로 스크롤 (주요 소재·소재 효율 Top/Worst) ────────── */
+/* 카드 안의 목록 자체를 스크롤 컨테이너로 만들어 잘림 없이 표시 */
+.home-scroll-list {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 10px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.home-scroll-list::-webkit-scrollbar { height: 4px; }
+.home-scroll-list::-webkit-scrollbar-track { background: transparent; }
+.home-scroll-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+
+/* 각 행은 min-width: max-content → 내용 전체 너비 확보 */
+.home-scroll-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 7px;
+  padding: 6px 0;
+  border-bottom: 1px solid #eef2f7;
+  min-width: max-content;  /* ← 핵심: 내용만큼 너비 확보 */
+  width: 100%;
+}
+.home-scroll-row:last-child { border-bottom: none; }
+.home-scroll-row > * { flex-shrink: 0; }
+
+/* 소재명 */
+.home-scroll-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  white-space: nowrap;
+}
+/* KPI 묶음 */
+.home-scroll-kpi {
+  display: flex;
+  gap: 6px;
+  margin-left: 4px;
+}
+.home-scroll-kpi span {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.home-scroll-kpi em { font-style: normal; font-weight: 700; color: #1e293b; }
+.home-scroll-kpi em.bad { color: #dc2626; }
+/* 광고비 */
+.home-scroll-spend {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2f5bd6;
+  white-space: nowrap;
+}
+/* CTR */
+.home-scroll-ctr {
+  font-size: 10px;
+  color: #3b82f6;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* 썸네일 */
+.home-scroll-thumb {
+  width: 28px; height: 28px;
+  border-radius: 4px; object-fit: cover;
+  background: #f1f5f9;
+}
+.home-scroll-thumb-empty {
+  width: 28px; height: 28px;
+  border-radius: 4px; background: #f1f5f9;
+  display: flex; align-items: center;
+  justify-content: center; font-size: 12px;
 }
