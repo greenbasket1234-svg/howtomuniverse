@@ -21,7 +21,9 @@ export function OptionalTopFilterBar() {
 
   // 광고주 계정: 본인 광고주명만 표시, 드롭다운·검색 없음
   if (!isAdmin && user?.isAdvertiserAccount) {
-    const advertiserName = user?.advertiser_name || filterValue || '';
+    // knownAdvertisers는 이 계정이 볼 수 있는 광고주 목록 — 광고주 계정은 1개
+    const advertiserName = knownAdvertisers[0] || filterValue || '';
+    if (!advertiserName) return null; // 로딩 중이면 표시 안 함
     return (
       <div className="global-advertiser-filter">
         <div className="global-advertiser-filter-main">
