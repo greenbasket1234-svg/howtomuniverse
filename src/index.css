@@ -2956,40 +2956,88 @@ body{font-size:15.5px;line-height:1.55}
 .home-creative-kpi-row { gap: 4px; }
 .home-creative-kpi-row span { font-size: 9.5px; gap: 1px; }
 
-/* 소재명 가로 스크롤 — 소재 효율 카드에서 소재명이 길면 좌우 스크롤 */
-.home-creative-name-scroll {
+
+
+/* ── 소재명 행 전체 가로 스크롤 (주요 소재 성과 · 소재 효율 Top/Worst) ─── */
+/* 행 자체를 가로 스크롤 컨테이너로 만들어 잘림 없이 1줄 표시 */
+.home-scroll-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;          /* Firefox */
-  -ms-overflow-style: none;       /* IE/Edge */
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  cursor: default;
-}
-.home-creative-name-scroll::-webkit-scrollbar { display: none; }
-.home-creative-name-scroll b {
-  font-size: 11px;
-  font-weight: 700;
-  color: #1e293b;
-  white-space: nowrap;
-  display: inline-block;
-}
-/* 주요 소재 성과도 가로 스크롤 */
-.home-mini-name-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid #eef2f7;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
+  -webkit-overflow-scrolling: touch;
+  cursor: grab;
 }
-.home-mini-name-scroll::-webkit-scrollbar { display: none; }
-.home-mini-name-scroll b {
+.home-scroll-row:last-child { border-bottom: none; }
+.home-scroll-row::-webkit-scrollbar { display: none; }
+/* 행 안의 모든 요소는 줄어들지 않음 → 내용 그대로 표시 */
+.home-scroll-row > * { flex-shrink: 0; }
+/* 이름만 약간 min-width 부여해 너무 좁아지지 않도록 */
+.home-scroll-name {
   font-size: 11px;
   font-weight: 700;
   color: #1e293b;
   white-space: nowrap;
-  display: inline-block;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.home-scroll-kpi {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 6px;
+}
+.home-scroll-kpi span {
+  font-size: 9.5px;
+  color: #64748b;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+.home-scroll-kpi em {
+  font-style: normal;
+  font-weight: 700;
+  color: #1e293b;
+}
+.home-scroll-kpi em.bad { color: #dc2626; }
+.home-scroll-spend {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2f5bd6;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.home-scroll-ctr {
+  font-size: 10px;
+  color: #3b82f6;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.home-scroll-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #f1f5f9;
+}
+.home-scroll-thumb-empty {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
 }
