@@ -69,30 +69,36 @@ const previewCache = new Map<string, string | null>();
 // 자리에 그대로 가져와 보여줍니다. 화면에 보이는 카드만 IntersectionObserver로 걸러서 호출합니다.
 function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|null;name:string}){
   const [previewUrl,setPreviewUrl]=useState<string|null|undefined>(previewCache.get(adId));
-  const [visible,setVisible]=useState(false);
+  const [iframeLoaded,setIframeLoaded]=useState(false);
+  const [imgError,setImgError]=useState(false);
+  const hasTriedRef=useRef(false);
   const ref=useRef<HTMLDivElement>(null);
   useEffect(()=>{
     const el=ref.current; if(!el) return;
-    const io=new IntersectionObserver(([entry])=>setVisible(entry.isIntersecting),{threshold:0.2});
+    const io=new IntersectionObserver(([entry])=>{
+      if(entry.isIntersecting&&!hasTriedRef.current){
+        hasTriedRef.current=true;
+        if(!previewCache.has(adId)){
+          apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(adId)}`)
+            .then(r=>{previewCache.set(adId,r.previewUrl);setPreviewUrl(r.previewUrl)})
+            .catch(()=>{previewCache.set(adId,null);setPreviewUrl(null)});
+        }
+      }
+    },{threshold:0.2});
     io.observe(el);
     return ()=>io.disconnect();
-  },[]);
-  useEffect(()=>{
-    if(!visible||previewCache.has(adId)) return;
-    apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(adId)}`)
-      .then(r=>{previewCache.set(adId,r.previewUrl);setPreviewUrl(r.previewUrl)})
-      .catch(()=>{previewCache.set(adId,null);setPreviewUrl(null)});
-  },[visible,adId]);
-  return <div ref={ref} className="library-thumb-square library-thumb-apipreview">
-    {previewUrl
-      ? <iframe title={name} src={previewUrl} loading="lazy"/>
-      : previewUrl===null&&posterUrl
-        ? <img src={posterUrl} alt={name}/>
-        : previewUrl===null
-          ? <span>소재</span>
-          : <span className="library-thumb-loading">불러오는 중...</span>}
+  },[adId]);
+  // posterUrl이 있으면 즉시 표시합니다.
+  // iframe은 실제 로드 완료 후에만 posterUrl 위에 오버레이합니다.
+  // 인스타그램 게시물 광고의 iframe은 Meta CDN 제한으로 검게 표시될 수 있어
+  // iframeLoaded가 될 때까지 thumbnailUrl을 먼저 보여줍니다.
+  return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
+    {posterUrl&&!imgError&&<img src={posterUrl} alt={name} style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={()=>setImgError(true)}/>}
+    {previewUrl&&<iframe title={name} src={previewUrl} loading="lazy" style={{position:'absolute',inset:0,width:'100%',height:'100%',opacity:iframeLoaded?1:0,transition:'opacity .3s'}} onLoad={()=>setIframeLoaded(true)}/>}
+    {!posterUrl&&!previewUrl&&<span className="library-thumb-loading">{previewUrl===null?'소재':'불러오는 중...'}</span>}
   </div>;
 }
+
 
 type Kind='이미지'|'영상'|'슬라이드';
 type Item = {
