@@ -3130,3 +3130,16 @@ body{font-size:15.5px;line-height:1.55}
   min-width: 0;
   overflow-x: auto;
 }
+
+/* 소재명 아래 광고주명 (연한 회색) */
+.home-scroll-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.home-scroll-adv {
+  font-size: 9.5px;
+  color: #94a3b8;
+  font-weight: 400;
+  white-space: nowrap;
+}
