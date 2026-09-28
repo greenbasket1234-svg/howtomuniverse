@@ -9,6 +9,8 @@ import type { CreativeMetricRow, DailyMetricRow, KeywordMetricRow } from '../typ
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { CONTENT_STUDIO_URL } from '../data/universeMenu';
+import { loadNotices } from '../control/controlStore';
+import type { Notice } from '../control/controlTypes';
 
 const CH_COLOR: Record<string,string> = { meta:'#4776ff', naver:'#03c75a', google:'#6b7280', daangn:'#ff6f0f', kakao:'#f5c400', tiktok:'#111827' };
 const CH_LABEL: Record<string,string> = { meta:'Meta', naver:'네이버', google:'구글', daangn:'당근', kakao:'카카오', tiktok:'틱톡' };
@@ -27,6 +29,16 @@ function pct(value:number){return `${value.toFixed(1)}%`}
 export function UniverseHomePage(){
   const {filterValue,setFilter}=useAdvertiserFilter();
   const {user,isAdmin}=useAuth();
+  // 공지사항: 비어드민은 광고주별 성과 대신 공지사항을 표시합니다.
+  // 광고주 계정 → audience 'advertiser'|'all', 내부 직원/어드민 → 'internal'|'all'
+  const notices = useMemo((): Notice[] => {
+    try {
+      const all = loadNotices().filter(n => n.status === 'published');
+      if (isAdmin) return all.filter(n => n.audience === 'internal' || n.audience === 'all').slice(0, 5);
+      if (user?.type === 'advertiser') return all.filter(n => n.audience === 'advertiser' || n.audience === 'all').slice(0, 5);
+      return all.filter(n => n.audience === 'all').slice(0, 5);
+    } catch { return []; }
+  }, [isAdmin, user?.type]);
   const [advertisers]=useAdvertisers();
   const daily=useMetricRows<DailyMetricRow>('/metrics/daily');
   const keyword=useMetricRows<KeywordMetricRow>('/metrics/keywords');
@@ -128,7 +140,8 @@ export function UniverseHomePage(){
     <section className="home-bottom-grid home-bottom-grid-v14">
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2><small>전환율 높은 순</small></div></div><div className="home-mini-list">{visibleKeywords.slice(0,5).map((r,i)=>{const nType=r.channel==='naver'?naverTypeLabel(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.keywordId||r.keyword}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.keyword}</b><small><ChannelTag channel={r.channel}/>{nType&&<span className="home-naver-type">{nType}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">전환 <em>{r.dbCount+(r.purchases||0)+(r.unconfirmed||0)}</em></small></div></div>;})}</div>{!keyword.loading&&!visibleKeywords.length&&<div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div>}</article>
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 소재 성과</h2><small>CTR 높은 순 · 디스플레이</small></div></div><div className="home-scroll-list">{visibleDisplayCreatives.slice(0,5).map((r,i)=><div className="home-scroll-row" key={`${r.channel}-${r.adId}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><ChannelTag channel={r.channel}/><span className="home-scroll-name">{r.adName}<span className="home-scroll-adv">{r.advertiserName}</span></span><span className="home-scroll-ctr">CTR {(r.ctr||0).toFixed(2)}%</span><span className="home-scroll-spend">{money(r.spend)}</span></div>)}</div>{!creative.loading&&!visibleDisplayCreatives.length&&<div className="home-empty-data small"><Sparkles size={23}/><b>소재 데이터가 없습니다.</b></div>}</article>
-      <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>광고주별 성과</h2><small>ROAS/전환 높은 순</small></div></div><div className="home-mini-list">{byAdvertiser.slice(0,5).map((r,i)=>{const totalConv=r.db+r.purchases+r.unconfirmed;const roas=r.revenue&&r.spend?r.revenue/r.spend*100:0;const cpa=totalConv?r.spend/totalConv:0;const cvr=r.clicks?totalConv/r.clicks*100:0;return <div className="home-mini-row" key={r.name}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-body"><div className="home-mini-top"><b className="home-mini-name">{r.name}</b><b className="home-mini-spend">{money(r.spend)}</b></div><div className="home-mini-sub-row"><small className="home-mini-sub">전환 <em>{totalConv}</em> · ROAS <em className={roas>=100?'positive':''}>{r.revenue&&r.spend?roas.toFixed(0)+'%':'-'}</em> · CPA <em>{totalConv?money(cpa):'-'}</em> · CVR <em>{r.clicks?cvr.toFixed(1)+'%':'-'}</em></small></div></div></div>})}</div>{!daily.loading&&!byAdvertiser.length&&<div className="home-empty-data small"><TrendingUp size={23}/><b>광고 성과 데이터가 없습니다.</b></div>}</article>
+      {/* 3번째: 어드민만 광고주별 성과, 비어드민은 빈 자리 → 5번 공지사항으로 대체 */}
+      {isAdmin && <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>광고주별 성과</h2><small>ROAS/전환 높은 순</small></div></div><div className="home-mini-list">{byAdvertiser.slice(0,5).map((r,i)=>{const totalConv=r.db+r.purchases+r.unconfirmed;const roas=r.revenue&&r.spend?r.revenue/r.spend*100:0;const cpa=totalConv?r.spend/totalConv:0;const cvr=r.clicks?totalConv/r.clicks*100:0;return <div className="home-mini-row" key={r.name}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-body"><div className="home-mini-top"><b className="home-mini-name">{r.name}</b><b className="home-mini-spend">{money(r.spend)}</b></div><div className="home-mini-sub-row"><small className="home-mini-sub">전환 <em>{totalConv}</em> · ROAS <em className={roas>=100?'positive':''}>{r.revenue&&r.spend?roas.toFixed(0)+'%':'-'}</em> · CPA <em>{totalConv?money(cpa):'-'}</em> · CVR <em>{r.clicks?cvr.toFixed(1)+'%':'-'}</em></small></div></div></div>})}</div>{!daily.loading&&!byAdvertiser.length&&<div className="home-empty-data small"><TrendingUp size={23}/><b>광고 성과 데이터가 없습니다.</b></div>}</article>}
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>소재 효율 Top 5</h2><small>CTR·CPC·CVR 종합 점수 상위</small></div><Link to="/insights/creatives" className="home-card-more">전체 보기</Link></div>
         {creativeEfficiency.top.length ? <div className="home-scroll-list">{creativeEfficiency.top.map((item,i)=>(
           <div className="home-scroll-row" key={`${item.row.channel}-${item.row.adId}`}>
@@ -163,6 +176,30 @@ export function UniverseHomePage(){
         ))}</div>
         : <div className="home-empty-data small"><Sparkles size={23}/><b>평가 가능한 소재가 없습니다.</b></div>}
       </article>
+
+      {/* 5번째: 비어드민 계정에는 공지사항 표시 (어드민은 광고주별 성과가 3번째에 있어 공지사항 불필요) */}
+      {!isAdmin && <article className="home-dashboard-card compact-table-card">
+        <div className="home-card-head home-card-head-compact">
+          <div><h2>공지사항</h2><small>최근 발행된 공지</small></div>
+        </div>
+        {notices.length ? (
+          <div className="home-mini-list">
+            {notices.map((n, i) => (
+              <div className="home-mini-row" key={n.noticeId} style={{alignItems:'flex-start',gap:8}}>
+                <span className={`home-rank-badge r${i+1}`} style={{marginTop:2}}>{i+1}</span>
+                <div className="home-mini-left" style={{flex:1,minWidth:0}}>
+                  <b style={{fontSize:12,display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title}</b>
+                  <small style={{color:'#94a3b8',fontSize:10}}>{new Date(n.createdAt).toLocaleDateString('ko-KR')}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="home-empty-data small">
+            <FileText size={23}/><b>등록된 공지사항이 없습니다.</b>
+          </div>
+        )}
+      </article>}
     </section>
   </div>;
 }
