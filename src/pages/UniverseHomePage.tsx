@@ -54,9 +54,9 @@ export function UniverseHomePage(){
       const ch = r.channel || 'unknown';
       const cur = map.get(ch) || {channel:ch,spend:0,impressions:0,clicks:0,dbCount:0,unconfirmed:0,purchases:0,addToCart:0,completeRegistration:0,revenue:0};
       cur.spend += r.spend||0; cur.impressions += r.impressions||0; cur.clicks += r.clicks||0;
-      cur.dbCount += r.dbCount||0; cur.unconfirmed += (r as Record<string,number>).unconfirmed||0;
-      cur.purchases += r.purchases||0; cur.addToCart += (r as Record<string,number>).addToCart||0;
-      cur.completeRegistration += (r as Record<string,number>).completeRegistration||0;
+      cur.dbCount += r.dbCount||0; cur.unconfirmed += r.unconfirmed||0;
+      cur.purchases += r.purchases||0; cur.addToCart += r.addToCart||0;
+      cur.completeRegistration += r.completeRegistration||0;
       cur.revenue += r.revenue||0;
       map.set(ch, cur);
     }
