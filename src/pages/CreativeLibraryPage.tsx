@@ -79,54 +79,55 @@ const previewCache = new Map<string, string | null>();
 function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|null;name:string}){
   const [previewUrl,setPreviewUrl]=useState<string|null|undefined>(previewCache.get(adId));
   const [iframeLoaded,setIframeLoaded]=useState(false);
-  const [thumbSrc,setThumbSrc]=useState<string|null>(
-    adId ? `/api/proxy-thumb?adId=${encodeURIComponent(adId)}` : proxiedThumbUrl(posterUrl)
-  );
-  const [imgFailed,setImgFailed]=useState(false);
-  const hasTriedRef=useRef(false);
+  const [thumbSrc,setThumbSrc]=useState<string|null>(null);
+  const [thumbOk,setThumbOk]=useState<boolean|null>(null); // null=pending, true=ok, false=fail
   const ref=useRef<HTMLDivElement>(null);
+  const fetchedRef=useRef(false);
 
   useEffect(()=>{
     const el=ref.current; if(!el) return;
     const io=new IntersectionObserver(([entry])=>{
-      if(entry.isIntersecting&&!hasTriedRef.current){
-        hasTriedRef.current=true;
-        // ad_preview iframe도 병렬로 가져옵니다 (프록시 이미지 실패 시 폴백)
-        if(!previewCache.has(adId)){
-          apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(adId)}`)
-            .then(r=>{previewCache.set(adId,r.previewUrl);setPreviewUrl(r.previewUrl)})
-            .catch(()=>{previewCache.set(adId,null);setPreviewUrl(null)});
-        }
+      if(!entry.isIntersecting||fetchedRef.current) return;
+      fetchedRef.current=true;
+      // 1. ad_preview iframe — Meta가 권한 없이도 항상 제공 (최우선)
+      if(!previewCache.has(adId)){
+        apiFetch<{previewUrl:string|null}>(`/creative-preview?adId=${encodeURIComponent(adId)}`)
+          .then(r=>{previewCache.set(adId,r.previewUrl);setPreviewUrl(r.previewUrl)})
+          .catch(()=>{previewCache.set(adId,null);setPreviewUrl(null)});
       }
-    },{threshold:0.2});
+      // 2. 프록시 썸네일 — 가능하면 이미지로도 표시 (보조)
+      const src = adId ? `/api/proxy-thumb?adId=${encodeURIComponent(adId)}` : proxiedThumbUrl(posterUrl);
+      setThumbSrc(src);
+    },{threshold:0.1});
     io.observe(el);
     return ()=>io.disconnect();
-  },[adId]);
+  },[adId,posterUrl]);
 
-  const handleImgError=()=>{
-    // 프록시 실패 → posterUrl 직접 시도
-    if(thumbSrc?.startsWith('/api/proxy-thumb')&&posterUrl){
-      setThumbSrc(proxiedThumbUrl(posterUrl));
-    } else {
-      setImgFailed(true);
-    }
-  };
-
+  // iframe이 로드되면 썸네일보다 위에 표시
   const showIframe = previewUrl && iframeLoaded;
 
   return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
-    {thumbSrc && !imgFailed && <img
-      src={thumbSrc} alt={name}
-      style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
-      onError={handleImgError}
-    />}
-    {/* 이미지 실패 시 ad_preview iframe이 최종 폴백 */}
-    {previewUrl && (imgFailed || showIframe) && <iframe
-      title={name} src={previewUrl} loading="lazy"
-      style={{position:'absolute',inset:0,width:'100%',height:'100%',border:'none',opacity:showIframe?1:0,transition:'opacity .3s'}}
+    {/* ad_preview iframe — 항상 렌더(숨김), 로드되면 페이드인 */}
+    {previewUrl && <iframe
+      title={name} src={previewUrl} loading="lazy" scrolling="no"
+      style={{
+        position:'absolute',inset:0,width:'100%',height:'100%',border:'none',
+        opacity: showIframe ? 1 : 0,
+        transition:'opacity .4s',
+        pointerEvents:'none',
+      }}
       onLoad={()=>setIframeLoaded(true)}
     />}
-    {imgFailed && !previewUrl && !showIframe && <span style={{color:'#94a3b8',fontSize:12}}>미리보기 없음</span>}
+    {/* 썸네일 이미지 — iframe 뒤에 배치, iframe 로드되면 가려짐 */}
+    {thumbSrc && thumbOk !== false && !showIframe && <img
+      src={thumbSrc} alt={name}
+      style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
+      onLoad={()=>setThumbOk(true)}
+      onError={()=>setThumbOk(false)}
+    />}
+    {/* 아무것도 없으면 로딩 표시 */}
+    {!previewUrl && thumbOk === false && <span style={{color:'#475569',fontSize:11,padding:8,textAlign:'center'}}>미리보기 없음</span>}
+    {!previewUrl && thumbOk === null && thumbSrc && <span style={{color:'#94a3b8',fontSize:10}}>...</span>}
   </div>;
 }
 
