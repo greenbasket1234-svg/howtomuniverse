@@ -70,7 +70,6 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'advertiser-analysis', label: '광고주별 분석', path: '/insights/advertisers', icon: 'advertisers' },
       { key: 'campaign-analysis', label: '캠페인 분석', path: '/insights/campaigns', icon: 'campaigns' },
       { key: 'creative-analysis', label: '소재 분석', path: '/insights/creatives', icon: 'creative-library' },
-      { key: 'customer-analysis', label: '고객 분석', path: '/customer-analytics', icon: 'advertisers' },
       { key: 'budget-recommendations', label: '예산 추천', path: '/budget-recommendations', icon: 'trend' },
       { key: 'competitor-analysis', label: '경쟁사 분석', path: '/insights/competitors', icon: 'trend' },
       { key: 'ad-trends', label: '광고 트렌드', path: '/insights/trends', icon: 'trend' },
