@@ -77,15 +77,68 @@ export function Sidebar() {
     return () => window.removeEventListener('howtom:control-changed', bump);
   }, []);
   const menuVisibility = useMemo(() => loadMenuVisibility(), [menuRevision]);
-  // 광고주 계정은 9개 직원용 메뉴를 그대로 필터링하지 않고, 완전히 별도인
-  // 최소 메뉴(홈 + 등급별 추가 항목)만 보여줍니다 - 직원 메뉴에 실수로라도
-  // 관리 기능이 섞여 나가는 걸 원천적으로 막기 위해서입니다.
+  // 광고주 계정: 구독 등급(tier)에 따라 접근 가능한 그룹·항목만 보여줍니다.
+  // tier 1(VIEW) → 기본 운영 데이터, tier 2(INSIGHT) → 분석·AI, tier 3(CONTENT PRO) → 콘텐츠 제작
   const advertiserGroups = useMemo((): UniverseMenuGroup[] => {
     const tier = user?.tier ?? 0;
-    const items: UniverseMenuGroup['items'] = [{ key: 'home', label: '홈', path: '/home', icon: 'dashboard' }];
-    if (tier >= 2) items.push({ key: 'insights-performance', label: '광고 성과 분석', path: '/insights/performance', icon: 'dashboard' });
-    if (tier >= 3) items.push({ key: 'content-studio', label: '콘텐츠 제작소 ↗', path: CONTENT_STUDIO_URL, icon: 'dashboard', external: true });
-    return [{ key: 'home', label: '홈', path: '/home', planet: 'earth', items }];
+    const groups: UniverseMenuGroup[] = [];
+
+    // 홈 (모든 tier)
+    groups.push({
+      key: 'home', label: '홈', path: '/home', planet: 'earth',
+      items: [
+        { key: 'home-overview', label: '통합 홈', path: '/home', icon: 'dashboard' },
+      ],
+    });
+
+    // 운영센터 (tier 1+)
+    if (tier >= 1) {
+      const opItems: UniverseMenuGroup['items'] = [
+        { key: 'dashboard',   label: '전체 대시보드', path: '/dashboard',   icon: 'dashboard' },
+        { key: 'ad-data',     label: '광고 데이터',   path: '/reports',     icon: 'reports' },
+        { key: 'kpi-goals',   label: 'KPI 관리',      path: '/kpi-goals',   icon: 'target' },
+        { key: 'campaigns',   label: '캠페인 관리',   path: '/campaigns',   icon: 'campaigns' },
+        { key: 'keywords',    label: '키워드 관리',   path: '/keywords',    icon: 'keyword-analysis' },
+        { key: 'report-center', label: '보고서 관리', path: '/report-center', prefixPath: '/report-center', icon: 'reports' },
+      ];
+      groups.push({ key: 'operations', label: '운영센터', path: '/dashboard', planet: 'jupiter', items: opItems });
+    }
+
+    // 인사이트 (tier 2+)
+    if (tier >= 2) {
+      const insightItems: UniverseMenuGroup['items'] = [
+        { key: 'insights-home',            label: '인사이트 홈',    path: '/insights',                      icon: 'trend' },
+        { key: 'integrated-performance',   label: '통합 성과 분석', path: '/insights/performance',           icon: 'trend' },
+        { key: 'media-analysis',           label: '매체별 분석',    path: '/insights/media',                 icon: 'trend' },
+        { key: 'campaign-analysis',        label: '캠페인 분석',    path: '/insights/campaigns',             icon: 'campaigns' },
+        { key: 'creative-analysis',        label: '소재 분석',      path: '/insights/creatives',             icon: 'creative-library' },
+        { key: 'budget-recommendations',   label: '예산 추천',      path: '/budget-recommendations',          icon: 'trend' },
+        { key: 'ai-recommendations',       label: 'AI 추천',        path: '/insights/ai-recommendations',    icon: 'automation-rules' },
+      ];
+      groups.push({ key: 'insights', label: '인사이트', path: '/insights', planet: 'neptune', items: insightItems });
+    }
+
+    // 콘텐츠 (tier 3+)
+    if (tier >= 3) {
+      groups.push({
+        key: 'content', label: '콘텐츠', path: '/content', planet: 'saturn',
+        items: [
+          { key: 'content-studio', label: '콘텐츠 제작소 ↗', path: CONTENT_STUDIO_URL, icon: 'dashboard', external: true },
+        ],
+      });
+    }
+
+    // AI 자동화 (tier 2+)
+    if (tier >= 2) {
+      groups.push({
+        key: 'automation', label: 'AI 자동화', path: '/automation', planet: 'mars',
+        items: [
+          { key: 'automation-overview', label: '자동화 개요', path: '/automation/overview', icon: 'automation-rules' },
+        ],
+      });
+    }
+
+    return groups;
   }, [user?.tier]);
   const groups = useMemo(
     () => user?.isAdvertiserAccount
