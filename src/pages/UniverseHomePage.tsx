@@ -35,10 +35,10 @@ export function UniverseHomePage(){
     try {
       const all = loadNotices().filter(n => n.status === 'published');
       if (isAdmin) return all.filter(n => n.audience === 'internal' || n.audience === 'all').slice(0, 5);
-      if (user?.type === 'advertiser') return all.filter(n => n.audience === 'advertiser' || n.audience === 'all').slice(0, 5);
+      if (user?.isAdvertiserAccount) return all.filter(n => n.audience === 'advertiser' || n.audience === 'all').slice(0, 5);
       return all.filter(n => n.audience === 'all').slice(0, 5);
     } catch { return []; }
-  }, [isAdmin, user?.type]);
+  }, [isAdmin, user?.isAdvertiserAccount]);
   const [advertisers]=useAdvertisers();
   const daily=useMetricRows<DailyMetricRow>('/metrics/daily');
   const keyword=useMetricRows<KeywordMetricRow>('/metrics/keywords');
