@@ -2927,3 +2927,69 @@ body{font-size:15.5px;line-height:1.55}
 .home-creative-kpi-row { display: flex; gap: 6px; flex-shrink: 0; }
 .home-creative-kpi-row span { font-size: 10.5px; color: #64748b; white-space: nowrap; display: flex; align-items: center; gap: 2px; }
 .home-creative-kpi-row em { font-style: normal; font-weight: 700; color: #1e293b; }
+
+/* ── 홈 카드 소형 뷰 오버라이드 (글씨 작게, 1줄 확보) ─────────────── */
+.home-bottom-grid .home-mini-list { padding: 0 10px 8px; }
+.home-bottom-grid .home-mini-row { padding: 6px 0; gap: 6px; }
+.home-bottom-grid .home-mini-left > b { font-size: 11.5px; }
+.home-bottom-grid .home-mini-left > small { font-size: 10px; gap: 3px; }
+.home-bottom-grid .home-mini-spend { font-size: 11.5px; }
+.home-bottom-grid .home-mini-sub { font-size: 10px; }
+.home-bottom-grid .home-ch-tag { font-size: 9.5px; padding: 1px 5px; }
+.home-bottom-grid .home-naver-type { font-size: 9px; padding: 0 4px; }
+.home-bottom-grid .home-rank-badge { width: 17px; height: 17px; font-size: 9.5px; border-radius: 4px; flex-shrink: 0; }
+.home-bottom-grid .home-mini-right { min-width: 76px; }
+
+/* 주요 소재 성과 1줄 (home-mini-row-inline) */
+.home-bottom-grid .home-mini-row-inline { padding: 6px 0; gap: 5px; }
+.home-bottom-grid .home-mini-name-text { font-size: 11px; }
+.home-bottom-grid .home-mini-adv { font-size: 9.5px; }
+.home-bottom-grid .home-mini-right-inline { gap: 5px; }
+.home-bottom-grid .home-mini-right-inline .home-mini-spend { font-size: 11px; }
+.home-bottom-grid .home-mini-ctr { font-size: 10px; }
+
+/* 소재 효율 Top/Worst 행 */
+.home-bottom-grid .home-creative-row-v2 { padding: 5px 0; gap: 5px; }
+.home-creative-thumb-sm { width: 30px; height: 30px; border-radius: 4px; }
+.home-creative-thumb-sm.home-creative-thumb-empty { font-size: 13px; }
+.home-creative-name-text { font-size: 11px; }
+.home-creative-kpi-row { gap: 4px; }
+.home-creative-kpi-row span { font-size: 9.5px; gap: 1px; }
+
+/* 소재명 가로 스크롤 — 소재 효율 카드에서 소재명이 길면 좌우 스크롤 */
+.home-creative-name-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE/Edge */
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  cursor: default;
+}
+.home-creative-name-scroll::-webkit-scrollbar { display: none; }
+.home-creative-name-scroll b {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  white-space: nowrap;
+  display: inline-block;
+}
+/* 주요 소재 성과도 가로 스크롤 */
+.home-mini-name-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.home-mini-name-scroll::-webkit-scrollbar { display: none; }
+.home-mini-name-scroll b {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  white-space: nowrap;
+  display: inline-block;
+}
