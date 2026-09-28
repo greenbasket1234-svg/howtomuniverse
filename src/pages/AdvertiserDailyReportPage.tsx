@@ -6,6 +6,7 @@ import html2canvas from 'html2canvas';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useAuth } from '../context/AuthContext';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { apiFetch } from '../hooks/useApi';
 import { MediaPerformancePage } from './MediaPerformancePage';
@@ -209,6 +210,7 @@ function ReportGrid({ advertiserName, month, rows, editable, onCellChange, onDel
 
 export function AdvertiserDailyReportPage() {
   const { filterValue, setFilter } = useAdvertiserFilter();
+  const { user } = useAuth();
   const [realAdvertisers] = useAdvertisers(); // 실제(Postgres) 광고주 목록 - 상단 필터와 자동 연동하기 위해 사용합니다.
   const [tab, setTab] = useState<ReportTab>('preview');
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0,7));
@@ -221,6 +223,8 @@ export function AdvertiserDailyReportPage() {
   const [advertiserName, setAdvertiserName] = useState(() => resolveInitialAdvertiser(filterValue));
   const [extraAdvertisers, setExtraAdvertisers] = useState<string[]>(() => loadExtraAdvertisers());
   const allAdvertisers = useMemo(() => Array.from(new Set([...BASE_ADVERTISERS, ...realAdvertisers.map(a=>a.name), ...extraAdvertisers])), [extraAdvertisers, realAdvertisers]);
+
+  // 광고주 계정: 실제 광고주 목록이 로드되면 자동으로 본인 광고주를 선택합니다.
   const [newReportModalOpen, setNewReportModalOpen] = useState(false);
   const [newReportAdvertiser, setNewReportAdvertiser] = useState('');
   const [newReportType, setNewReportType] = useState<ReportType>('lead');
@@ -260,6 +264,14 @@ export function AdvertiserDailyReportPage() {
   const [sampleContext, setSampleContext] = useState(false);
   const currentIsSample = sampleContext || reportSource === 'sample';
   const markManualEdit = () => setReportSource(previous => (sampleContext || previous === 'sample') ? 'sample' : 'manual');
+
+  // 광고주 계정: 실제 광고주 목록이 로드되면 자동으로 본인 광고주를 선택합니다.
+  useEffect(() => {
+    if (!user?.isAdvertiserAccount) return;
+    if (advertiserName) return;
+    const name = realAdvertisers[0]?.name;
+    if (name) { setSampleContext(false); setReportSource('manual'); setAdvertiserName(name); }
+  }, [realAdvertisers, user?.isAdvertiserAccount, advertiserName]);
   // 샘플을 열면 실제 profiles STATE(모든 광고주의 보고서 유형·매체·지표 구성)를 바꾸지 않고,
   // 이 화면에서만 보이는 임시 override로 따로 둡니다. 실제 profiles를 바꾸면 화면을 벗어나도
   // (다른 광고주로 갔다가 돌아와도) 그 광고주의 실제 설정이 샘플 것으로 남아있게 되기 때문입니다.
