@@ -51,13 +51,18 @@ export function UniverseHomePage(){
     return b.spend-a.spend;
   }),[creative.rows,filterValue]);
 
+  // 주요 소재 성과·소재 효율 공통: 검색광고(네이버·구글) 제외, 디스플레이·소셜만
+  const DISPLAY_CHANNELS_SET = new Set(['meta', 'kakao', 'tiktok', 'daangn']);
+  const visibleDisplayCreatives = useMemo(()=>
+    visibleCreatives.filter(r => DISPLAY_CHANNELS_SET.has(r.channel))
+  , [visibleCreatives]);
+
   // ── 소재 효율 종합 점수 계산 ──────────────────────────────────────────────
   // 광고비 최소 1,000원 + 클릭 5회 이상인 소재만 평가합니다.
   const creativeEfficiency = useMemo(() => {
     // 검색광고(네이버·구글)는 키워드 기반 텍스트 광고라 소재 미리보기·CTR 비교가 의미 없습니다.
     // 메타·카카오·틱톡·당근 등 디스플레이·소셜 채널만 평가합니다.
-    const DISPLAY_CHANNELS = new Set(['meta', 'kakao', 'tiktok', 'daangn']);
-    const eligible = visibleCreatives.filter(r => r.spend >= 1000 && r.clicks >= 5 && DISPLAY_CHANNELS.has(r.channel));
+    const eligible = visibleDisplayCreatives.filter(r => r.spend >= 1000 && r.clicks >= 5);
     if (!eligible.length) return { top: [] as typeof scored, worst: [] as typeof scored };
     const totalConv = (r: CreativeMetricRow) => r.dbCount + (r.purchases || 0) + (r.unconfirmed || 0);
     const getCtr = (r: CreativeMetricRow) => r.impressions > 0 ? r.clicks / r.impressions * 100 : 0;
@@ -72,7 +77,7 @@ export function UniverseHomePage(){
       return { row: r, score, ctr, cpc, cvr, conv: totalConv(r) };
     }).sort((a, b) => b.score - a.score);
     return { top: scored.slice(0, 5), worst: [...scored].reverse().slice(0, 5) };
-  }, [visibleCreatives]);
+  }, [visibleDisplayCreatives]);
   const overview=useMemo(()=>visibleDaily.reduce((a,r)=>({spend:a.spend+r.spend,clicks:a.clicks+r.clicks,dbCount:a.dbCount+r.dbCount,purchases:a.purchases+(r.purchases||0),addToCart:a.addToCart+(r.addToCart||0),completeRegistration:a.completeRegistration+(r.completeRegistration||0),initiateCheckout:a.initiateCheckout+(r.initiateCheckout||0),unconfirmed:a.unconfirmed+(r.unconfirmed||0),revenue:a.revenue+r.revenue}),{spend:0,clicks:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,initiateCheckout:0,unconfirmed:0,revenue:0}),[visibleDaily]);
   const byAdvertiser=useMemo(()=>{const m=new Map<string,{name:string;spend:number;clicks:number;db:number;purchases:number;unconfirmed:number;revenue:number}>();visibleDaily.forEach(r=>{const name=r.advertiserName||r.advertiserId;const v=m.get(name)||{name,spend:0,clicks:0,db:0,purchases:0,unconfirmed:0,revenue:0};v.spend+=r.spend;v.clicks+=r.clicks;v.db+=r.dbCount;v.purchases+=r.purchases||0;v.unconfirmed+=r.unconfirmed||0;v.revenue+=r.revenue;m.set(name,v)});return [...m.values()].sort((a,b)=>{
     // 매출을 추적하는 광고주는 ROAS로, 아니면 총 전환(DB+구매+미확인) 수로 성과를 비교합니다.
@@ -122,23 +127,20 @@ export function UniverseHomePage(){
     <nav className="home-quick-menu home-quick-menu-v14" aria-label="빠른 메뉴"><Link to="/dashboard"><TrendingUp size={17}/> 전체 대시보드</Link><Link to="/reports"><FileText size={17}/> 광고 데이터</Link><Link to="/kpi-goals"><CheckCircle2 size={17}/> KPI 관리</Link><Link to="/campaigns"><Megaphone size={17}/> 캠페인 관리</Link><Link to="/creatives/performance"><Sparkles size={17}/> 소재 성과</Link><Link to="/keywords"><Search size={17}/> 키워드 관리</Link><a href={CONTENT_STUDIO_URL.replace(/\/$/,'')+'/production/blog'} target="_blank" rel="noreferrer"><FileText size={17}/> 블로그 제작 ↗</a><Link to="/automation/overview"><Bot size={17}/> AI 자동화</Link></nav>
     <section className="home-bottom-grid home-bottom-grid-v14">
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2><small>전환율 높은 순</small></div></div><div className="home-mini-list">{visibleKeywords.slice(0,5).map((r,i)=>{const nType=r.channel==='naver'?naverTypeLabel(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.keywordId||r.keyword}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.keyword}</b><small><ChannelTag channel={r.channel}/>{nType&&<span className="home-naver-type">{nType}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">전환 <em>{r.dbCount+(r.purchases||0)+(r.unconfirmed||0)}</em></small></div></div>;})}</div>{!keyword.loading&&!visibleKeywords.length&&<div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div>}</article>
-      <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 소재 성과</h2><small>CTR 높은 순</small></div></div><div className="home-mini-list">{visibleCreatives.slice(0,5).map((r,i)=>{const nType=r.channel==='naver'?naverTypeLabel(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.adId}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.adName}</b><small><ChannelTag channel={r.channel}/>{nType&&<span className="home-naver-type">{nType}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">CTR <em>{(r.ctr||0).toFixed(2)}%</em></small></div></div>;})}</div>{!creative.loading&&!visibleCreatives.length&&<div className="home-empty-data small"><Sparkles size={23}/><b>소재 데이터가 없습니다.</b></div>}</article>
+      <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 소재 성과</h2><small>CTR 높은 순 · 디스플레이</small></div></div><div className="home-mini-list">{visibleDisplayCreatives.slice(0,5).map((r,i)=><div className="home-mini-row home-mini-row-inline" key={`${r.channel}-${r.adId}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-name-cell"><b className="home-mini-name-text">{r.adName}</b><span className="home-mini-meta"><ChannelTag channel={r.channel}/><span className="home-mini-adv">{r.advertiserName}</span></span></div><div className="home-mini-right-inline"><b className="home-mini-spend">{money(r.spend)}</b><span className="home-mini-ctr">CTR {(r.ctr||0).toFixed(2)}%</span></div></div>)}</div>{!creative.loading&&!visibleDisplayCreatives.length&&<div className="home-empty-data small"><Sparkles size={23}/><b>소재 데이터가 없습니다.</b></div>}</article>
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>광고주별 성과</h2><small>ROAS/전환 높은 순</small></div></div><div className="home-mini-list">{byAdvertiser.slice(0,5).map((r,i)=>{const totalConv=r.db+r.purchases+r.unconfirmed;const roas=r.revenue&&r.spend?r.revenue/r.spend*100:0;const cpa=totalConv?r.spend/totalConv:0;const cvr=r.clicks?totalConv/r.clicks*100:0;return <div className="home-mini-row" key={r.name}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-body"><div className="home-mini-top"><b className="home-mini-name">{r.name}</b><b className="home-mini-spend">{money(r.spend)}</b></div><div className="home-mini-sub-row"><small className="home-mini-sub">전환 <em>{totalConv}</em> · ROAS <em className={roas>=100?'positive':''}>{r.revenue&&r.spend?roas.toFixed(0)+'%':'-'}</em> · CPA <em>{totalConv?money(cpa):'-'}</em> · CVR <em>{r.clicks?cvr.toFixed(1)+'%':'-'}</em></small></div></div></div>})}</div>{!daily.loading&&!byAdvertiser.length&&<div className="home-empty-data small"><TrendingUp size={23}/><b>광고 성과 데이터가 없습니다.</b></div>}</article>
       <article className="home-dashboard-card approval-status-card"><div className="home-card-head home-card-head-compact"><div><h2>소재 효율 Top 5</h2><small>CTR·CPC·CVR 종합 점수 상위</small></div><Link to="/insights/creatives" className="home-card-more">전체 보기</Link></div>
         {creativeEfficiency.top.length ? <div className="home-mini-list">{creativeEfficiency.top.map((item,i)=>(
-          <div className="home-mini-row home-creative-row" key={`${item.row.channel}-${item.row.adId}`}>
+          <div className="home-mini-row home-creative-row-v2" key={`${item.row.channel}-${item.row.adId}`}>
             <span className={`home-rank-badge r${i+1}`}>{i+1}</span>
             {item.row.thumbnailUrl
-              ? <img className="home-creative-thumb" src={item.row.thumbnailUrl} alt="" onError={e=>{(e.target as HTMLImageElement).style.display='none';}}/>
-              : <span className="home-creative-thumb-empty">📷</span>}
-            <div className="home-mini-left" style={{flex:1,minWidth:0}}>
-              <b style={{display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.row.adName}</b>
-              <small><ChannelTag channel={item.row.channel}/>{item.row.advertiserName}</small>
-            </div>
-            <div className="home-mini-right home-creative-metrics">
-              <span>CTR <em>{item.ctr.toFixed(2)}%</em></span>
-              <span>CPC <em>{money(item.cpc)}</em></span>
-              <span>CVR <em>{item.cvr.toFixed(2)}%</em></span>
+              ? <img className="home-creative-thumb-sm" src={item.row.thumbnailUrl} alt="" onError={e=>{(e.target as HTMLImageElement).style.display='none';}}/>
+              : <span className="home-creative-thumb-sm home-creative-thumb-empty">📷</span>}
+            <b className="home-creative-name-text">{item.row.adName}</b>
+            <div className="home-creative-kpi-row">
+              <span>CTR<em>{item.ctr.toFixed(1)}%</em></span>
+              <span>CPC<em>{money(item.cpc)}</em></span>
+              <span>CVR<em>{item.cvr.toFixed(1)}%</em></span>
             </div>
           </div>
         ))}</div>
@@ -146,19 +148,16 @@ export function UniverseHomePage(){
       </article>
       <article className="home-dashboard-card system-card"><div className="home-card-head home-card-head-compact"><div><h2>소재 효율 Worst 5</h2><small>CTR·CPC·CVR 종합 점수 하위</small></div><Link to="/insights/creatives" className="home-card-more">전체 보기</Link></div>
         {creativeEfficiency.worst.length ? <div className="home-mini-list">{creativeEfficiency.worst.map((item,i)=>(
-          <div className="home-mini-row home-creative-row" key={`${item.row.channel}-${item.row.adId}`}>
+          <div className="home-mini-row home-creative-row-v2" key={`${item.row.channel}-${item.row.adId}`}>
             <span className="home-rank-badge" style={{background:'#fef2f2',color:'#dc2626'}}>{i+1}</span>
             {item.row.thumbnailUrl
-              ? <img className="home-creative-thumb" src={item.row.thumbnailUrl} alt="" onError={e=>{(e.target as HTMLImageElement).style.display='none';}}/>
-              : <span className="home-creative-thumb-empty">📷</span>}
-            <div className="home-mini-left" style={{flex:1,minWidth:0}}>
-              <b style={{display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.row.adName}</b>
-              <small><ChannelTag channel={item.row.channel}/>{item.row.advertiserName}</small>
-            </div>
-            <div className="home-mini-right home-creative-metrics">
-              <span>CTR <em style={{color:'#dc2626'}}>{item.ctr.toFixed(2)}%</em></span>
-              <span>CPC <em style={{color:'#dc2626'}}>{money(item.cpc)}</em></span>
-              <span>CVR <em>{item.cvr.toFixed(2)}%</em></span>
+              ? <img className="home-creative-thumb-sm" src={item.row.thumbnailUrl} alt="" onError={e=>{(e.target as HTMLImageElement).style.display='none';}}/>
+              : <span className="home-creative-thumb-sm home-creative-thumb-empty">📷</span>}
+            <b className="home-creative-name-text">{item.row.adName}</b>
+            <div className="home-creative-kpi-row">
+              <span>CTR<em style={{color:'#dc2626'}}>{item.ctr.toFixed(1)}%</em></span>
+              <span>CPC<em style={{color:'#dc2626'}}>{money(item.cpc)}</em></span>
+              <span>CVR<em>{item.cvr.toFixed(1)}%</em></span>
             </div>
           </div>
         ))}</div>
