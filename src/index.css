@@ -3118,3 +3118,15 @@ body{font-size:15.5px;line-height:1.55}
   display: flex; align-items: center;
   justify-content: center; font-size: 12px;
 }
+
+/* 소재 효율 Top5 카드 — approval-status-card의 grid 레이아웃 오버라이드 */
+/* 원래 승인 대기용 2컬럼 grid였으나 소재 효율 카드로 용도 변경됨 */
+.approval-status-card.home-dashboard-card {
+  display: flex;
+  flex-direction: column;
+}
+.approval-status-card.home-dashboard-card .home-scroll-list {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
