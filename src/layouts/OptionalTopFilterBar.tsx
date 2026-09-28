@@ -4,11 +4,13 @@ import { Search, X } from 'lucide-react';
 import { shouldShowFilterBar } from '../data/sidebarMenuItems';
 import { useAdvertisers } from '../hooks/useAdvertisers';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useAuth } from '../context/AuthContext';
 
 export function OptionalTopFilterBar() {
   const { pathname }                        = useLocation();
   const [advertisers]                       = useAdvertisers();
   const { filterValue, setFilter, clearFilter } = useAdvertiserFilter();
+  const { user, isAdmin }                   = useAuth();
 
   const knownAdvertisers = useMemo(
     () => advertisers.map(a => a.name).sort((a, b) => a.localeCompare(b, 'ko')),
@@ -16,6 +18,20 @@ export function OptionalTopFilterBar() {
   );
 
   if (!shouldShowFilterBar(pathname)) return null;
+
+  // 광고주 계정: 본인 광고주명만 표시, 드롭다운·검색 없음
+  if (!isAdmin && user?.isAdvertiserAccount) {
+    const advertiserName = user?.advertiser_name || filterValue || '';
+    return (
+      <div className="global-advertiser-filter">
+        <div className="global-advertiser-filter-main">
+          <div className="global-advertiser-locked-label">
+            <span className="global-advertiser-locked-name">{advertiserName}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="global-advertiser-filter">
