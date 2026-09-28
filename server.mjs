@@ -689,10 +689,19 @@ function ctaLabelKo(raw) {
  * 지금 갖고 있는 권한(ads_read) 그대로 동작합니다. iframe 태그 하나만 돌려줍니다.
  */
 async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
-  const data = await metaGraphGet(`/${adId}/previews`, { ad_format: adFormat });
-  const body = data?.data?.[0]?.body || '';
-  const srcMatch = body.match(/src="([^"]+)"/);
-  return srcMatch ? srcMatch[1].replace(/&amp;/g, '&') : null;
+  // 인스타그램 광고는 INSTAGRAM_STANDARD 포맷으로 먼저 시도합니다.
+  const formats = adFormat === 'MOBILE_FEED_STANDARD'
+    ? ['INSTAGRAM_STANDARD', 'MOBILE_FEED_STANDARD', 'INSTAGRAM_STORY']
+    : [adFormat];
+  for (const fmt of formats) {
+    try {
+      const data = await metaGraphGet(`/${adId}/previews`, { ad_format: fmt });
+      const body = data?.data?.[0]?.body || '';
+      const srcMatch = body.match(/src="([^"]+)"/);
+      if (srcMatch) return srcMatch[1].replace(/&amp;/g, '&');
+    } catch { /* 다음 포맷 시도 */ }
+  }
+  return null;
 }
 
 // 레퍼런스 수집(콘텐츠 → 레퍼런스 수집 메뉴)에서 쓰는 플랫폼별 Connector 레지스트리입니다.
