@@ -2893,3 +2893,18 @@ body{font-size:15.5px;line-height:1.55}
 .home-creative-metrics em { font-style: normal; font-weight: 700; color: #1e293b; margin-left: 2px; }
 .home-card-more { font-size: 12px; color: #3b82f6; text-decoration: none; white-space: nowrap; }
 .home-card-more:hover { text-decoration: underline; }
+
+/* 네이버 캠페인 유형 뱃지 */
+.home-naver-type {
+  display: inline-block;
+  background: #e6f9ed;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  margin: 0 3px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
