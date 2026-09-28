@@ -4130,6 +4130,46 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
 
+    // ── 썸네일 이미지 프록시 ─────────────────────────────────────────────
+    // 브라우저에서 Meta/Instagram CDN 이미지를 직접 로드하면 CORS 차단 또는
+    // URL 만료로 검게 보입니다. 서버가 대신 가져와서 브라우저에 스트리밍합니다.
+    if (req.method === 'GET' && pathname === '/api/proxy-thumb') {
+      const q = new URL(req.url, 'http://x').searchParams;
+      const rawUrl = q.get('url') || '';
+      // 허용 도메인만 프록시합니다 (SSRF 방지)
+      const ALLOWED_THUMB_HOSTS = [
+        'scontent', 'fbcdn.net', 'cdninstagram.com', 'instagram.com',
+        'fbsbx.com', 'akamaihd.net',
+      ];
+      let parsedUrl;
+      try { parsedUrl = new URL(rawUrl); } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
+      const isAllowed = ALLOWED_THUMB_HOSTS.some(h => parsedUrl.hostname.includes(h));
+      if (!isAllowed) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트입니다.' });
+      try {
+        const { default: https } = await import('https');
+        const { default: http } = await import('http');
+        const fetcher = parsedUrl.protocol === 'https:' ? https : http;
+        await new Promise((resolve, reject) => {
+          const proxyReq = fetcher.get(rawUrl, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (proxyRes) => {
+            const ct = proxyRes.headers['content-type'] || 'image/jpeg';
+            if (!ct.startsWith('image/')) { proxyRes.resume(); return reject(new Error('이미지가 아닙니다.')); }
+            res.writeHead(200, {
+              'Content-Type': ct,
+              'Cache-Control': 'public, max-age=86400',
+              'Access-Control-Allow-Origin': '*',
+            });
+            proxyRes.pipe(res);
+            proxyRes.on('end', resolve);
+          });
+          proxyReq.on('error', reject);
+          proxyReq.on('timeout', () => { proxyReq.destroy(); reject(new Error('timeout')); });
+        });
+        return;
+      } catch (e) {
+        if (!res.headersSent) return sendJson(res, 502, { error: '이미지를 가져올 수 없습니다.' });
+      }
+    }
+
     // ============================================================
     // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
     // ============================================================

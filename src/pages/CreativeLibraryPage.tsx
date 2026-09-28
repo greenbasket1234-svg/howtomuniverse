@@ -34,7 +34,7 @@ function SlideThumb({images,name}:{images:string[];name:string}){
     return ()=>clearInterval(t);
   },[visible,images.length]);
   return <div ref={ref} className="library-thumb-square library-thumb-slide">
-    {images.map((url,i)=><img key={url} src={url} alt={`${name} ${i+1}`} style={{opacity:i===idx?1:0}}/>)}
+    {images.map((url,i)=><img key={url} src={proxiedThumbUrl(url)||url} alt={`${name} ${i+1}`} style={{opacity:i===idx?1:0}}/>)}
     <div className="library-slide-dots">{images.map((_,i)=><span key={i} className={i===idx?'active':''}/>)}</div>
   </div>;
 }
@@ -62,6 +62,15 @@ function VideoThumb({videoUrl,posterUrl,name}:{videoUrl:string;posterUrl?:string
 
 // 카드마다 API를 부르면 화면 밖 카드까지 다 요청이 나가 느려지므로, 같은 adId는 한 번만
 // 불러오도록 모듈 스코프에 캐시합니다. 탭을 옮겨 다시 들어와도 재요청하지 않습니다.
+// Meta/Instagram CDN 이미지는 브라우저 직접 로드 시 CORS 차단·URL 만료로 검게 보입니다.
+// 서버 프록시(/api/proxy-thumb)를 경유해 이미지를 가져옵니다.
+const META_CDN_HOSTS = ['scontent','fbcdn.net','cdninstagram','instagram.com','fbsbx.com','akamaihd.net'];
+function proxiedThumbUrl(url?: string | null): string | null {
+  if (!url) return null;
+  try { const h = new URL(url).hostname; if (META_CDN_HOSTS.some(m => h.includes(m))) return `/api/proxy-thumb?url=${encodeURIComponent(url)}`; } catch { /* pass */ }
+  return url;
+}
+
 const previewCache = new Map<string, string | null>();
 
 // 슬라이드·영상 소재는 원본 파일(videoUrl)이나 수집된 캐러셀 이미지가 없을 때가 많아, 모달에서
@@ -93,7 +102,7 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
   // 인스타그램 게시물 광고의 iframe은 Meta CDN 제한으로 검게 표시될 수 있어
   // iframeLoaded가 될 때까지 thumbnailUrl을 먼저 보여줍니다.
   return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
-    {posterUrl&&!imgError&&<img src={posterUrl} alt={name} style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={()=>setImgError(true)}/>}
+    {posterUrl&&!imgError&&<img src={proxiedThumbUrl(posterUrl)||''} alt={name} style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={()=>setImgError(true)}/>}
     {previewUrl&&<iframe title={name} src={previewUrl} loading="lazy" style={{position:'absolute',inset:0,width:'100%',height:'100%',opacity:iframeLoaded?1:0,transition:'opacity .3s'}} onLoad={()=>setIframeLoaded(true)}/>}
     {!posterUrl&&!previewUrl&&<span className="library-thumb-loading">{previewUrl===null?'소재':'불러오는 중...'}</span>}
   </div>;
@@ -193,15 +202,15 @@ export function CreativeLibraryPage(){
             ? <VideoThumb videoUrl={r.videoUrl} posterUrl={r.thumbnailUrl} name={r.name}/>
             : r.channel==='meta'&&r.adId
               ? <ApiPreviewThumb adId={r.adId} posterUrl={r.thumbnailUrl} name={r.name}/>
-              : <div className="library-thumb-square">{r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 6px',display:'flex',alignItems:'center'}}><Play size={11} fill="#fff"/></span></div>)
+              : <div className="library-thumb-square">{r.thumbnailUrl?<img src={proxiedThumbUrl(r.thumbnailUrl)||r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 6px',display:'flex',alignItems:'center'}}><Play size={11} fill="#fff"/></span></div>)
         : r.kind==='슬라이드'
           ? (r.carouselImages&&r.carouselImages.length>1
               ? <SlideThumb images={r.carouselImages} name={r.name}/>
               : r.channel==='meta'&&r.adId
                 ? <ApiPreviewThumb adId={r.adId} posterUrl={r.thumbnailUrl} name={r.name}/>
-                : <div className="library-thumb-square">{r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 8px',fontSize:11,fontWeight:700}}>슬라이드</span></div>)
+                : <div className="library-thumb-square">{r.thumbnailUrl?<img src={proxiedThumbUrl(r.thumbnailUrl)||r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}<span style={{position:'absolute',bottom:6,right:6,background:'rgba(0,0,0,.6)',color:'#fff',borderRadius:999,padding:'3px 8px',fontSize:11,fontWeight:700}}>슬라이드</span></div>)
           : <div className="library-thumb-square">
-              {r.thumbnailUrl?<img src={r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
+              {r.thumbnailUrl?<img src={proxiedThumbUrl(r.thumbnailUrl)||r.thumbnailUrl} alt={r.name}/>:<span>소재</span>}
             </div>}
       {i<3&&<span className={`home-rank-badge r${i+1}`} style={{position:'absolute',top:6,left:6,zIndex:2}}>{i+1}</span>}
       <div className="library-body"><div className="library-meta"><span>● {r.advertiserName||r.advertiserId}</span><b>{channelLabel(r.channel)}</b></div><h3>{r.name}</h3><p>{r.campaignName||'캠페인 정보 없음'}</p><hr/><small>노출 {r.impressions.toLocaleString()} · 클릭 {r.clicks.toLocaleString()} · 전환 {(r.dbCount+(r.purchases||0)+(r.unconfirmed||0)).toLocaleString()}</small><small className="metric-emphasis">광고비 {won(r.spend)} · ROAS <span className={roasClass(Number(r.roas||0))}>{r.spend?`${Number(r.roas||0).toFixed(0)}%`:'-'}</span></small></div></article>)}</div>:<section className="card"><div className="table-scroll fixed-scroll-box"><table className="data-table"><thead><tr>
