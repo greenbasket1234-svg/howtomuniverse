@@ -104,7 +104,8 @@ type Item = {
 
 export function CreativeLibraryPage(){
   const {rows:creativeRows,meta,loading,error}=useMetricRows<CreativeMetricRow>('/metrics/creatives');
-  const {rows:keywordRows,loading:kwLoading}=useMetricRows<KeywordMetricRow>('/metrics/keywords');
+  // 키워드(검색광고)는 소재 관리에서 제외합니다 — 이미지·영상만 표시합니다.
+  // const keywordRows: KeywordMetricRow[] = [];  // 사용 안 함
   const {filterValue}=useAdvertiserFilter();
   const [q,setQ]=useState('');
   const [channel,setChannel]=useState('all');
@@ -143,19 +144,18 @@ export function CreativeLibraryPage(){
     }
   },[selected?.key]);
 
+    // 검색광고(mediaType==='text' 또는 keywordRows)는 소재 관리에서 제외합니다.
+  // 이미지·영상·슬라이드 소재만 표시합니다.
   const items:Item[]=useMemo(()=>[
-    ...creativeRows.map((r):Item=>({
-      key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':r.mediaType==='text'?'키워드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
-      name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
-      revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl, carouselImages:r.carouselImages,
-      title:r.title, body:r.body, description:r.description, cta:r.cta, status:r.status,
-    })),
-    ...keywordRows.map((r):Item=>({
-      key:`${r.channel}-kw-${r.keywordId||r.keyword}`, kind:'키워드', advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, keywordId:r.keywordId,
-      name:r.keyword, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
-      revenue:r.revenue, roas:Number(r.roas||0), status:r.status,
-    })),
-  ],[creativeRows,keywordRows]);
+    ...creativeRows
+      .filter(r => r.mediaType !== 'text')
+      .map((r):Item=>({
+        key:`${r.channel}-${r.adId}`, kind:(r.mediaType==='video'?'영상':r.mediaType==='carousel'?'슬라이드':'이미지'), advertiserId:r.advertiserId, advertiserName:r.advertiserName, channel:r.channel, adId:r.adId,
+        name:r.adName, campaignName:r.campaignName, impressions:r.impressions, clicks:r.clicks, spend:r.spend, dbCount:r.dbCount, purchases:r.purchases, unconfirmed:r.unconfirmed,
+        revenue:r.revenue, roas:Number(r.roas||0), thumbnailUrl:r.thumbnailUrl, videoUrl:r.videoUrl, carouselImages:r.carouselImages,
+        title:r.title, body:r.body, description:r.description, cta:r.cta, status:r.status,
+      })),
+  ],[creativeRows]);
 
   const channels=useMemo(()=>['all',...new Set(items.map(r=>r.channel))],[items]);
   const advertisers=useMemo(()=>['전체',...new Set(items.map(r=>r.advertiserName||r.advertiserId).filter(Boolean))],[items]);
