@@ -170,7 +170,7 @@ export function CreativeLibraryPage(){
   const connections=meta?.connections||[];
   const connected=[...new Set(connections.filter(c=>c.status==='connected').map(c=>c.channel))];
   const unavailable=connections.filter(c=>c.status!=='connected');
-  const isLoading=loading||kwLoading;
+  const isLoading=loading;
   const kindCount=(k:Kind)=>items.filter(r=>r.kind===k).length;
 
   return <div>
