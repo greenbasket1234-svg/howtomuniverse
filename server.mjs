@@ -2874,7 +2874,92 @@ async function handleApi(req, res, pathname) {
       });
     }
 
+    // ── 썸네일 이미지 프록시 (인증 불필요 — <img> 태그는 JWT를 못 보냄) ──
+    if (req.method === 'GET' && pathname === '/api/proxy-thumb') {
+      const q = new URL(req.url, 'http://x').searchParams;
+      const adId = cleanText(q.get('adId') || '', 80);
+      const rawUrl = q.get('url') || '';
+      if (!adId && !rawUrl) return sendJson(res, 400, { error: 'adId 또는 url이 필요합니다.' });
+
+      let imageUrl = rawUrl || null;
+
+      // adId가 있으면 Meta Graph API에서 신선한 image_url을 가져옵니다.
+      if (adId && metaConfigured()) {
+        try {
+          const d = await metaGraphGet(`/${adId}`, {
+            fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),effective_instagram_media_id,effective_object_story_id,object_story_id,object_story_spec{link_data{picture},video_data{image_url}}}',
+          });
+          const c = d?.creative;
+
+          // 1순위: 인스타그램 미디어 ID → IG API media_url
+          if (c?.effective_instagram_media_id) {
+            try {
+              const ig = await metaGraphGet(`/${c.effective_instagram_media_id}`, { fields: 'media_url,thumbnail_url' });
+              imageUrl = ig?.media_url || ig?.thumbnail_url || null;
+            } catch (igErr) {
+              console.warn('[proxy-thumb] IG media 조회 실패:', igErr?.message);
+            }
+          }
+
+          // 2순위: Facebook 페이지 게시물 → full_picture
+          if (!imageUrl) {
+            const postId = c?.effective_object_story_id || c?.object_story_id;
+            if (postId) {
+              try {
+                const post = await metaGraphGet(`/${postId}`, { fields: 'full_picture' });
+                imageUrl = post?.full_picture || null;
+              } catch (postErr) {
+                console.warn('[proxy-thumb] 페이스북 게시물 조회 실패:', postErr?.message);
+              }
+            }
+          }
+
+          // 3순위: creative 직접 필드
+          if (!imageUrl) {
+            imageUrl = c?.image_url ||
+              c?.object_story_spec?.link_data?.picture ||
+              c?.object_story_spec?.video_data?.image_url ||
+              c?.thumbnail_url || null;
+          }
+        } catch (e) {
+          console.warn('[proxy-thumb] Meta API 조회 실패:', e?.message);
+        }
+      }
+
+      if (!imageUrl) {
+        console.warn(`[proxy-thumb] 이미지 URL 없음 - adId:${adId}`);
+        return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
+      }
+
+      // 허용 도메인만 프록시 (SSRF 방지)
+      const ALLOWED = ['fbcdn.net','cdninstagram.com','instagram.com','fbsbx.com','akamaihd.net','scontent'];
+      try {
+        const h = new URL(imageUrl).hostname;
+        if (!ALLOWED.some(a => h.includes(a))) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트' });
+      } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
+
+      try {
+        const { default: https } = await import('https');
+        await new Promise((resolve, reject) => {
+          const pr = https.get(imageUrl, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (pres) => {
+            const ct = pres.headers['content-type'] || 'image/jpeg';
+            if (!ct.startsWith('image/')) { pres.resume(); return reject(new Error('이미지가 아닙니다.')); }
+            res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' });
+            pres.pipe(res);
+            pres.on('end', resolve);
+          });
+          pr.on('error', reject);
+          pr.on('timeout', () => { pr.destroy(); reject(new Error('timeout')); });
+        });
+        return;
+      } catch (e) {
+        if (!res.headersSent) return sendJson(res, 502, { error: '이미지를 가져올 수 없습니다.' });
+      }
+    }
+
     if (await handleAuth(req, res, pathname)) return;
+
+
 
     // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
@@ -4133,87 +4218,6 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 썸네일 이미지 프록시 ─────────────────────────────────────────────
     // Meta image_url은 약 1시간 후 만료됩니다.
     // adId를 받아 Meta API에서 신선한 URL을 가져온 뒤 이미지를 스트리밍합니다.
-    if (req.method === 'GET' && pathname === '/api/proxy-thumb') {
-      const q = new URL(req.url, 'http://x').searchParams;
-      const adId = cleanText(q.get('adId') || '', 80);
-      const rawUrl = q.get('url') || '';
-      if (!adId && !rawUrl) return sendJson(res, 400, { error: 'adId 또는 url이 필요합니다.' });
-
-      let imageUrl = rawUrl || null;
-
-      // adId가 있으면 Meta Graph API에서 신선한 image_url을 가져옵니다.
-      if (adId && metaConfigured()) {
-        try {
-          const d = await metaGraphGet(`/${adId}`, {
-            fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),effective_instagram_media_id,effective_object_story_id,object_story_id,object_story_spec{link_data{picture},video_data{image_url}}}',
-          });
-          const c = d?.creative;
-
-          // 1순위: 인스타그램 미디어 ID → IG API media_url
-          if (c?.effective_instagram_media_id) {
-            try {
-              const ig = await metaGraphGet(`/${c.effective_instagram_media_id}`, { fields: 'media_url,thumbnail_url' });
-              imageUrl = ig?.media_url || ig?.thumbnail_url || null;
-            } catch (igErr) {
-              console.warn('[proxy-thumb] IG media 조회 실패:', igErr?.message);
-            }
-          }
-
-          // 2순위: Facebook 페이지 게시물 → full_picture (더 장기간 유효)
-          if (!imageUrl) {
-            const postId = c?.effective_object_story_id || c?.object_story_id;
-            if (postId) {
-              try {
-                const post = await metaGraphGet(`/${postId}`, { fields: 'full_picture' });
-                imageUrl = post?.full_picture || null;
-              } catch (postErr) {
-                console.warn('[proxy-thumb] 페이스북 게시물 조회 실패:', postErr?.message);
-              }
-            }
-          }
-
-          // 3순위: creative 직접 필드
-          if (!imageUrl) {
-            imageUrl = c?.image_url ||
-              c?.object_story_spec?.link_data?.picture ||
-              c?.object_story_spec?.video_data?.image_url ||
-              c?.thumbnail_url || null;
-          }
-        } catch (e) {
-          console.warn('[proxy-thumb] Meta API 조회 실패, rawUrl fallback:', e?.message);
-        }
-      }
-
-      if (!imageUrl) {
-        console.warn(`[proxy-thumb] 이미지 URL 없음 - adId:${adId}`);
-        return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
-      }
-
-      // 허용 도메인만 프록시 (SSRF 방지)
-      const ALLOWED = ['fbcdn.net','cdninstagram.com','instagram.com','fbsbx.com','akamaihd.net','scontent'];
-      try {
-        const h = new URL(imageUrl).hostname;
-        if (!ALLOWED.some(a => h.includes(a))) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트' });
-      } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
-
-      try {
-        const { default: https } = await import('https');
-        await new Promise((resolve, reject) => {
-          const pr = https.get(imageUrl, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (pres) => {
-            const ct = pres.headers['content-type'] || 'image/jpeg';
-            if (!ct.startsWith('image/')) { pres.resume(); return reject(new Error('이미지가 아닙니다.')); }
-            res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' });
-            pres.pipe(res);
-            pres.on('end', resolve);
-          });
-          pr.on('error', reject);
-          pr.on('timeout', () => { pr.destroy(); reject(new Error('timeout')); });
-        });
-        return;
-      } catch (e) {
-        if (!res.headersSent) return sendJson(res, 502, { error: '이미지를 가져올 수 없습니다.' });
-      }
-    }
 
     // ============================================================
     // 레퍼런스 수집 (콘텐츠 → 레퍼런스 수집)
