@@ -122,7 +122,11 @@ export function UniverseHomePage(){
   }
   const errors=[daily.error,keyword.error,creative.error].filter(Boolean);
   return <div className="universe-home-page universe-home-dashboard home-dashboard-v14">
-    <header className="home-dashboard-header home-dashboard-header-v14"><div><h1>안녕하세요, {greetingName}님! <span aria-hidden="true">👋</span></h1><p>{advertisers.length?'실제 연결된 매체 API 데이터와 업무 상태가 이곳에 표시됩니다.':'샘플 데이터 없이 시작합니다. 첫 광고주를 등록해 HOWTOM 유니버스를 설정하세요.'}</p></div><label className="home-advertiser-select"><span>광고주 선택</span><select value={selectedAdvertiser} onChange={e=>setFilter(e.target.value)} disabled={!advertisers.length}><option value="">전체 광고주</option>{advertiserNames.map(name=><option key={name}>{name}</option>)}</select></label></header>
+    <header className="home-dashboard-header home-dashboard-header-v14"><div><h1>안녕하세요, {greetingName}님! <span aria-hidden="true">👋</span></h1><p>{advertisers.length?'실제 연결된 매체 API 데이터와 업무 상태가 이곳에 표시됩니다.':'샘플 데이터 없이 시작합니다. 첫 광고주를 등록해 HOWTOM 유니버스를 설정하세요.'}</p></div>
+      {!isAdmin && user?.isAdvertiserAccount
+        ? <div className="home-advertiser-locked"><span>광고주 선택</span><b className="home-advertiser-locked-name">{selectedAdvertiser || user?.advertiser_name || ''}</b></div>
+        : <label className="home-advertiser-select"><span>광고주 선택</span><select value={selectedAdvertiser} onChange={e=>setFilter(e.target.value)} disabled={!advertisers.length}><option value="">전체 광고주</option>{advertiserNames.map(name=><option key={name}>{name}</option>)}</select></label>}
+    </header>
     <MetricsDateBar/>
     {errors.length>0&&<div className="card" style={{color:'#b91c1c',borderColor:'#fecaca'}}>{errors[0]}</div>}
     <section className="home-dashboard-kpis home-dashboard-kpis-v14" aria-label="통합 현황">
