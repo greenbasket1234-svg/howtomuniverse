@@ -97,14 +97,23 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
     io.observe(el);
     return ()=>io.disconnect();
   },[adId]);
-  // posterUrl이 있으면 즉시 표시합니다.
-  // iframe은 실제 로드 완료 후에만 posterUrl 위에 오버레이합니다.
-  // 인스타그램 게시물 광고의 iframe은 Meta CDN 제한으로 검게 표시될 수 있어
-  // iframeLoaded가 될 때까지 thumbnailUrl을 먼저 보여줍니다.
+
+  // adId 기반 프록시 URL - Meta API에서 신선한 이미지를 가져옵니다 (URL 만료 문제 해결)
+  const thumbSrc = adId ? `/api/proxy-thumb?adId=${encodeURIComponent(adId)}` : proxiedThumbUrl(posterUrl);
+  const showIframe = previewUrl && iframeLoaded;
+
   return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
-    {posterUrl&&!imgError&&<img src={proxiedThumbUrl(posterUrl)||''} alt={name} style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={()=>setImgError(true)}/>}
-    {previewUrl&&<iframe title={name} src={previewUrl} loading="lazy" style={{position:'absolute',inset:0,width:'100%',height:'100%',opacity:iframeLoaded?1:0,transition:'opacity .3s'}} onLoad={()=>setIframeLoaded(true)}/>}
-    {!posterUrl&&!previewUrl&&<span className="library-thumb-loading">{previewUrl===null?'소재':'불러오는 중...'}</span>}
+    {!imgError && thumbSrc && <img
+      src={thumbSrc} alt={name}
+      style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
+      onError={()=>setImgError(true)}
+    />}
+    {previewUrl && <iframe
+      title={name} src={previewUrl} loading="lazy"
+      style={{position:'absolute',inset:0,width:'100%',height:'100%',border:'none',opacity:iframeLoaded?1:0,transition:'opacity .3s'}}
+      onLoad={()=>setIframeLoaded(true)}
+    />}
+    {imgError && !showIframe && <span style={{color:'#64748b',fontSize:11}}>소재</span>}
   </div>;
 }
 

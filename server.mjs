@@ -4131,38 +4131,59 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     }
 
     // ── 썸네일 이미지 프록시 ─────────────────────────────────────────────
-    // 브라우저에서 Meta/Instagram CDN 이미지를 직접 로드하면 CORS 차단 또는
-    // URL 만료로 검게 보입니다. 서버가 대신 가져와서 브라우저에 스트리밍합니다.
+    // Meta image_url은 약 1시간 후 만료됩니다.
+    // adId를 받아 Meta API에서 신선한 URL을 가져온 뒤 이미지를 스트리밍합니다.
     if (req.method === 'GET' && pathname === '/api/proxy-thumb') {
       const q = new URL(req.url, 'http://x').searchParams;
+      const adId = cleanText(q.get('adId') || '', 80);
       const rawUrl = q.get('url') || '';
-      // 허용 도메인만 프록시합니다 (SSRF 방지)
-      const ALLOWED_THUMB_HOSTS = [
-        'scontent', 'fbcdn.net', 'cdninstagram.com', 'instagram.com',
-        'fbsbx.com', 'akamaihd.net',
-      ];
-      let parsedUrl;
-      try { parsedUrl = new URL(rawUrl); } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
-      const isAllowed = ALLOWED_THUMB_HOSTS.some(h => parsedUrl.hostname.includes(h));
-      if (!isAllowed) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트입니다.' });
+      if (!adId && !rawUrl) return sendJson(res, 400, { error: 'adId 또는 url이 필요합니다.' });
+
+      let imageUrl = rawUrl || null;
+
+      // adId가 있으면 Meta Graph API에서 신선한 image_url을 가져옵니다.
+      if (adId && metaConfigured()) {
+        try {
+          const d = await metaGraphGet(`/${adId}`, {
+            fields: 'creative{image_url,thumbnail_url.width(1080).height(1080),object_story_spec{link_data{picture},video_data{image_url}},effective_instagram_media_id}',
+          });
+          const c = d?.creative;
+          // 인스타그램 미디어가 있으면 IG API에서 media_url 재조회
+          if (c?.effective_instagram_media_id) {
+            const ig = await metaGraphGet(`/${c.effective_instagram_media_id}`, { fields: 'media_url,thumbnail_url' });
+            imageUrl = ig?.media_url || ig?.thumbnail_url || c?.image_url || c?.thumbnail_url || null;
+          } else {
+            imageUrl = c?.image_url ||
+              c?.object_story_spec?.link_data?.picture ||
+              c?.object_story_spec?.video_data?.image_url ||
+              c?.thumbnail_url || null;
+          }
+        } catch (e) {
+          console.warn('[proxy-thumb] Meta API 조회 실패, rawUrl fallback:', e?.message);
+        }
+      }
+
+      if (!imageUrl) return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
+
+      // 허용 도메인만 프록시 (SSRF 방지)
+      const ALLOWED = ['fbcdn.net','cdninstagram.com','instagram.com','fbsbx.com','akamaihd.net','scontent'];
+      try {
+        const h = new URL(imageUrl).hostname;
+        if (!ALLOWED.some(a => h.includes(a))) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트' });
+      } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
+
       try {
         const { default: https } = await import('https');
-        const { default: http } = await import('http');
-        const fetcher = parsedUrl.protocol === 'https:' ? https : http;
         await new Promise((resolve, reject) => {
-          const proxyReq = fetcher.get(rawUrl, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (proxyRes) => {
-            const ct = proxyRes.headers['content-type'] || 'image/jpeg';
-            if (!ct.startsWith('image/')) { proxyRes.resume(); return reject(new Error('이미지가 아닙니다.')); }
-            res.writeHead(200, {
-              'Content-Type': ct,
-              'Cache-Control': 'public, max-age=86400',
-              'Access-Control-Allow-Origin': '*',
-            });
-            proxyRes.pipe(res);
-            proxyRes.on('end', resolve);
+          const pr = https.get(imageUrl, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (pres) => {
+            const ct = pres.headers['content-type'] || 'image/jpeg';
+            if (!ct.startsWith('image/')) { pres.resume(); return reject(new Error('이미지가 아닙니다.')); }
+            res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' });
+            pres.pipe(res);
+            pres.on('end', resolve);
           });
-          proxyReq.on('error', reject);
-          proxyReq.on('timeout', () => { proxyReq.destroy(); reject(new Error('timeout')); });
+          pr.on('error', reject);
+          pr.on('timeout', () => { pr.destroy(); reject(new Error('timeout')); });
         });
         return;
       } catch (e) {
