@@ -22,11 +22,11 @@ const NAVER_CAMPAIGN_TYPE: Record<string, string> = {
 };
 // 유형별 색상 — 캠페인·키워드 관리 화면의 채널 태그 색상과 일치시킵니다.
 const NAVER_TYPE_COLOR: Record<string, {bg:string;color:string;border:string}> = {
-  WEB_SITE:      { bg:'#dcfce7', color:'#15803d', border:'#86efac' }, // 파워링크 — 진한 초록
-  SHOPPING:      { bg:'#ffedd5', color:'#c2410c', border:'#fb923c' }, // 쇼핑검색 — 진한 주황
-  POWER_CONTENTS:{ bg:'#dbeafe', color:'#1d4ed8', border:'#60a5fa' }, // 파워컨텐츠 — 진한 파랑
-  BRAND_SEARCH:  { bg:'#f3e8ff', color:'#7e22ce', border:'#c084fc' }, // 브랜드검색 — 진한 보라
-  PLACE:         { bg:'#e0f2fe', color:'#0369a1', border:'#38bdf8' }, // 플레이스 — 진한 하늘
+  WEB_SITE:      { bg:'#16a34a', color:'#fff',    border:'#16a34a' }, // 파워링크 — 초록
+  SHOPPING:      { bg:'#ea580c', color:'#fff',    border:'#ea580c' }, // 쇼핑검색 — 주황
+  POWER_CONTENTS:{ bg:'#2563eb', color:'#fff',    border:'#2563eb' }, // 파워컨텐츠 — 파랑
+  BRAND_SEARCH:  { bg:'#7e22ce', color:'#fff',    border:'#7e22ce' }, // 브랜드검색 — 보라
+  PLACE:         { bg:'#0891b2', color:'#fff',    border:'#0891b2' }, // 플레이스 — 청록
 };
 function naverTypeLabel(campaignType?: string) {
   return campaignType ? (NAVER_CAMPAIGN_TYPE[campaignType] || campaignType) : null;
