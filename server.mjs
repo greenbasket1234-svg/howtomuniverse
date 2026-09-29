@@ -689,10 +689,12 @@ function ctaLabelKo(raw) {
  * 지금 갖고 있는 권한(ads_read) 그대로 동작합니다. iframe 태그 하나만 돌려줍니다.
  */
 async function metaFetchAdPreview(adId, adFormat = 'MOBILE_FEED_STANDARD') {
-  // 인스타그램 광고는 INSTAGRAM_STANDARD 포맷으로 먼저 시도합니다.
+  // 비율 제한이 덜한 포맷을 먼저 시도합니다.
+  // DESKTOP/MOBILE_FEED_STANDARD는 1.91:1 ~ 4:5 범위를 모두 허용합니다.
+  // INSTAGRAM_STANDARD는 1:1 또는 3:4만 허용해 기존 게시물 광고에서 오류가 납니다.
   const formats = adFormat === 'MOBILE_FEED_STANDARD'
-    ? ['INSTAGRAM_STANDARD', 'MOBILE_FEED_STANDARD', 'INSTAGRAM_STORY']
-    : [adFormat];
+    ? ['DESKTOP_FEED_STANDARD', 'MOBILE_FEED_STANDARD', 'INSTAGRAM_STANDARD', 'INSTAGRAM_STORY']
+    : [adFormat, 'DESKTOP_FEED_STANDARD', 'MOBILE_FEED_STANDARD'];
   for (const fmt of formats) {
     try {
       const data = await metaGraphGet(`/${adId}/previews`, { ad_format: fmt });
