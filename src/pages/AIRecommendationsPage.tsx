@@ -15,6 +15,7 @@ import { AIGatewayNotImplementedError, requestAIDeepDive } from '../ai/aiGateway
 import { buildAIRecommendationContext, type AIGuidelinesConfig } from '../ai/aiRecommendationPrompt';
 import type { AIAnalysisResult } from '../ai/aiRecommendationSchema';
 import { apiFetch } from '../hooks/useApi';
+import { useAuth } from '../context/AuthContext';
 
 const TYPE_LABEL:Record<RecommendationType,string>={urgent:'긴급 대응',increase_budget:'확대 후보',decrease_budget:'축소 검토',replace_creative:'소재 교체',review_campaign:'캠페인 점검',adjust_keyword:'키워드 정리',monitor:'모니터링'};
 const TYPE_TONE:Record<RecommendationType,BadgeTone>={urgent:'danger',increase_budget:'success',decrease_budget:'warning',replace_creative:'warning',review_campaign:'warning',adjust_keyword:'warning',monitor:'neutral'};
@@ -49,6 +50,9 @@ export function AIRecommendationsPage(){
   const recommendations=useMemo(()=>allRecommendations.filter(rec=>(!advertiser||rec.advertiserName===advertiser)&&(!media||rec.mediaName===media)&&(!typeFilter||rec.type===typeFilter)&&(!priorityFilter||rec.priorityLabel===priorityFilter)),[allRecommendations,advertiser,media,typeFilter,priorityFilter]);
   const summary=useMemo(()=>summarizeLiveRecommendations(allRecommendations),[allRecommendations]);
   const advertisers=[...new Set(allRecommendations.map(r=>r.advertiserName))].sort((a,b)=>a.localeCompare(b,'ko'));
+  const {isAdmin}=useAuth();
+  // 비어드민: 광고주가 1개이면 자동 선택합니다.
+  useEffect(()=>{ if(!isAdmin && advertisers.length===1 && advertiser!==advertisers[0]) { setAdvertiser(advertisers[0]); updateParam('advertiser',advertisers[0]); } },[isAdmin,advertisers.length,advertiser]);
   const medias=[...new Set(allRecommendations.map(r=>r.mediaName).filter(Boolean) as string[])].sort();
   const error=campaign.error||creative.error||keyword.error;
   const loading=campaign.loading||creative.loading||keyword.loading;
@@ -71,7 +75,9 @@ export function AIRecommendationsPage(){
     <MetricsDateBar/>
     {guidelinesError&&<div className="card" style={{borderColor:'#f59e0b',background:'#fffbeb',color:'#92400e',fontSize:13,padding:'8px 14px',marginBottom:8}}>{guidelinesError}</div>}
     <div className="card" style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'center'}}>
-      <select className="form-select" value={advertiser} onChange={e=>{setAdvertiser(e.target.value);updateParam('advertiser',e.target.value)}}><option value="">광고주 전체</option>{advertisers.map(name=><option key={name}>{name}</option>)}</select>
+      {(!isAdmin && advertisers.length===1)
+        ? <span style={{display:'inline-flex',alignItems:'center',height:36,padding:'0 14px',background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',borderRadius:8,fontSize:13.5,fontWeight:700,whiteSpace:'nowrap'}}>{advertisers[0]}</span>
+        : <select className="form-select" value={advertiser} onChange={e=>{setAdvertiser(e.target.value);updateParam('advertiser',e.target.value)}}><option value="">광고주 전체</option>{advertisers.map(name=><option key={name}>{name}</option>)}</select>}
       <select className="form-select" value={media} onChange={e=>{setMedia(e.target.value);updateParam('media',e.target.value)}}><option value="">매체 전체</option>{medias.map(name=><option key={name}>{name}</option>)}</select>
       <select className="form-select" value={typeFilter} onChange={e=>{setTypeFilter(e.target.value as RecommendationType|'');updateParam('type',e.target.value)}}><option value="">추천 유형 전체</option>{Object.entries(TYPE_LABEL).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
       <select className="form-select" value={priorityFilter} onChange={e=>{setPriorityFilter(e.target.value);updateParam('priority',e.target.value)}}><option value="">우선순위 전체</option>{['긴급','높음','보통','낮음'].map(v=><option key={v}>{v}</option>)}</select>
