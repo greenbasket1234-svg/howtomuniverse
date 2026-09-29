@@ -22,11 +22,11 @@ const NAVER_CAMPAIGN_TYPE: Record<string, string> = {
 };
 // 유형별 색상 — 캠페인·키워드 관리 화면의 채널 태그 색상과 일치시킵니다.
 const NAVER_TYPE_COLOR: Record<string, {bg:string;color:string;border:string}> = {
-  WEB_SITE:      { bg:'#ecfdf5', color:'#15803d', border:'#bbf7d0' }, // 파워링크 — 초록
-  SHOPPING:      { bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }, // 쇼핑검색 — 주황
-  POWER_CONTENTS:{ bg:'#eff6ff', color:'#1d4ed8', border:'#bfdbfe' }, // 파워컨텐츠 — 파랑
-  BRAND_SEARCH:  { bg:'#fdf4ff', color:'#7e22ce', border:'#e9d5ff' }, // 브랜드검색 — 보라
-  PLACE:         { bg:'#eff6ff', color:'#0369a1', border:'#bae6fd' }, // 플레이스 — 하늘
+  WEB_SITE:      { bg:'#dcfce7', color:'#15803d', border:'#86efac' }, // 파워링크 — 진한 초록
+  SHOPPING:      { bg:'#ffedd5', color:'#c2410c', border:'#fb923c' }, // 쇼핑검색 — 진한 주황
+  POWER_CONTENTS:{ bg:'#dbeafe', color:'#1d4ed8', border:'#60a5fa' }, // 파워컨텐츠 — 진한 파랑
+  BRAND_SEARCH:  { bg:'#f3e8ff', color:'#7e22ce', border:'#c084fc' }, // 브랜드검색 — 진한 보라
+  PLACE:         { bg:'#e0f2fe', color:'#0369a1', border:'#38bdf8' }, // 플레이스 — 진한 하늘
 };
 function naverTypeLabel(campaignType?: string) {
   return campaignType ? (NAVER_CAMPAIGN_TYPE[campaignType] || campaignType) : null;
