@@ -3,6 +3,7 @@ import { Bot, CalendarDays, Check, ChevronDown, RefreshCw, Search, ShieldCheck, 
 import { useNavigate, useParams } from 'react-router-dom';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useMetricRows } from '../hooks/useMetrics';
+import { useAuth } from '../context/AuthContext';
 import type { DailyMetricRow as CentralDailyMetricRow, CreativeMetricRow, KeywordMetricRow } from '../types/metrics';
 import { computeMetric, enumerateDates, sumFields, type RawFields, type BrandReportConfig, type BrandDailyData } from '../types/brandReport';
 import { getBudgetStatus } from '../types/common';
@@ -69,6 +70,7 @@ function Modal({title,children,onClose}:{title:string;children:React.ReactNode;o
 }
 
 export function DashboardOverviewPage(){
+  const {isAdmin}=useAuth();
   const {brandId}=useParams(); const navigate=useNavigate();
   const { filterValue } = useAdvertiserFilter();
   const [advertisers]=useAdvertisers();
@@ -435,7 +437,7 @@ export function DashboardOverviewPage(){
       <button className={rankMetric==='cpa'?'active':''} onClick={()=>setRankMetric('cpa')}>CPA</button>
       <button className={rankMetric==='cpc'?'active':''} onClick={()=>setRankMetric('cpc')}>CPC</button>
     </div>
-    <div className="dashboard-top5-grid">
+    <div className={isAdmin ? "dashboard-top5-grid" : "dashboard-top5-grid dashboard-top5-grid-2col"}>
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>매체 성과 TOP 5</h2><p>이 기간·이 광고주 범위 기준</p></div></div>
         <div className="top5-list">{topPlatforms.length===0&&<p className="muted" style={{padding:'12px 4px'}}>집계된 데이터가 없습니다.</p>}
           {topPlatforms.map((p,i)=>(
@@ -449,7 +451,7 @@ export function DashboardOverviewPage(){
           ))}
         </div>
       </section>
-      <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>광고주 성과 TOP 5</h2><p>이 기간·이 광고주 범위 기준</p></div></div>
+      {isAdmin && <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>광고주 성과 TOP 5</h2><p>이 기간·이 광고주 범위 기준</p></div></div>
         <div className="top5-list">{topAdvertisers.length===0&&<p className="muted" style={{padding:'12px 4px'}}>집계된 데이터가 없습니다.</p>}
           {topAdvertisers.map((b,i)=>(
             <div className="top5-row advertiser" key={b.name}>
@@ -461,7 +463,7 @@ export function DashboardOverviewPage(){
             </div>
           ))}
         </div>
-      </section>
+      </section>}
       <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>매체 성과 WORST 5</h2><p>효율이 가장 낮은 매체입니다. 점검이 필요할 수 있습니다.</p></div></div>
         <div className="top5-list">{worstPlatforms.length===0&&<p className="muted" style={{padding:'12px 4px'}}>표시할 항목이 없습니다.</p>}
           {worstPlatforms.map((p,i)=>(
@@ -475,7 +477,7 @@ export function DashboardOverviewPage(){
           ))}
         </div>
       </section>
-      <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>광고주 성과 WORST 5</h2><p>효율이 가장 낮은 광고주입니다. 점검이 필요할 수 있습니다.</p></div></div>
+      {isAdmin && <section className="card"><div className="card-title-row"><div><span className="section-kicker">RANKING</span><h2>광고주 성과 WORST 5</h2><p>효율이 가장 낮은 광고주입니다. 점검이 필요할 수 있습니다.</p></div></div>
         <div className="top5-list">{worstAdvertisers.length===0&&<p className="muted" style={{padding:'12px 4px'}}>표시할 항목이 없습니다.</p>}
           {worstAdvertisers.map((b,i)=>(
             <div className="top5-row advertiser worst" key={b.name}>
@@ -487,7 +489,7 @@ export function DashboardOverviewPage(){
             </div>
           ))}
         </div>
-      </section>
+      </section>}
     </div>
 
     <section className="card report-insight-card">

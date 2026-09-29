@@ -3234,3 +3234,8 @@ body{font-size:15.5px;line-height:1.55}
 .ntype-brand     { background: #f3e8ff !important; color: #6d28d9 !important; border: 1px solid #a78bfa !important; } /* 브랜드검색 — 보라 */
 .ntype-place     { background: #cffafe !important; color: #0e7490 !important; border: 1px solid #67e8f9 !important; } /* 플레이스 — 청록 */
 .ntype-default   { background: #f1f5f9 !important; color: #475569 !important; border: 1px solid #cbd5e1 !important; } /* 기타 */
+
+/* 비어드민 대시보드 - 매체 성과 2열 그리드 */
+.dashboard-top5-grid-2col {
+  grid-template-columns: 1fr 1fr !important;
+}
