@@ -724,7 +724,41 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
       const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,effective_object_story_id,object_story_id,effective_instagram_media_id,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
-        if (!creative) { console.error('[meta-creative] 소재 정보 없음', id, JSON.stringify(data?.[id] || {}).slice(0, 200)); continue; }
+        if (!creative) {
+          // creative 필드가 없는 경우: Instagram 기존 게시물 광고이거나 토큰 권한 문제일 수 있습니다.
+          // ad 레벨에서 직접 thumbnail_url을 조회해 폴백합니다.
+          const errInfo = data?.[id];
+          if (errInfo?.error) {
+            console.error('[meta-creative] API 오류', id, errInfo.error?.message || JSON.stringify(errInfo.error).slice(0,100));
+          } else {
+            console.warn('[meta-creative] 소재 정보 없음 - 개별 조회 시도', id);
+            // 개별 ad에서 thumbnail_url 직접 시도 (기존 게시물 광고 폴백)
+            try {
+              const single = await metaGraphGet(`/${id}`, {
+                fields: 'creative{thumbnail_url.width(1080).height(1080),image_url,effective_instagram_media_id,effective_object_story_id}',
+              });
+              const sc = single?.creative;
+              if (sc) {
+                result[id] = {
+                  mediaType: 'image',
+                  thumbnailUrlFallback: sc.image_url || sc.thumbnail_url || null,
+                  carouselFallback: null,
+                  videoUrl: null,
+                  title: null, body: null, cta: null,
+                  igMediaId: sc.effective_instagram_media_id || null,
+                  postId: sc.effective_object_story_id || null,
+                };
+                if (sc.effective_instagram_media_id) existingPostAdIds.push({ adId: id, postId: null, igMediaId: sc.effective_instagram_media_id });
+                else if (sc.effective_object_story_id) existingPostAdIds.push({ adId: id, postId: sc.effective_object_story_id, igMediaId: null });
+                console.log('[meta-creative] 개별 조회 성공', id);
+                continue;
+              }
+            } catch (singleErr) {
+              console.warn('[meta-creative] 개별 조회도 실패', id, singleErr?.message);
+            }
+          }
+          continue;
+        }
         const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
         // 캐러셀(슬라이드) 광고는 child_attachments에 카드가 여러 장 들어있습니다. 각 카드의
         // 해시를 모아서, 아래에서 한 번에 원본 이미지로 바꿉니다(기존엔 첫 장만 쓰고 나머지는 버렸습니다).
