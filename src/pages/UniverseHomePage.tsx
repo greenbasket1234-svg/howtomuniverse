@@ -34,8 +34,22 @@ function naverTypeLabel(campaignType?: string) {
 function naverTypeBadgeEl(campaignType?: string): React.ReactElement|null {
   if (!campaignType) return null;
   const label = NAVER_CAMPAIGN_TYPE[campaignType] || campaignType;
-  const cls = NAVER_TYPE_CLASS[campaignType] || 'ntype-default';
-  return <span className={`naver-type-badge ${cls}`}>{label}</span>;
+  // CSS 클래스 불필요 — 색상을 직접 인라인으로 지정합니다.
+  const C: Record<string, [string,string,string]> = {
+    WEB_SITE:       ['#dcfce7','#166534','#86efac'], // 파워링크 — 연초록
+    SHOPPING:       ['#ffedd5','#9a3412','#fdba74'], // 쇼핑검색 — 연주황
+    POWER_CONTENTS: ['#dbeafe','#1e40af','#93c5fd'], // 파워컨텐츠 — 연파랑
+    BRAND_SEARCH:   ['#f3e8ff','#6b21a8','#c084fc'], // 브랜드검색 — 연보라
+    PLACE:          ['#cffafe','#155e75','#67e8f9'], // 플레이스 — 연청록
+  };
+  const [bg, fg, bd] = C[campaignType] ?? ['#f1f5f9','#475569','#cbd5e1'];
+  if (!C[campaignType]) console.warn('[naverBadge] 알 수 없는 campaignType:', campaignType);
+  return <span style={{
+    display:'inline-block',background:bg,color:fg,
+    border:`1px solid ${bd}`,borderRadius:4,
+    padding:'0 6px',fontSize:10,fontWeight:700,
+    margin:'0 3px',verticalAlign:'middle',whiteSpace:'nowrap',lineHeight:'16px',
+  }}>{label}</span>;
 }
 function money(value:number){return `₩${Math.round(value).toLocaleString()}`}
 function pct(value:number){return `${value.toFixed(1)}%`}
