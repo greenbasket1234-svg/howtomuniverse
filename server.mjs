@@ -718,12 +718,20 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
     const chunk = adIds.slice(i, i + chunkSize).filter(Boolean);
     if (!chunk.length) continue;
     try {
-      // image_url/thumbnail_url은 계정·소재 유형에 따라 저화질 캐시본을 돌려주는 경우가 있어,
-      // Meta가 공식적으로 권장하는 방식대로 image_hash를 받아서 별도의 /adimages 조회로
-      // "항상 원본 그대로"인 URL을 다시 받아옵니다.
-      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080).height(1080),video_id,object_type,title,body,call_to_action_type,effective_object_story_id,object_story_id,effective_instagram_media_id,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600).height(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
+      // ① 핵심 식별 필드만 먼저 조회 (필드가 너무 많으면 Meta가 "too much data" 오류 반환)
+      const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080),effective_object_story_id,object_story_id,effective_instagram_media_id,object_type,video_id}' });
+      // ② 텍스트·CTA·object_story_spec은 별도 배치로 분리 조회
+      let detailData = {};
+      try {
+        detailData = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
+      } catch (detailErr) {
+        console.warn('[meta-creative] 상세 필드 조회 실패 (핵심 필드만 사용):', detailErr?.message);
+      }
       for (const id of chunk) {
         const creative = data?.[id]?.creative;
+        // 상세 필드를 핵심 creative에 병합합니다
+        const detailCreative = detailData?.[id]?.creative || {};
+        const mergedCreative = { ...creative, ...detailCreative, object_story_spec: detailCreative.object_story_spec || null };
         if (!creative) {
           // creative 필드가 없는 경우: Instagram 기존 게시물 광고이거나 토큰 권한 문제일 수 있습니다.
           // ad 레벨에서 직접 thumbnail_url을 조회해 폴백합니다.
@@ -759,7 +767,7 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
           }
           continue;
         }
-        const linkData = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
+        const linkData = mergedCreative.object_story_spec?.link_data || mergedCreative.object_story_spec?.video_data || {};
         // 캐러셀(슬라이드) 광고는 child_attachments에 카드가 여러 장 들어있습니다. 각 카드의
         // 해시를 모아서, 아래에서 한 번에 원본 이미지로 바꿉니다(기존엔 첫 장만 쓰고 나머지는 버렸습니다).
         const carouselCards = Array.isArray(linkData.child_attachments) ? linkData.child_attachments : [];
