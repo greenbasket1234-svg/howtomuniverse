@@ -720,10 +720,10 @@ async function metaFetchAdCreativeThumbnails(adIds, accountId) {
     try {
       // ① 핵심 식별 필드만 먼저 조회 (필드가 너무 많으면 Meta가 "too much data" 오류 반환)
       const data = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{image_url,image_hash,thumbnail_url.width(1080),effective_object_story_id,object_story_id,effective_instagram_media_id,object_type,video_id}' });
-      // ② 텍스트·CTA·object_story_spec은 별도 배치로 분리 조회
+      // ② 텍스트·CTA는 별도 배치로 분리 (object_story_spec 제거해 필드 크기 최소화)
       let detailData = {};
       try {
-        detailData = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{title,body,call_to_action_type,object_story_spec{link_data{picture,image_hash,message,name,description,call_to_action,child_attachments{picture.width(600),image_hash}},video_data{image_url,message,call_to_action}}}' });
+        detailData = await metaGraphGet('/', { ids: chunk.join(','), fields: 'creative{title,body,call_to_action_type}' });
       } catch (detailErr) {
         console.warn('[meta-creative] 상세 필드 조회 실패 (핵심 필드만 사용):', detailErr?.message);
       }
