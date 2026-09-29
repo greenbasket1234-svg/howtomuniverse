@@ -4516,6 +4516,18 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const initialPassword = String(body.initialPassword || '');
         if (!initialPassword || initialPassword.length < 8) return sendJson(res, 400, { error: '초기 비밀번호는 8자 이상이어야 합니다.' });
         try {
+          // 팀원 계정으로 이미 등록된 이메일인지 먼저 확인합니다.
+          const existing = await pgPool.query(
+            `SELECT is_advertiser_account FROM app_users WHERE tenant_id=$1 AND lower(email)=lower($2)`,
+            [tenantId, email]
+          );
+          if (existing.rows[0]) {
+            if (existing.rows[0].is_advertiser_account) {
+              return sendJson(res, 409, { error: '이미 등록된 광고주 포털 계정입니다.' });
+            } else {
+              return sendJson(res, 409, { error: '이 이메일은 팀원 계정으로 이미 등록되어 있습니다. 팀원 계정으로 콘텐츠 제작소에 직접 로그인할 수 있습니다.' });
+            }
+          }
           const roleId = await ensureAdvertiserRole(tenantId);
           const insert = await pgPool.query(
             `INSERT INTO app_users (tenant_id, email, password_hash, name, status, is_advertiser_account)
