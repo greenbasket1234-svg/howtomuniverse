@@ -5,6 +5,7 @@ import { derived, formatMetric, performanceDatasetFromMetricRows, metricValue, p
 import type { Campaign } from '../types/operations';
 import { MEDIA_COLORS, MEDIA_ORDER, buildFunnel, buildMediaComparison, comparisonRange, dailySeries, detectMediaAnomalies, inRange, normalizeCampaignMedia, rangeFor } from '../analytics/mediaAnalysis';
 import { useMetricRows } from '../hooks/useMetrics';
+import { useAuth } from '../context/AuthContext';
 import type { DailyMetricRow } from '../types/metrics';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useMetricsQuery } from '../context/MetricsQueryContext';
@@ -25,9 +26,17 @@ type MediaPerformancePageProps = { embedded?: boolean; defaultAdvertiser?: strin
 export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' }: MediaPerformancePageProps){
   const {rows:metricRows}=useMetricRows<DailyMetricRow>('/metrics/daily');
   const data=useMemo(()=>performanceDatasetFromMetricRows(metricRows),[metricRows]);
+  // 비어드민: 광고주 1개이면 자동 선택합니다.
+  useEffect(()=>{
+    if(!isAdmin && data.advertisers.length===1 && advertiser!==data.advertisers[0]){
+      setAdvertiser(data.advertisers[0]);
+      setParams(prev=>{ const n=new URLSearchParams(prev); n.set('advertiser',data.advertisers[0]); return n; },{replace:true});
+    }
+  },[isAdmin,data.advertisers.length,advertiser]);
   const {range}=useMetricsQuery();
   const [params,setParams]=useSearchParams();
   const [comparison,setComparison]=useState(params.get('compare')||'직전 동일기간');
+  const {isAdmin}=useAuth();
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||defaultAdvertiser||'');
   const [activeMedia,setActiveMedia]=useState(params.get('channel')||'전체 비교');
   const [account,setAccount]=useState(params.get('account')||'');
@@ -76,7 +85,9 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
 
     <section className={`map-filter-card${embedded ? ' embedded' : ''}`}>
       <label>비교기간<select value={comparison} onChange={e=>{setComparison(e.target.value);syncParams({compare:e.target.value})}}>{comparisonOptions.map(v=><option key={v}>{v}</option>)}</select></label>
-      {!embedded && <label>광고주<select value={advertiser} onChange={e=>{setAdvertiser(e.target.value);setAccount('');syncParams({advertiser:e.target.value,account:''})}}><option value="">전체 광고주</option>{data.advertisers.map(v=><option key={v}>{v}</option>)}</select></label>}
+      {!embedded && <label>광고주{(!isAdmin && data.advertisers.length===1)
+        ? <span style={{display:'inline-flex',alignItems:'center',height:36,padding:'0 14px',background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',borderRadius:8,fontSize:13.5,fontWeight:700,whiteSpace:'nowrap',marginLeft:6}}>{data.advertisers[0]}</span>
+        : <select value={advertiser} onChange={e=>{setAdvertiser(e.target.value);setAccount('');syncParams({advertiser:e.target.value,account:''})}}><option value="">전체 광고주</option>{data.advertisers.map(v=><option key={v}>{v}</option>)}</select>}</label>}
       <label>대표 KPI<select value={representativeKpi} onChange={e=>{setRepresentativeKpi(e.target.value as PerformanceMetric);syncParams({kpi:e.target.value})}}><option value="leads">DB/전환</option><option value="cpa">CPA</option><option value="roas">ROAS</option><option value="revenue">매출</option><option value="clicks">클릭</option></select></label>
       <button className="map-reset" onClick={()=>{setComparison('직전 동일기간');setAdvertiser(embedded?defaultAdvertiser:'');setActiveMedia('전체 비교');setAccount('');setRepresentativeKpi('leads');if(!embedded)setParams({}, {replace:true})}}>필터 초기화</button>
     </section>
