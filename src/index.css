@@ -3215,22 +3215,22 @@ body{font-size:15.5px;line-height:1.55}
 .home-channel-table td.positive { color: #16a34a; font-weight: 700; }
 .home-channel-table td.warn { color: #d97706; }
 
-/* 네이버 캠페인 유형 뱃지 — 유형별 색상 */
+/* 네이버 캠페인 유형 뱃지 — 유형별 색상 (연한 배경 + 진한 글씨) */
 .naver-type-badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  margin: 0 3px;
-  vertical-align: middle;
-  white-space: nowrap;
-  color: #fff !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  border-radius: 4px !important;
+  padding: 1px 7px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  margin: 0 3px !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+  line-height: 1.6 !important;
 }
-.ntype-powerlink { background: #16a34a !important; } /* 파워링크 — 초록 */
-.ntype-shopping  { background: #ea580c !important; } /* 쇼핑검색 — 주황 */
-.ntype-content   { background: #2563eb !important; } /* 파워컨텐츠 — 파랑 */
-.ntype-brand     { background: #7e22ce !important; } /* 브랜드검색 — 보라 */
-.ntype-place     { background: #0891b2 !important; } /* 플레이스 — 청록 */
-.ntype-default   { background: #64748b !important; } /* 기타 — 회색 */
+.ntype-powerlink { background: #dcfce7 !important; color: #15803d !important; border: 1px solid #86efac !important; } /* 파워링크 — 초록 */
+.ntype-shopping  { background: #ffedd5 !important; color: #c2410c !important; border: 1px solid #fb923c !important; } /* 쇼핑검색 — 주황 */
+.ntype-content   { background: #dbeafe !important; color: #1d4ed8 !important; border: 1px solid #60a5fa !important; } /* 파워컨텐츠 — 파랑 */
+.ntype-brand     { background: #f3e8ff !important; color: #6d28d9 !important; border: 1px solid #a78bfa !important; } /* 브랜드검색 — 보라 */
+.ntype-place     { background: #cffafe !important; color: #0e7490 !important; border: 1px solid #67e8f9 !important; } /* 플레이스 — 청록 */
+.ntype-default   { background: #f1f5f9 !important; color: #475569 !important; border: 1px solid #cbd5e1 !important; } /* 기타 */
