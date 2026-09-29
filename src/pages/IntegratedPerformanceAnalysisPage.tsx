@@ -8,11 +8,13 @@ import { derived, formatMetric, performanceDatasetFromMetricRows, sumRows } from
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { ChannelTag } from '../components/ChannelTag';
+import { useAuth } from '../context/AuthContext';
 
 const mediaLabel=(c:string)=>c==='meta'?'Meta':c==='naver'?'네이버':c;
 const roasClass=(v:number)=>v>=200?'metric-positive':v>0&&v<100?'metric-negative':'';
 export function IntegratedPerformanceAnalysisPage(){
   const {rows,meta,loading,error}=useMetricRows<DailyMetricRow>('/metrics/daily');const {filterValue}=useAdvertiserFilter();
+  const {isAdmin}=useAuth();
   const visible=useMemo(()=>rows.filter(r=>matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)),[rows,filterValue]);const data=useMemo(()=>performanceDatasetFromMetricRows(visible),[visible]);const total=derived(sumRows(data.totals));
   const mediaRaw=useMemo(()=>[...new Set(visible.map(r=>r.channel))].map(channel=>{const r=visible.filter(x=>x.channel===channel);const s=r.reduce((a,x)=>({spend:a.spend+x.spend,impressions:a.impressions+x.impressions,clicks:a.clicks+x.clicks,dbCount:a.dbCount+x.dbCount,purchases:a.purchases+x.purchases,addToCart:a.addToCart+(x.addToCart||0),completeRegistration:a.completeRegistration+(x.completeRegistration||0),unconfirmed:a.unconfirmed+(x.unconfirmed||0),revenue:a.revenue+x.revenue}),{spend:0,impressions:0,clicks:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,unconfirmed:0,revenue:0});return{channel,...s,ctr:s.impressions?s.clicks/s.impressions*100:0,cpa:(s.dbCount+s.purchases+s.unconfirmed)?s.spend/(s.dbCount+s.purchases+s.unconfirmed):0,roas:s.spend?s.revenue/s.spend*100:0}}),[visible]);
   const advertisersRaw=useMemo(()=>[...new Set(visible.map(r=>r.advertiserId))].map(id=>{const r=visible.filter(x=>x.advertiserId===id);const s=r.reduce((a,x)=>({spend:a.spend+x.spend,impressions:a.impressions+x.impressions,clicks:a.clicks+x.clicks,dbCount:a.dbCount+x.dbCount,purchases:a.purchases+(x.purchases||0),addToCart:a.addToCart+(x.addToCart||0),completeRegistration:a.completeRegistration+(x.completeRegistration||0),unconfirmed:a.unconfirmed+(x.unconfirmed||0),revenue:a.revenue+x.revenue}),{spend:0,impressions:0,clicks:0,dbCount:0,purchases:0,addToCart:0,completeRegistration:0,unconfirmed:0,revenue:0});return{id,name:r[0]?.advertiserName||id,...s,cpa:(s.dbCount+s.purchases+s.unconfirmed)?s.spend/(s.dbCount+s.purchases+s.unconfirmed):0,roas:s.spend?s.revenue/s.spend*100:0}}),[visible]);
@@ -39,7 +41,7 @@ export function IntegratedPerformanceAnalysisPage(){
       <th className="sortable-th" onClick={()=>mediaSort.toggleSort('revenue')}>매출{mediaSort.arrow('revenue')}</th>
       <th className="sortable-th" onClick={()=>mediaSort.toggleSort('roas')}>ROAS{mediaSort.arrow('roas')}</th>
     </tr></thead><tbody>{loading?<tr><td colSpan={13} className="empty-cell">불러오는 중...</td></tr>:media.length?media.map(r=><tr key={r.channel}><td><ChannelTag channel={r.channel}/></td><td className="metric-emphasis">{formatMetric('spend',r.spend)}</td><td>{r.impressions.toLocaleString()}</td><td>{r.clicks.toLocaleString()}</td><td>{r.ctr.toFixed(2)}%</td><td>{r.dbCount.toLocaleString()}</td><td>{r.unconfirmed?r.unconfirmed.toLocaleString():'-'}</td><td>{r.purchases.toLocaleString()}</td><td>{r.addToCart?r.addToCart.toLocaleString():'-'}</td><td>{r.completeRegistration?r.completeRegistration.toLocaleString():'-'}</td><td>{(r.dbCount+r.purchases)?formatMetric('cpa',r.cpa):'-'}</td><td>{formatMetric('revenue',r.revenue)}</td><td className={roasClass(r.roas)}>{r.spend?`${r.roas.toFixed(0)}%`:'-'}</td></tr>):<tr><td colSpan={13} className="empty-cell">선택 기간에 실제 매체 데이터가 없습니다.</td></tr>}</tbody></table></div></article>
-    <article className="card"><h3>광고주별 성과</h3><div className="table-scroll"><table className="ops-table"><thead><tr>
+    <article className="card"><h3>{isAdmin ? '광고주별 성과' : '매체 통합 성과'}</h3><div className="table-scroll"><table className="ops-table"><thead><tr>
       <th className="sortable-th" onClick={()=>advSort.toggleSort('name')}>광고주{advSort.arrow('name')}</th>
       <th className="sortable-th" onClick={()=>advSort.toggleSort('spend')}>광고비{advSort.arrow('spend')}</th>
       <th className="sortable-th" onClick={()=>advSort.toggleSort('clicks')}>클릭{advSort.arrow('clicks')}</th>
