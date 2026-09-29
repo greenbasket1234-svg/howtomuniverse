@@ -2957,30 +2957,15 @@ async function handleApi(req, res, pathname) {
         return sendJson(res, 404, { error: '이미지 URL을 찾을 수 없습니다.' });
       }
 
-      // 허용 도메인만 프록시 (SSRF 방지)
-      const ALLOWED = ['fbcdn.net','cdninstagram.com','instagram.com','fbsbx.com','akamaihd.net','scontent'];
-      try {
-        const h = new URL(imageUrl).hostname;
-        if (!ALLOWED.some(a => h.includes(a))) return sendJson(res, 403, { error: '허용되지 않는 이미지 호스트' });
-      } catch { return sendJson(res, 400, { error: '잘못된 URL' }); }
-
-      try {
-        const { default: https } = await import('https');
-        await new Promise((resolve, reject) => {
-          const pr = https.get(imageUrl, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }, (pres) => {
-            const ct = pres.headers['content-type'] || 'image/jpeg';
-            if (!ct.startsWith('image/')) { pres.resume(); return reject(new Error('이미지가 아닙니다.')); }
-            res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' });
-            pres.pipe(res);
-            pres.on('end', resolve);
-          });
-          pr.on('error', reject);
-          pr.on('timeout', () => { pr.destroy(); reject(new Error('timeout')); });
-        });
-        return;
-      } catch (e) {
-        if (!res.headersSent) return sendJson(res, 502, { error: '이미지를 가져올 수 없습니다.' });
-      }
+      // 브라우저가 직접 Meta CDN에서 이미지를 로드하도록 302 리다이렉트합니다.
+      // 서버가 Instagram CDN 이미지를 직접 다운로드하면 인증 오류(502)가 나지만,
+      // 브라우저 <img> 태그는 CORS 없이 크로스오리진 이미지를 로드할 수 있습니다.
+      res.writeHead(302, {
+        'Location': imageUrl,
+        'Cache-Control': 'public, max-age=3600',
+      });
+      res.end();
+      return;
     }
 
     if (await handleAuth(req, res, pathname)) return;
