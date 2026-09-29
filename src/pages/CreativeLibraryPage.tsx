@@ -4,6 +4,7 @@ import { PageHeader } from '../components/PageHeader';
 import { Badge } from '../components/Badge';
 import { MetricsDateBar } from '../components/MetricsDateBar';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useAuth } from '../context/AuthContext';
 import { useMetricRows } from '../hooks/useMetrics';
 import { useSortableRows } from '../hooks/useSortableRows';
 import { ModalPortal } from '../components/ModalPortal';
@@ -146,6 +147,7 @@ export function CreativeLibraryPage(){
   // 키워드(검색광고)는 소재 관리에서 제외합니다 — 이미지·영상만 표시합니다.
   // const keywordRows: KeywordMetricRow[] = [];  // 사용 안 함
   const {filterValue}=useAdvertiserFilter();
+  const {isAdmin}=useAuth();
   const [q,setQ]=useState('');
   const [channel,setChannel]=useState('all');
   const [kind,setKind]=useState<'전체'|Kind>('전체');
@@ -198,6 +200,11 @@ export function CreativeLibraryPage(){
 
   const channels=useMemo(()=>['all',...new Set(items.map(r=>r.channel))],[items]);
   const advertisers=useMemo(()=>['전체',...new Set(items.map(r=>r.advertiserName||r.advertiserId).filter(Boolean))],[items]);
+  // 비어드민: 광고주 목록이 1개이면 자동 선택하고 드롭다운을 숨깁니다.
+  const isSingleAdvertiser=!isAdmin&&advertisers.length===2; // ['전체', '광고주명']
+  if(isSingleAdvertiser&&advertiser==='전체'&&advertisers[1]){
+    setAdvertiser(advertisers[1]);
+  }
   const filteredRaw=useMemo(()=>items.filter(r=>
     matchesAdvertiserFilter(r.advertiserName||r.advertiserId,filterValue)
     &&(channel==='all'||r.channel===channel)
@@ -213,7 +220,9 @@ export function CreativeLibraryPage(){
   const kindCount=(k:Kind)=>items.filter(r=>r.kind===k).length;
 
   return <div>
-    <PageHeader title="소재 라이브러리" description="연결된 매체에서 수집한 실제 광고 소재·키워드와 선택 기간의 성과를 함께 봅니다." action={<div className="library-actions"><div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재·캠페인·문구 검색"/></div><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option key={c} value={c}>{c==='all'?'전체 매체':channelLabel(c)}</option>)}</select><select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}>{advertisers.map(a=><option key={a} value={a}>{a==='전체'?'전체 광고주':a}</option>)}</select><select value={sortKey} onChange={e=>toggleSort(e.target.value)} title="정렬 기준"><option value="spend">광고비순</option><option value="impressions">노출순</option><option value="clicks">클릭순</option><option value="dbCount">전환순</option><option value="roas">ROAS순</option></select><button className={view==='grid'?'icon-btn active':'icon-btn'} onClick={()=>setView('grid')} aria-label="카드 보기"><Grid3X3 size={17}/></button><button className={view==='list'?'icon-btn active':'icon-btn'} onClick={()=>setView('list')} aria-label="목록 보기"><List size={17}/></button></div>}/>
+    <PageHeader title="소재 라이브러리" description="연결된 매체에서 수집한 실제 광고 소재·키워드와 선택 기간의 성과를 함께 봅니다." action={<div className="library-actions"><div className="ops-search compact"><Search size={15}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="소재·캠페인·문구 검색"/></div><select value={channel} onChange={e=>setChannel(e.target.value)}>{channels.map(c=><option key={c} value={c}>{c==='all'?'전체 매체':channelLabel(c)}</option>)}</select>{isSingleAdvertiser
+            ?<span style={{display:'inline-flex',alignItems:'center',height:32,padding:'0 12px',background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',borderRadius:6,fontSize:13,fontWeight:700,whiteSpace:'nowrap'}}>{advertisers[1]}</span>
+            :<select value={advertiser} onChange={e=>setAdvertiser(e.target.value)}>{advertisers.map(a=><option key={a} value={a}>{a==='전체'?'전체 광고주':a}</option>)}</select>}<select value={sortKey} onChange={e=>toggleSort(e.target.value)} title="정렬 기준"><option value="spend">광고비순</option><option value="impressions">노출순</option><option value="clicks">클릭순</option><option value="dbCount">전환순</option><option value="roas">ROAS순</option></select><button className={view==='grid'?'icon-btn active':'icon-btn'} onClick={()=>setView('grid')} aria-label="카드 보기"><Grid3X3 size={17}/></button><button className={view==='list'?'icon-btn active':'icon-btn'} onClick={()=>setView('list')} aria-label="목록 보기"><List size={17}/></button></div>}/>
     <MetricsDateBar/>
     <div className="media-type-toggle" style={{marginBottom:12}}>
       {(['전체','이미지','영상','슬라이드'] as const).map(k=><button key={k} className={kind===k?'active':''} onClick={()=>setKind(k)}>{k}{k!=='전체'&&` (${kindCount(k as Kind)})`}</button>)}
