@@ -107,7 +107,6 @@ export function Sidebar() {
     // 인사이트 (tier 2+)
     if (tier >= 2) {
       const insightItems: UniverseMenuGroup['items'] = [
-        { key: 'insights-home',            label: '인사이트 홈',    path: '/insights',                      icon: 'trend' },
         { key: 'integrated-performance',   label: '통합 성과 분석', path: '/insights/performance',           icon: 'trend' },
         { key: 'media-analysis',           label: '매체별 분석',    path: '/insights/media',                 icon: 'trend' },
         { key: 'campaign-analysis',        label: '캠페인 분석',    path: '/insights/campaigns',             icon: 'campaigns' },
