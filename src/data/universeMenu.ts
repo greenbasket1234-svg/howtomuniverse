@@ -51,13 +51,11 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'meta-ads', label: '메타 광고 관리', path: '/meta-ads', prefixPath: '/meta-ads', icon: 'campaigns' },
       { key: 'keywords', label: '키워드 관리', path: '/keywords', icon: 'keyword-analysis' },
       { key: 'creative-library', label: '소재 관리', path: '/creatives/library', icon: 'creative-library' },
-      { key: 'conversion-funnel', label: '전환 퍼널', path: '/conversion-funnel', icon: 'conversion-funnel' },
       { key: 'operations-calendar', label: '광고 캘린더', path: '/operations-calendar/schedule', prefixPath: '/operations-calendar', icon: 'schedule-slots' },
       { key: 'brands-budget', label: '브랜드 예산', path: '/brands-budget', icon: 'brands-budget' },
       { key: 'report-center', label: '보고서', path: '/report-center', prefixPath: '/report-center', icon: 'reports' },
       { key: 'monthly-reports', label: '월간 보고서', path: '/monthly-reports', icon: 'reports' },
       { key: 'next-month-proposal', label: '다음달 제안서', path: '/next-month-proposal', icon: 'reports' },
-      { key: 'commission-settlement', label: '수당 수수료', path: '/commission-settlement', icon: 'settlement' },
     ],
   },
   {
@@ -132,6 +130,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
     key: 'admin', label: '관리자', path: '/admin', planet: 'pluto', adminOnly: true,
     items: [
       { key: 'admin-home', label: '관리자 대시보드', path: '/admin', icon: 'approval' },
+      { key: 'commission-settlement', label: '수당 수수료', path: '/commission-settlement', icon: 'settlement' },
       { key: 'admin-users', label: '사용자 관리', path: '/admin/users', icon: 'advertisers' },
       { key: 'admin-advertisers', label: '광고주 관리', path: '/admin/advertisers', icon: 'advertisers' },
       { key: 'admin-roles', label: '권한 묶음 관리', path: '/admin/roles', icon: 'approval' },
