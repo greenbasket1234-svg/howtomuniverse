@@ -20,8 +20,22 @@ const NAVER_CAMPAIGN_TYPE: Record<string, string> = {
   WEB_SITE: '파워링크', SHOPPING: '쇼핑검색', POWER_CONTENTS: '파워컨텐츠',
   BRAND_SEARCH: '브랜드검색', PLACE: '플레이스',
 };
+// 유형별 색상 — 캠페인·키워드 관리 화면의 채널 태그 색상과 일치시킵니다.
+const NAVER_TYPE_COLOR: Record<string, {bg:string;color:string;border:string}> = {
+  WEB_SITE:      { bg:'#ecfdf5', color:'#15803d', border:'#bbf7d0' }, // 파워링크 — 초록
+  SHOPPING:      { bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }, // 쇼핑검색 — 주황
+  POWER_CONTENTS:{ bg:'#eff6ff', color:'#1d4ed8', border:'#bfdbfe' }, // 파워컨텐츠 — 파랑
+  BRAND_SEARCH:  { bg:'#fdf4ff', color:'#7e22ce', border:'#e9d5ff' }, // 브랜드검색 — 보라
+  PLACE:         { bg:'#eff6ff', color:'#0369a1', border:'#bae6fd' }, // 플레이스 — 하늘
+};
 function naverTypeLabel(campaignType?: string) {
   return campaignType ? (NAVER_CAMPAIGN_TYPE[campaignType] || campaignType) : null;
+}
+function naverTypeBadge(campaignType?: string): {label:string;style:React.CSSProperties}|null {
+  if (!campaignType) return null;
+  const label = NAVER_CAMPAIGN_TYPE[campaignType] || campaignType;
+  const c = NAVER_TYPE_COLOR[campaignType] || { bg:'#f1f5f9', color:'#475569', border:'#e2e8f0' };
+  return { label, style: { background:c.bg, color:c.color, border:`1px solid ${c.border}` } };
 }
 function money(value:number){return `₩${Math.round(value).toLocaleString()}`}
 function pct(value:number){return `${value.toFixed(1)}%`}
@@ -194,7 +208,7 @@ export function UniverseHomePage(){
 
     <nav className="home-quick-menu home-quick-menu-v14" aria-label="빠른 메뉴"><Link to="/dashboard"><TrendingUp size={17}/> 전체 대시보드</Link><Link to="/reports"><FileText size={17}/> 광고 데이터</Link><Link to="/kpi-goals"><CheckCircle2 size={17}/> KPI 관리</Link><Link to="/campaigns"><Megaphone size={17}/> 캠페인 관리</Link><Link to="/creatives/performance"><Sparkles size={17}/> 소재 성과</Link><Link to="/keywords"><Search size={17}/> 키워드 관리</Link><a href={CONTENT_STUDIO_URL.replace(/\/$/,'')+'/production/blog'} target="_blank" rel="noreferrer"><FileText size={17}/> 블로그 제작 ↗</a><Link to="/automation/overview"><Bot size={17}/> AI 자동화</Link></nav>
     <section className="home-bottom-grid home-bottom-grid-v14">
-      <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2><small>전환율 높은 순</small></div></div><div className="home-mini-list">{visibleKeywords.slice(0,5).map((r,i)=>{const nType=r.channel==='naver'?naverTypeLabel(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.keywordId||r.keyword}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.keyword}</b><small><ChannelTag channel={r.channel}/>{nType&&<span className="home-naver-type">{nType}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">전환 <em>{r.dbCount+(r.purchases||0)+(r.unconfirmed||0)}</em></small></div></div>;})}</div>{!keyword.loading&&!visibleKeywords.length&&<div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div>}</article>
+      <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 키워드 성과</h2><small>전환율 높은 순</small></div></div><div className="home-mini-list">{visibleKeywords.slice(0,5).map((r,i)=>{const badge=r.channel==='naver'?naverTypeBadge(r.campaignType):null;return <div className="home-mini-row" key={`${r.channel}-${r.keywordId||r.keyword}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><div className="home-mini-left"><b>{r.keyword}</b><small><ChannelTag channel={r.channel}/>{badge&&<span className="home-naver-type" style={badge.style}>{badge.label}</span>}{r.advertiserName}</small></div><div className="home-mini-right"><b className="home-mini-spend">{money(r.spend)}</b><small className="home-mini-sub">전환 <em>{r.dbCount+(r.purchases||0)+(r.unconfirmed||0)}</em></small></div></div>;})}</div>{!keyword.loading&&!visibleKeywords.length&&<div className="home-empty-data small"><Search size={23}/><b>키워드 데이터가 없습니다.</b></div>}</article>
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>주요 소재 성과</h2><small>CTR 높은 순 · 디스플레이</small></div></div><div className="home-scroll-list">{visibleDisplayCreatives.slice(0,5).map((r,i)=><div className="home-scroll-row" key={`${r.channel}-${r.adId}`}><span className={`home-rank-badge r${i+1}`}>{i+1}</span><ChannelTag channel={r.channel}/><span className="home-scroll-name">{r.adName}<span className="home-scroll-adv">{r.advertiserName}</span></span><span className="home-scroll-ctr">CTR {(r.ctr||0).toFixed(2)}%</span><span className="home-scroll-spend">{money(r.spend)}</span></div>)}</div>{!creative.loading&&!visibleDisplayCreatives.length&&<div className="home-empty-data small"><Sparkles size={23}/><b>소재 데이터가 없습니다.</b></div>}</article>
 
       <article className="home-dashboard-card compact-table-card"><div className="home-card-head home-card-head-compact"><div><h2>소재 효율 Top 5</h2><small>CTR·CPC·CVR 종합 점수 상위</small></div><Link to="/insights/creatives" className="home-card-more">전체 보기</Link></div>
