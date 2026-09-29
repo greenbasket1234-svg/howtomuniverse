@@ -37,7 +37,6 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
     key: 'home', label: '홈', path: '/home', planet: 'earth',
     items: [
       { key: 'home-overview', label: '통합 홈', path: '/home', icon: 'dashboard' },
-      { key: 'today-operations', label: '오늘의 업무', path: '/today-operations', icon: 'folder' },
     ],
   },
   {
@@ -64,7 +63,6 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
   {
     key: 'insights', label: '인사이트', path: '/insights', planet: 'neptune',
     items: [
-      { key: 'insights-home', label: '인사이트 홈', path: '/insights', icon: 'trend' },
       { key: 'integrated-performance', label: '통합 성과 분석', path: '/insights/performance', icon: 'trend' },
       { key: 'media-analysis', label: '매체별 분석', path: '/insights/media', icon: 'trend' },
       { key: 'advertiser-analysis', label: '광고주별 분석', path: '/insights/advertisers', icon: 'advertisers' },
@@ -80,7 +78,6 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
   {
     key: 'content', label: '콘텐츠', path: '/content', planet: 'saturn',
     items: [
-      { key: 'content-home', label: '콘텐츠 홈', path: '/content', icon: 'dashboard' },
       { key: 'content-ad-creation', label: '광고 제작 ↗', path: contentStudioPath('production/ad'), icon: 'creative-library', external: true },
       { key: 'content-image-creation', label: '이미지 제작', path: '/content/image-creation', icon: 'palette' },
       { key: 'content-video-scripts', label: '영상 대본 ↗', path: contentStudioPath('production/video-script'), icon: 'creative-library', external: true },
@@ -98,9 +95,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'scheduled-jobs', label: '예약 작업', path: '/automation/scheduled-jobs', icon: 'schedule-slots' },
       { key: 'data-auto-collection', label: '데이터 자동 수집', path: '/automation/data-collection', icon: 'activity' },
       { key: 'report-automation', label: '보고서 자동 생성', path: '/automation/report-generation', icon: 'reports' },
-      { key: 'reference-automation', label: '레퍼런스 자동 수집', path: '/planned/reference-automation', icon: 'automation-rules', planned: true },
       { key: 'copy-automation', label: '광고 문구 자동 생성', path: '/automation/ad-copy', icon: 'automation-rules' },
-      { key: 'approval-automation', label: '승인 요청 자동화', path: '/planned/approval-automation', icon: 'approval', planned: true },
       { key: 'notification-automation', label: '알림 자동화', path: '/automation/notifications', icon: 'send' },
       { key: 'automation-workflows', label: '작업 흐름', path: '/automation/workflows', icon: 'folder' },
       { key: 'automation-history', label: '실행 기록', path: '/automation/execution-logs', icon: 'history' },
@@ -114,9 +109,6 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'asset-videos', label: '영상', path: '/assets/videos', icon: 'creative-library' },
       { key: 'asset-documents', label: '문서', path: '/assets/documents', icon: 'folder' },
       { key: 'asset-creatives', label: '광고 소재', path: '/assets/creatives', icon: 'creative-library' },
-      { key: 'brand-assets', label: '로고 브랜드 자료', path: '/planned/brand-assets', icon: 'folder', planned: true },
-      { key: 'asset-templates', label: '템플릿', path: '/planned/asset-templates', icon: 'folder', planned: true },
-      { key: 'asset-prompts', label: '프롬프트', path: '/planned/prompts', icon: 'automation-rules', planned: true },
       { key: 'advertiser-folders', label: '광고주별 폴더', path: '/assets/advertisers', icon: 'folder' },
       { key: 'asset-trash', label: '휴지통', path: '/assets/trash', icon: 'history' },
     ],
