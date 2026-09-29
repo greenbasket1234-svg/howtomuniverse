@@ -19,14 +19,11 @@ export function OptionalTopFilterBar() {
 
   if (!shouldShowFilterBar(pathname)) return null;
 
-  // 광고주 계정: 본인 광고주명만 표시, 드롭다운·검색 없음
-  if (!isAdmin && user?.isAdvertiserAccount) {
-    // knownAdvertisers는 이 계정이 볼 수 있는 광고주 목록 — 광고주 계정은 1개
+  // 비어드민(광고주 계정·단일 담당 직원): 드롭다운 없이 광고주명만 표시합니다.
+  if (!isAdmin) {
     const advertiserName = knownAdvertisers[0] || filterValue || '';
-    if (!advertiserName) return null; // 로딩 중이면 표시 안 함
+    if (!advertiserName) return null;
 
-    // localStorage에 다른 광고주 이름이 남아 있으면 본인 이름으로 교정합니다.
-    // (관리자가 다른 광고주 선택 후 로그아웃 → 이 계정 로그인 시 잘못된 filterValue 유지 방지)
     if (filterValue !== advertiserName) {
       setFilter(advertiserName);
     }
