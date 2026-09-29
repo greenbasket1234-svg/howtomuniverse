@@ -3214,3 +3214,23 @@ body{font-size:15.5px;line-height:1.55}
 .home-channel-table tr:hover td { background: #f8fafc; }
 .home-channel-table td.positive { color: #16a34a; font-weight: 700; }
 .home-channel-table td.warn { color: #d97706; }
+
+/* 네이버 캠페인 유형 뱃지 — 유형별 색상 */
+.naver-type-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  margin: 0 3px;
+  vertical-align: middle;
+  white-space: nowrap;
+  color: #fff !important;
+}
+.ntype-powerlink { background: #16a34a !important; } /* 파워링크 — 초록 */
+.ntype-shopping  { background: #ea580c !important; } /* 쇼핑검색 — 주황 */
+.ntype-content   { background: #2563eb !important; } /* 파워컨텐츠 — 파랑 */
+.ntype-brand     { background: #7e22ce !important; } /* 브랜드검색 — 보라 */
+.ntype-place     { background: #0891b2 !important; } /* 플레이스 — 청록 */
+.ntype-default   { background: #64748b !important; } /* 기타 — 회색 */
