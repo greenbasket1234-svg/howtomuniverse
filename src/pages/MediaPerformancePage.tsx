@@ -26,13 +26,6 @@ type MediaPerformancePageProps = { embedded?: boolean; defaultAdvertiser?: strin
 export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' }: MediaPerformancePageProps){
   const {rows:metricRows}=useMetricRows<DailyMetricRow>('/metrics/daily');
   const data=useMemo(()=>performanceDatasetFromMetricRows(metricRows),[metricRows]);
-  // 비어드민: 광고주 1개이면 자동 선택합니다.
-  useEffect(()=>{
-    if(!isAdmin && data.advertisers.length===1 && advertiser!==data.advertisers[0]){
-      setAdvertiser(data.advertisers[0]);
-      setParams(prev=>{ const n=new URLSearchParams(prev); n.set('advertiser',data.advertisers[0]); return n; },{replace:true});
-    }
-  },[isAdmin,data.advertisers.length,advertiser]);
   const {range}=useMetricsQuery();
   const [params,setParams]=useSearchParams();
   const [comparison,setComparison]=useState(params.get('compare')||'직전 동일기간');
@@ -43,6 +36,13 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
   const [representativeKpi,setRepresentativeKpi]=useState<PerformanceMetric>((params.get('kpi') as PerformanceMetric)||'leads');
   const [trendMetric,setTrendMetric]=useState<PerformanceMetric>('leads');
   const [rankMetric,setRankMetric]=useState<'health'|'achievement'|'leads'|'cpa'|'roas'|'revenue'>('health');
+  // 비어드민: 광고주 1개이면 자동 선택합니다.
+  useEffect(()=>{
+    if(!isAdmin && data.advertisers.length===1 && advertiser!==data.advertisers[0]){
+      setAdvertiser(data.advertisers[0]);
+      setParams(prev=>{ const n=new URLSearchParams(prev); n.set('advertiser',data.advertisers[0]); return n; },{replace:true});
+    }
+  },[isAdmin,data.advertisers.length,advertiser]);
   const [tableQuery,setTableQuery]=useState('');
   const [sortKey,setSortKey]=useState<'health'|'spend'|'leads'|'cpa'|'roas'>('health');
   const [sortDir,setSortDir]=useState<'asc'|'desc'>('desc');
