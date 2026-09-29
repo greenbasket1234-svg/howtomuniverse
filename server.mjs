@@ -2883,6 +2883,23 @@ async function handleApi(req, res, pathname) {
       });
     }
 
+    // ── [임시] 소재 디버그 — 특정 광고주의 thumbnail_url 확인용 ──────────────
+    if (req.method === 'GET' && pathname === '/api/debug-creative-thumb') {
+      const q = new URL(req.url, 'http://x').searchParams;
+      const name = q.get('advertiser') || '';
+      if (!pgPool || !name) return sendJson(res, 400, { error: 'advertiser 파라미터 필요' });
+      const r = await pgPool.query(`
+        SELECT DISTINCT ad_id as "adId", ad_name as "adName", media_type as "mediaType",
+          thumbnail_url as "thumbnailUrl", LEFT(thumbnail_url, 80) as "thumbPreview"
+        FROM creative_daily_metrics
+        WHERE advertiser_id IN (
+          SELECT id FROM advertisers WHERE name ILIKE $1
+        )
+        ORDER BY ad_name LIMIT 20
+      `, [`%${name}%`]);
+      return sendJson(res, 200, r.rows);
+    }
+
     // ── 썸네일 이미지 프록시 (인증 불필요 — <img> 태그는 JWT를 못 보냄) ──
     if (req.method === 'GET' && pathname === '/api/proxy-thumb') {
       const q = new URL(req.url, 'http://x').searchParams;
