@@ -710,7 +710,7 @@ const REFERENCE_CONNECTORS = buildReferenceConnectors({ metaGraphGet, metaConfig
 
 async function metaFetchAdCreativeThumbnails(adIds, accountId) {
   const result = {};
-  const chunkSize = 50; // 한 번에 너무 많은 ID를 요청하지 않도록 나눕니다.
+  const chunkSize = 10; // Meta API "too much data" 방지 — 10개씩 나눠 조회합니다.
   const videoIds = [];
   const allImageHashes = new Set();
   const existingPostAdIds = []; // { adId, postId } - "기존 게시물 활용" 방식 광고들
