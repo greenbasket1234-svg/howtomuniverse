@@ -103,12 +103,20 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
     return ()=>io.disconnect();
   },[adId,posterUrl]);
 
-  // iframe이 로드되면 썸네일보다 위에 표시
-  const showIframe = previewUrl && iframeLoaded;
+  // 썸네일 이미지 로드 성공 시 iframe은 표시하지 않습니다.
+  // iframe은 썸네일이 완전히 실패했을 때만 폴백으로 사용합니다.
+  const showIframe = previewUrl && iframeLoaded && thumbOk === false;
 
   return <div ref={ref} className="library-thumb-square library-thumb-apipreview" style={{position:'relative'}}>
-    {/* ad_preview iframe — 항상 렌더(숨김), 로드되면 페이드인 */}
-    {previewUrl && <iframe
+    {/* 썸네일 이미지 우선 표시 */}
+    {thumbSrc && thumbOk !== false && <img
+      src={thumbSrc} alt={name}
+      style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
+      onLoad={()=>setThumbOk(true)}
+      onError={()=>setThumbOk(false)}
+    />}
+    {/* 썸네일 실패 시에만 ad_preview iframe 폴백 */}
+    {thumbOk === false && previewUrl && <iframe
       title={name} src={previewUrl} loading="lazy" scrolling="no"
       style={{
         position:'absolute',inset:0,width:'100%',height:'100%',border:'none',
@@ -118,16 +126,9 @@ function ApiPreviewThumb({adId,posterUrl,name}:{adId:string;posterUrl?:string|nu
       }}
       onLoad={()=>setIframeLoaded(true)}
     />}
-    {/* 썸네일 이미지 — iframe 뒤에 배치, iframe 로드되면 가려짐 */}
-    {thumbSrc && thumbOk !== false && !showIframe && <img
-      src={thumbSrc} alt={name}
-      style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}}
-      onLoad={()=>setThumbOk(true)}
-      onError={()=>setThumbOk(false)}
-    />}
-    {/* 아무것도 없으면 로딩 표시 */}
-    {!previewUrl && thumbOk === false && <span style={{color:'#475569',fontSize:11,padding:8,textAlign:'center'}}>미리보기 없음</span>}
-    {!previewUrl && thumbOk === null && thumbSrc && <span style={{color:'#94a3b8',fontSize:10}}>...</span>}
+    {/* 둘 다 없으면 플레이스홀더 */}
+    {thumbOk === false && !previewUrl && <span style={{color:'#475569',fontSize:11,padding:8,textAlign:'center'}}>미리보기 없음</span>}
+    {thumbSrc && thumbOk === null && <span style={{color:'#94a3b8',fontSize:10,position:'absolute',bottom:4,right:6}}>...</span>}
   </div>;
 }
 
