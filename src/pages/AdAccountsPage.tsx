@@ -373,7 +373,28 @@ export function AdAccountsPage() {
             );
           })}{/* /CHANNELS.map */}
 
-          {/* ── 쇼핑몰 연동 카드 (카페24 · 네이버 스마트스토어) ── */}
+          {/* ── 네이버 GFA(성과형 디스플레이 광고) 연동 카드 ── */}
+          {selected && (
+            <section className="card account-channel-card">
+              <div className="account-channel-head">
+                <div className="account-channel-title">
+                  <span className="account-channel-icon" style={{background:'#16a34a',fontSize:10,fontWeight:800}}>GFA</span>
+                  <div>
+                    <h3>네이버 GFA(DA) 연동</h3>
+                    <p>네이버 성과형 디스플레이 광고 · 배너·네이티브·동영상</p>
+                  </div>
+                </div>
+                <span className="status-pill warning">미연동</span>
+              </div>
+              <div className="account-empty-connect">
+                <p className="muted">공식 대행사 통해서만 API 발급 및 연동 가능합니다.</p>
+                <p style={{fontSize:12,color:'#64748b',marginTop:4}}>
+                  네이버 GFA API는 공식 파트너 대행사 계정을 통해서만 OAuth 2.0 발급이 가능합니다.
+                  대행사 측에 API 연동 협조 요청 후 진행해 주세요.
+                </p>
+              </div>
+            </section>
+          )}
           {selected && (() => {
             const STORE_META: Record<string, { label: string; color: string; abbr: string; desc: string }> = {
               cafe24:      { label: '카페24',              color: '#ef4444', abbr: 'C24', desc: 'mall_id + Client ID + Secret → 일별 주문·매출 동기화' },
