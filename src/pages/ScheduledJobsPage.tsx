@@ -4,6 +4,7 @@ import { CalendarDays, List, Clock3, Pause, Play, Trash2, ExternalLink } from 'l
 import { PageHeader } from '../components/PageHeader';
 import { ChannelTag } from '../components/ChannelTag';
 import { useAdvertisers } from '../hooks/useAdvertisers';
+import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../hooks/useApi';
 import { automationApi, ruleScheduleSummary, nextRunAt, occurrencesInRange, type AutomationRule, type AutomationRuleType } from '../automation/automationApi';
 import type { CreativeMetricRow } from '../types/metrics';
@@ -16,6 +17,7 @@ function fmtDateTime(d: Date) { return `${d.getMonth() + 1}/${d.getDate()}(${['�
 
 export function ScheduledJobsPage() {
   const [advs] = useAdvertisers();
+  const {isAdmin} = useAuth();
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const reload = async () => { try { setRules(await automationApi.rules.list()); } catch { setRules([]); } };
   useEffect(() => { void reload(); }, []);
@@ -32,6 +34,8 @@ export function ScheduledJobsPage() {
   const [typeFilter, setTypeFilter] = useState<'all' | AutomationRuleType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all');
   const [advertiser, setAdvertiser] = useState('all');
+  // 비어드민: 광고주 목록이 로드되면 자동 선택합니다.
+  useEffect(()=>{ if(!isAdmin && advs.length===1 && advertiser==='all') setAdvertiser(advs[0].id); },[isAdmin,advs.length,advertiser]);
   const [view, setView] = useState<'list' | 'calendar' | 'timeline'>('list');
 
   const now = new Date(); const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
@@ -98,7 +102,9 @@ export function ScheduledJobsPage() {
     {notice && <div className="auto28-note"><span>{notice}</span></div>}
     <div className="card auto-filter-card"><div className="auto-filter-row">
       <div className="segmented"><button className={scope === 'today' ? 'active' : ''} onClick={() => setScope('today')}>오늘</button><button className={scope === 'week' ? 'active' : ''} onClick={() => setScope('week')}>이번 주</button><button className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>전체</button></div>
-      <select value={advertiser} onChange={e => setAdvertiser(e.target.value)}><option value="all">전체 광고주</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      {(!isAdmin && advs.length===1)
+        ? <span style={{display:'inline-flex',alignItems:'center',height:32,padding:'0 12px',background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',borderRadius:6,fontSize:13,fontWeight:700,whiteSpace:'nowrap'}}>{advs[0]?.name}</span>
+        : <select value={advertiser} onChange={e => setAdvertiser(e.target.value)}><option value="all">전체 광고주</option>{advs.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>}
       <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">전체 유형</option>{Object.entries(typeLabel).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
       <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)}><option value="all">전체 상태</option><option value="active">ON</option><option value="paused">중지</option></select>
       <div className="auto-view-buttons"><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><List size={15} />목록</button><button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><CalendarDays size={15} />캘린더</button><button className={view === 'timeline' ? 'active' : ''} onClick={() => setView('timeline')}><Clock3 size={15} />타임라인</button></div>
