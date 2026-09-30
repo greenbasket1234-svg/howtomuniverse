@@ -99,6 +99,7 @@ export function Sidebar() {
         { key: 'kpi-goals',   label: 'KPI 관리',      path: '/kpi-goals',   icon: 'target' },
         { key: 'campaigns',   label: '캠페인 관리',   path: '/campaigns',   icon: 'campaigns' },
         { key: 'keywords',    label: '키워드 관리',   path: '/keywords',    icon: 'keyword-analysis' },
+        { key: 'creatives',   label: '소재 관리',     path: '/creatives',   icon: 'creative-library' },
         { key: 'report-center', label: '보고서 관리', path: '/report-center', prefixPath: '/report-center', icon: 'reports' },
       ];
       groups.push({ key: 'operations', label: '운영센터', path: '/dashboard', planet: 'jupiter', items: opItems });
