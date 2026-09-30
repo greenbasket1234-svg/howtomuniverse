@@ -13,7 +13,7 @@ import { useMetricsQuery } from '../context/MetricsQueryContext';
 const metricNames:Record<PerformanceMetric,string>={spend:'광고비',impressions:'노출',clicks:'클릭',leads:'DB',revenue:'매출',ctr:'CTR',cpa:'CPA',roas:'ROAS',cpc:'CPC',cvr:'CVR'};
 const comparisonOptions=['직전 동일기간','전월','전년 동기간','비교 안 함'];
 const trendMetrics:PerformanceMetric[]=['spend','clicks','leads','cpa','revenue','roas','ctr'];
-const channelLabels=['전체 비교',...MEDIA_ORDER];
+// 채널 탭은 컴포넌트 내에서 실제 데이터 기반으로 동적 계산합니다 (아래 activeChannels 참조)
 
 function poly(values:number[]){ const max=Math.max(...values,1),min=Math.min(...values,0),span=max-min||1; return values.map((value,index)=>`${8+index/Math.max(1,values.length-1)*92},${72-(value-min)/span*58}`).join(' '); }
 function changeClass(metric:PerformanceMetric,change:number){ if(metric==='cpa') return change<0?'good':change>0?'bad':'neutral'; if(['leads','revenue','ctr','roas','clicks'].includes(metric)) return change>0?'good':change<0?'bad':'neutral'; return change>0?'good':change<0?'bad':'neutral'; }
@@ -51,6 +51,12 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
 
   const [start,end]=[range.from,range.to]; const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
   const comparisonRows=useMemo(()=>buildMediaComparison(data,start,end,prevStart,prevEnd,advertiser,representativeKpi),[data,start,end,prevStart,prevEnd,advertiser,representativeKpi]);
+  // API 연동된 매체만 탭에 표시합니다.
+  // 선택 기간에 광고비·클릭·노출 중 하나라도 있으면 연동된 것으로 판단합니다.
+  const activeChannels=useMemo(()=>{
+    const connected=comparisonRows.filter(r=>r.current.spend>0||r.current.clicks>0||r.current.impressions>0).map(r=>r.name);
+    return ['전체 비교',...MEDIA_ORDER.filter(m=>connected.includes(m))];
+  },[comparisonRows]);
   const selected=activeMedia==='전체 비교'?null:comparisonRows.find(row=>row.name===activeMedia)||null;
   const sourceRows=(selected?data.media.filter(row=>row.media===selected.name):data.totals).filter(row=>(!advertiser||row.advertiser===advertiser)&&inRange(row.date,start,end));
   const prevRows=(selected?data.media.filter(row=>row.media===selected.name):data.totals).filter(row=>(!advertiser||row.advertiser===advertiser)&&inRange(row.date,prevStart,prevEnd));
@@ -92,7 +98,7 @@ export function MediaPerformancePage({ embedded = false, defaultAdvertiser = '' 
       <button className="map-reset" onClick={()=>{setComparison('직전 동일기간');setAdvertiser(embedded?defaultAdvertiser:'');setActiveMedia('전체 비교');setAccount('');setRepresentativeKpi('leads');if(!embedded)setParams({}, {replace:true})}}>필터 초기화</button>
     </section>
 
-    <nav className="map-media-tabs" aria-label="매체 선택">{channelLabels.map(name=><button key={name} className={activeMedia===name?'active':''} onClick={()=>chooseMedia(name)} style={name==='전체 비교'?undefined:{'--media-color':MEDIA_COLORS[name]} as CSSProperties}><span>{name==='전체 비교'?'전체':mediaIcon(name)}</span>{name}</button>)}</nav>
+    <nav className="map-media-tabs" aria-label="매체 선택">{activeChannels.map(name=><button key={name} className={activeMedia===name?'active':''} onClick={()=>chooseMedia(name)} style={name==='전체 비교'?undefined:{'--media-color':MEDIA_COLORS[name]} as CSSProperties}><span>{name==='전체 비교'?'전체':mediaIcon(name)}</span>{name}</button>)}</nav>
 
     <section className="map-kpi-grid">{kpis.map(metric=>{const current=metricValue(now,metric),previous=metricValue(prev,metric),change=pctChange(current,previous),cls=changeClass(metric,change); const Icon=metric==='spend'?WalletCards:metric==='impressions'?Eye:metric==='clicks'?MousePointerClick:metric==='leads'?Target:metric==='revenue'?CircleDollarSign:BarChart3; return <article className="map-kpi" key={metric}><div><span>{metricNames[metric]}</span><Icon size={17}/></div><strong>{formatMetric(metric,current)}</strong><small className={cls}>{change>=0?<ArrowUpRight size={13}/>:<ArrowDownRight size={13}/>} {Math.abs(change).toFixed(1)}% <em>vs 비교기간</em></small></article>})}</section>
 
