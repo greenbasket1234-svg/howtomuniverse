@@ -34,6 +34,9 @@ export function AdAccountsPage() {
   const [metaError,      setMetaError]      = useState('');
   const [naverForm,      setNaverForm]      = useState({ customerId: '', apiKey: '', secretKey: '' });
   const [naverSaving,    setNaverSaving]    = useState(false);
+  const [gfaModalOpen,   setGfaModalOpen]   = useState<string|null>(null); // advertiserId
+  const [gfaForm,        setGfaForm]        = useState({ customerId: '', accessToken: '', refreshToken: '' });
+  const [gfaSaving,      setGfaSaving]      = useState(false);
   const [toast,          setToast]          = useState('');
   const [syncing,        setSyncing]        = useState('');
   const [autoSyncStatus, setAutoSyncStatus] = useState<{enabled:boolean;hoursKst:number[];lastRunAt:string|null;lastResult:{total:number;success:number;failed:number}|null}|null>(null);
@@ -114,6 +117,25 @@ export function AdAccountsPage() {
   };
 
   /** 네이버는 광고주마다 CUSTOMER_ID/API Key/Secret Key가 전부 다르므로, 직접 입력받아 저장합니다. */
+  /** 네이버 GFA(DA): 대행사 발급 OAuth 2.0 토큰으로 연결합니다 */
+  const connectGfa = async () => {
+    if (!gfaModalOpen) return;
+    const { customerId, accessToken, refreshToken } = gfaForm;
+    if (!customerId.trim() || !accessToken.trim()) { showToast('광고주 ID와 Access Token을 입력해주세요.'); return; }
+    setGfaSaving(true);
+    try {
+      await apiFetch(`/advertisers/${encodeURIComponent(gfaModalOpen)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ accounts: [{ channel: 'naver_gfa', status: 'connected', account_id: customerId.trim(), api_key: accessToken.trim(), secret_key: refreshToken.trim() }] }),
+      });
+      await reload();
+      showToast('네이버 GFA 계정이 연결됐습니다.');
+      setGfaModalOpen(null);
+      setGfaForm({ customerId: '', accessToken: '', refreshToken: '' });
+    } catch (e) { showToast(e instanceof Error ? e.message : 'GFA 연동에 실패했습니다.'); }
+    finally { setGfaSaving(false); }
+  };
+
   const connectNaver = async () => {
     if (!connectTarget) return;
     const { adId } = connectTarget;
@@ -292,7 +314,29 @@ export function AdAccountsPage() {
           {selected && CHANNELS.map(channel => {
             const link = selected.links.find(l => l.channel === channel)!;
             const meta = CHANNEL_META[channel];
+            const gfaCard = channel === '네이버' ? (
+              <section key="naver-gfa" className="card account-channel-card" style={{marginTop:0}}>
+                <div className="account-channel-head">
+                  <div className="account-channel-title">
+                    <span className="account-channel-icon" style={{background:'#16a34a',fontSize:10,fontWeight:800}}>GFA</span>
+                    <div>
+                      <h3>네이버 GFA(DA) 연동</h3>
+                      <p>네이버 성과형 디스플레이 광고 · 배너·네이티브·동영상</p>
+                    </div>
+                  </div>
+                  <span className="status-pill warning">미연동</span>
+                </div>
+                <div className="account-empty-connect">
+                  <p style={{fontSize:12,color:'#64748b',marginBottom:8}}>
+                    네이버 GFA API는 공식 파트너 대행사 계정을 통해서만 OAuth 2.0 발급이 가능합니다.
+                    대행사 측에 API 연동 협조 요청 후 진행해 주세요.
+                  </p>
+                  <button className="btn primary" onClick={()=>{setGfaModalOpen(selected.id);setGfaForm({customerId:'',accessToken:'',refreshToken:''});}}><KeyRound size={15}/> 연결 설정</button>
+                </div>
+              </section>
+            ) : null;
             return (
+              <>
               <section
                 key={channel}
                 className={`card account-channel-card ${link.status === '연결됨' ? 'connected' : ''}`}
@@ -370,31 +414,11 @@ export function AdAccountsPage() {
                   </div>
                 )}
               </section>
+              {gfaCard}
+              </>
             );
           })}{/* /CHANNELS.map */}
 
-          {/* ── 네이버 GFA(성과형 디스플레이 광고) 연동 카드 ── */}
-          {selected && (
-            <section className="card account-channel-card">
-              <div className="account-channel-head">
-                <div className="account-channel-title">
-                  <span className="account-channel-icon" style={{background:'#16a34a',fontSize:10,fontWeight:800}}>GFA</span>
-                  <div>
-                    <h3>네이버 GFA(DA) 연동</h3>
-                    <p>네이버 성과형 디스플레이 광고 · 배너·네이티브·동영상</p>
-                  </div>
-                </div>
-                <span className="status-pill warning">미연동</span>
-              </div>
-              <div className="account-empty-connect">
-                <p className="muted">공식 대행사 통해서만 API 발급 및 연동 가능합니다.</p>
-                <p style={{fontSize:12,color:'#64748b',marginTop:4}}>
-                  네이버 GFA API는 공식 파트너 대행사 계정을 통해서만 OAuth 2.0 발급이 가능합니다.
-                  대행사 측에 API 연동 협조 요청 후 진행해 주세요.
-                </p>
-              </div>
-            </section>
-          )}
           {selected && (() => {
             const STORE_META: Record<string, { label: string; color: string; abbr: string; desc: string }> = {
               cafe24:      { label: '카페24',              color: '#ef4444', abbr: 'C24', desc: 'mall_id + Client ID + Secret → 일별 주문·매출 동기화' },
@@ -506,6 +530,29 @@ export function AdAccountsPage() {
         </main>
       </div>
 
+
+      {/* GFA 연결 모달 */}
+      {gfaModalOpen && (
+        <div className="modal-backdrop" onClick={()=>setGfaModalOpen(null)}>
+          <div className="modal-card" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <h3>네이버 GFA(DA) 연결</h3>
+                <p>공식 대행사를 통해 발급받은 OAuth 2.0 토큰을 입력합니다.</p>
+              </div>
+              <button className="icon-btn" onClick={()=>setGfaModalOpen(null)}><X size={18}/></button>
+            </div>
+            <label className="field-label">광고주 ID (Customer ID)<input value={gfaForm.customerId} onChange={e=>setGfaForm({...gfaForm,customerId:e.target.value})} placeholder="예: 123456"/></label>
+            <label className="field-label" style={{marginTop:10}}>Access Token<input value={gfaForm.accessToken} onChange={e=>setGfaForm({...gfaForm,accessToken:e.target.value})} placeholder="대행사에서 발급받은 Access Token"/></label>
+            <label className="field-label" style={{marginTop:10}}>Refresh Token (선택)<input type="password" value={gfaForm.refreshToken} onChange={e=>setGfaForm({...gfaForm,refreshToken:e.target.value})} placeholder="만료 시 자동 갱신용 (없으면 비워두세요)"/></label>
+            <div className="api-help">입력값은 이 광고주 계정에만 암호화 저장되며 화면에 다시 표시되지 않습니다.</div>
+            <div className="modal-actions">
+              <button className="btn secondary" onClick={()=>setGfaModalOpen(null)}>취소</button>
+              <button className="btn primary" onClick={connectGfa} disabled={gfaSaving}>{gfaSaving?'연결 중...':'연결 저장'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 연동 모달 */}
       {connectTarget && (
