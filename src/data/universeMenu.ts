@@ -112,7 +112,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
     ],
   },
   {
-    key: 'advertisers', label: '광고주', path: '/advertisers', planet: 'venus',
+    key: 'advertisers', label: '광고주', path: '/advertisers', planet: 'venus', adminOnly: true,
     items: [
       { key: 'advertiser-management', label: '광고주 목록 등록', path: '/advertisers', icon: 'advertisers' },
       { key: 'advertiser-dashboard', label: '광고주 대시보드', path: '/advertisers/dashboard', icon: 'dashboard' },
@@ -149,7 +149,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
     ],
   },
   {
-    key: 'settings', label: '설정', path: '/settings', planet: 'mercury',
+    key: 'settings', label: '설정', path: '/settings', planet: 'mercury', adminOnly: true,
     items: [
       { key: 'settings-account', label: '내 정보', path: '/settings/control/account', icon: 'advertisers' },
       { key: 'settings-company', label: '회사 정보', path: '/settings/control/company', icon: 'settings' },

@@ -148,7 +148,7 @@ export function Sidebar() {
       : universeMenuGroups
       .filter(group => !group.adminOnly || isAdmin)
       // 설정 메뉴는 관리자 메뉴 노출 화면 설명대로 "메인 메뉴 마지막 유지" 대상이라 항상 보여줍니다.
-      .filter(group => group.label === '설정' || menuVisibility[group.label] !== false),
+      .filter(group => menuVisibility[group.label] !== false),
     [isAdmin, menuVisibility, user?.isAdvertiserAccount, advertiserGroups],
   );
 
