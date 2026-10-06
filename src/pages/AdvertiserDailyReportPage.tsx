@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, CalendarDays, CheckCircle2, Database, Download, FilePlus2, FileSpreadsheet, FileText, Folder, LayoutTemplate, Plus, RefreshCw, Save, Search, Settings2, Upload, X } from 'lucide-react';
+import { BarChart3, CalendarDays, CheckCircle2, Database, Download, FilePlus2, FileSpreadsheet, FileText, Folder, LayoutTemplate, Plus, RefreshCw, Save, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -815,6 +815,13 @@ export function AdvertiserDailyReportPage() {
   // "열기": 저장 당시의 advertiserName·month·reportType·profile·period 설정을 모두 함께 복원합니다.
   // profile을 먼저 복원해야 storageKey(advertiserName-month-reportType)가
   // 저장된 rows의 키와 일치해서, 화면에 정확히 그 보고서가 다시 보입니다.
+  const deleteGeneratedReport = (report: GeneratedReport) => {
+    if (!confirm(`"${report.reportName || report.advertiserName}" 보고서를 삭제할까요?`)) return;
+    const next = generatedReports.filter(r => r.id !== report.id);
+    saveGeneratedReports(next.filter(r => !r.isSample));
+    setGeneratedReports(next);
+  };
+
   const openGeneratedReport = (report: GeneratedReport) => {
     const restoredProfile: DailyReportProfile = report.profile ?? {
       ...defaultProfileFor(report.advertiserName),
@@ -1811,6 +1818,7 @@ export function AdvertiserDailyReportPage() {
                       <div className="inline-actions generated-export-actions">
                         <button className="btn secondary sm" onClick={() => openGeneratedReport(report)}><FileText size={13}/> 열기</button>
                         <button className="btn secondary sm" onClick={() => void exportGeneratedReport(report)}><Download size={13}/> PDF</button>
+                        <button className="btn danger sm" onClick={() => deleteGeneratedReport(report)}><Trash2 size={13}/> 삭제</button>
                       </div>
                     </div>
                   ))}
@@ -1825,6 +1833,7 @@ export function AdvertiserDailyReportPage() {
                         <div className="inline-actions generated-export-actions">
                           <button className="btn secondary sm" onClick={() => openGeneratedReport(report)}><FileText size={13}/> 열기</button>
                           <button className="btn secondary sm" onClick={() => void exportGeneratedReport(report)}><Download size={13}/> PDF</button>
+                          <button className="btn danger sm" onClick={() => deleteGeneratedReport(report)}><Trash2 size={13}/> 삭제</button>
                             </div>
                       </div>
                     ))}
