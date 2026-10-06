@@ -6,6 +6,7 @@ import { loadReportIntegrationSettings, REPORT_INTEGRATION_EVENT, type ReportInt
 import { buildDailyReportDocument, downloadReportCsv, downloadReportXlsx, openReportPdfPrint, syncReportToGoogleSheets, syncReportToNotion, type DailyReportDocument } from '../utils/reportExports';
 import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
+import { useAuth } from '../context/AuthContext';
 import { matchesAdvertiserFilter, filterByAdvertiser } from '../utils/advertiserMatch';
 import { apiFetch } from '../hooks/useApi';
 
@@ -404,6 +405,7 @@ export function KpiGoalsPage(){
  const [range,setRange]=useState<KpiRangeKey>('7d');
  const [brands,setBrands]=useState<KpiBrandConfig[]>(() => loadKpiBrands());
  const { filterValue } = useAdvertiserFilter();
+ const { isAdmin } = useAuth();
 
  // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
  // 목표값(target)은 계속 사용자가 설정하지만, 실적(현재 값)은 이 실제 데이터로 자동 계산됩니다.
@@ -450,7 +452,10 @@ export function KpiGoalsPage(){
    return {...b, rows, monthlyCurrentValue: computeMonthlyCurrent(b, rows)};
  }),[brands,liveRows]);
 
- const visibleBrandsRaw = filterByAdvertiser(liveBrands, filterValue, b => b.name);
+ // 비어드민: filterValue가 없어도 본인 광고주 KPI만 표시합니다.
+ const visibleBrandsRaw = !isAdmin && !filterValue
+   ? [] // filterValue 미설정 비어드민 → 빈 화면 (OptionalTopFilterBar에서 자동 설정됨)
+   : filterByAdvertiser(liveBrands, filterValue, b => b.name);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
