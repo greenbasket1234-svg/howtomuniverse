@@ -297,7 +297,7 @@ export function Sidebar() {
             <strong>{renderedSection.label}</strong>
           </div>
           <nav className="universe-secondary-nav" key={renderedSection.key}>
-            {renderedSection.items.map((item, index) => {
+            {renderedSection.items.filter(item => !item.adminOnly || isAdmin).map((item, index) => {
               const active = isUniverseItemActive(pathname, item, renderedSection.items);
               const label = `${item.label}${item.planned ? ' (미구현)' : ''}`;
               // 콘텐츠 제작소처럼 완전히 다른 배포 서비스로 이동하는 항목은 내부 라우팅(Link)이 아니라

@@ -118,7 +118,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'advertiser-dashboard', label: '광고주 대시보드', path: '/advertisers/dashboard', icon: 'dashboard' },
       { key: 'advertiser-owner', label: '담당자', path: '/advertisers/contacts', icon: 'advertisers' },
       { key: 'advertiser-subscription', label: '계약 구독', path: '/advertisers/subscription', icon: 'settlement' },
-      { key: 'advertiser-permission', label: '기능 권한', path: '/advertisers/permissions', icon: 'approval' },
+      { key: 'advertiser-permission', label: '기능 권한', path: '/advertisers/permissions', icon: 'approval', adminOnly: true },
       { key: 'advertiser-approval', label: '승인 요청', path: '/advertisers/approvals', icon: 'approval' },
       { key: 'advertiser-share', label: '공유 자료', path: '/advertisers/shared-materials', icon: 'link' },
       { key: 'advertiser-activity', label: '활동 기록', path: '/advertisers/activity', icon: 'history' },
