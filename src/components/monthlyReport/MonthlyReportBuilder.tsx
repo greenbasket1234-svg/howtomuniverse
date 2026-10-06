@@ -14,6 +14,8 @@ import { validateProposal } from '../../utils/proposalValidation';
 import { loadSavedProposals, saveProposal, deleteProposal, type SavedProposal } from '../../utils/nextMonthProposalStore';
 import { ProposalCoverPage, ProposalKpiPage, ProposalMediaRolesPage, ProposalMediaPages, ProposalNewPlatformPage, ProposalChartsPage, ProposalPerformanceChartPage, ProposalStrengthWeaknessPage, ProposalInsightPage, ProposalClosingPage } from './NextMonthProposalPages';
 import { useAdvertiserFilter } from '../../context/AdvertiserFilterContext';
+import { useAuth } from '../../context/AuthContext';
+import { useAdvertisers } from '../../hooks/useAdvertisers';
 import { matchesAdvertiserFilter } from '../../utils/advertiserMatch';
 
 function compactInsightText(value: string) {
@@ -93,7 +95,18 @@ function createInsightFooterCanvas(title: string, text: string, pageNumber: numb
 export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'report' | 'proposal' | 'both' } = {}) {
   const allAdvertisers = Array.from(new Set([...BASE_ADVERTISERS, ...loadExtraAdvertisers()]));
   const { filterValue } = useAdvertiserFilter();
-  const [advertiserName, setAdvertiserName] = useState(allAdvertisers[0] ?? '');
+  const { isAdmin } = useAuth();
+  const [apiAdvertisers] = useAdvertisers();
+  // 비어드민: API에서 불러온 광고주 목록 사용, 어드민: 기존 목록
+  const advertiserOptions = !isAdmin && apiAdvertisers.length > 0
+    ? apiAdvertisers.map(a => a.name)
+    : allAdvertisers;
+  // 비어드민: filterValue(담당 광고주)로 자동 선택
+  const defaultAdvertiser = !isAdmin && filterValue ? filterValue : (advertiserOptions[0] ?? '');
+  const [advertiserName, setAdvertiserName] = useState(defaultAdvertiser);
+  // 비어드민: filterValue(담당 광고주) 변경 시 자동 반영
+  useEffect(()=>{ if(!isAdmin && filterValue) setAdvertiserName(filterValue); },[isAdmin, filterValue]);
+
   const [reportType, setReportType] = useState<ReportType>(() => (loadProfiles()[allAdvertisers[0] ?? ''] ?? defaultProfileFor(allAdvertisers[0] ?? '')).reportType);
   const [saving, setSaving] = useState(false);
   const [savedReportId, setSavedReportId] = useState<string | null>(null);
@@ -490,8 +503,15 @@ export function MonthlyReportBuilder({ focusMode = 'both' }: { focusMode?: 'repo
       {focusMode !== 'both' && <div className="channel-switch-tabs" style={{ marginBottom: 14 }}><Link to="/monthly-reports" className={focusMode === 'report' ? 'active' : ''}>월간 보고서</Link><Link to="/next-month-proposal" className={focusMode === 'proposal' ? 'active' : ''}>다음달 제안서</Link></div>}
       <div className="form-grid">
         <label className="field-label">광고주
-          <input value={advertiserName} onChange={e => setAdvertiserName(e.target.value)} list="monthly-report-advertisers" />
-          <datalist id="monthly-report-advertisers">{allAdvertisers.map(name => <option key={name} value={name} />)}</datalist>
+          {!isAdmin
+            ? <select value={advertiserName} onChange={e => setAdvertiserName(e.target.value)}>
+                {advertiserOptions.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            : <>
+                <input value={advertiserName} onChange={e => setAdvertiserName(e.target.value)} list="monthly-report-advertisers" />
+                <datalist id="monthly-report-advertisers">{allAdvertisers.map(name => <option key={name} value={name} />)}</datalist>
+              </>
+          }
         </label>
         <label className="field-label">보고서 유형
           <select value={reportType} onChange={e => setReportType(e.target.value as ReportType)}>
