@@ -168,9 +168,9 @@ export function UniverseHomePage(){
   const errors=[daily.error,keyword.error,creative.error].filter(Boolean);
   return <div className="universe-home-page universe-home-dashboard home-dashboard-v14">
     <header className="home-dashboard-header home-dashboard-header-v14"><div><h1>안녕하세요, {greetingName}님! <span aria-hidden="true">👋</span></h1><p>{advertisers.length?'실제 연결된 매체 API 데이터와 업무 상태가 이곳에 표시됩니다.':'샘플 데이터 없이 시작합니다. 첫 광고주를 등록해 HOWTOM 유니버스를 설정하세요.'}</p></div>
-      {/* 어드민: 드롭다운. 비어드민(광고주 계정·단일 담당 직원): 이름만 표시 */}
-      {isAdmin
-        ? <label className="home-advertiser-select"><span>광고주 선택</span><select value={selectedAdvertiser} onChange={e=>setFilter(e.target.value)} disabled={!advertisers.length}><option value="">전체 광고주</option>{advertiserNames.map(name=><option key={name}>{name}</option>)}</select></label>
+      {/* 어드민 또는 2개 이상 광고주 관리 계정: 드롭다운 / 단일 광고주: 이름 배지 */}
+      {(isAdmin || advertiserNames.length > 1)
+        ? <label className="home-advertiser-select"><span>광고주 선택</span><select value={selectedAdvertiser} onChange={e=>setFilter(e.target.value)} disabled={!advertisers.length}>{isAdmin&&<option value="">전체 광고주</option>}{advertiserNames.map(name=><option key={name}>{name}</option>)}</select></label>
         : <div className="home-advertiser-locked"><b className="home-advertiser-locked-name">{advertiserNames[0] || selectedAdvertiser || '내 광고주'}</b></div>}
     </header>
     <MetricsDateBar/>
