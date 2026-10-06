@@ -20,34 +20,19 @@ export function OptionalTopFilterBar() {
   if (!shouldShowFilterBar(pathname)) return null;
 
   // 비어드민(광고주 계정·단일 담당 직원): 드롭다운 없이 광고주명만 표시합니다.
-  // 비어드민이고 광고주가 1개이면 배지, 2개 이상이면 드롭다운 표시
+  // 비어드민: 전체 보기 + 광고주 목록 드롭다운
   if (!isAdmin) {
-    if (knownAdvertisers.length > 1) {
-      // 복수 광고주 관리 계정: 드롭다운
-      return (
-        <div className="global-advertiser-filter">
-          <div className="global-advertiser-filter-main">
-            <select
-              className="global-advertiser-select"
-              value={knownAdvertisers.includes(filterValue) ? filterValue : knownAdvertisers[0]}
-              onChange={e => setFilter(e.target.value)}
-            >
-              {knownAdvertisers.map(name => <option key={name} value={name}>{name}</option>)}
-            </select>
-          </div>
-        </div>
-      );
-    }
-    // 단일 광고주: 배지
-    const advertiserName = knownAdvertisers[0] || filterValue || '';
-    if (!advertiserName) return null;
-    if (filterValue !== advertiserName) setFilter(advertiserName);
     return (
       <div className="global-advertiser-filter">
         <div className="global-advertiser-filter-main">
-          <div className="global-advertiser-locked-label">
-            <span className="global-advertiser-locked-name">{advertiserName}</span>
-          </div>
+          <select
+            className="global-advertiser-select"
+            value={knownAdvertisers.includes(filterValue) ? filterValue : ''}
+            onChange={e => setFilter(e.target.value)}
+          >
+            <option value="">전체 보기</option>
+            {knownAdvertisers.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
         </div>
       </div>
     );
