@@ -8,6 +8,8 @@ export type UniverseMenuItem = {
   planned?: boolean;
   /** true면 내부 라우팅(Link)이 아니라 완전히 다른 배포 서비스로 이동하는 외부 링크로 취급합니다. */
   external?: boolean;
+  /** true면 어드민 계정에만 표시되고 비어드민 계정에서는 숨겨집니다. */
+  adminOnly?: boolean;
 };
 
 /** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로
