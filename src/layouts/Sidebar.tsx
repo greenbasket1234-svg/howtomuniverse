@@ -56,6 +56,8 @@ function SidebarFooter({ collapsed }: { collapsed: boolean }) {
 export function Sidebar() {
   const { pathname } = useLocation();
   const { isAdmin, user, refreshUser } = useAuth();
+  // 어드민 전용 메뉴 항목 key 목록 — 비어드민 계정에서는 숨깁니다.
+  const ADMIN_ONLY_ITEM_KEYS = new Set(['advertiser-permission']);
   const currentGroup = activeUniverseGroup(pathname);
   // 광고주 계정은 로그인 시점의 구독 등급이 화면에 그대로 남아있을 수 있습니다
   // (관리자가 그 사이에 등급을 바꿨을 수 있음) - 화면을 이동할 때마다 최신 등급을
@@ -297,7 +299,7 @@ export function Sidebar() {
             <strong>{renderedSection.label}</strong>
           </div>
           <nav className="universe-secondary-nav" key={renderedSection.key}>
-            {renderedSection.items.filter(item => !item.adminOnly || isAdmin).map((item, index) => {
+            {renderedSection.items.filter(item => isAdmin || !ADMIN_ONLY_ITEM_KEYS.has(item.key)).map((item, index) => {
               const active = isUniverseItemActive(pathname, item, renderedSection.items);
               const label = `${item.label}${item.planned ? ' (미구현)' : ''}`;
               // 콘텐츠 제작소처럼 완전히 다른 배포 서비스로 이동하는 항목은 내부 라우팅(Link)이 아니라

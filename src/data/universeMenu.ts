@@ -8,8 +8,6 @@ export type UniverseMenuItem = {
   planned?: boolean;
   /** true면 내부 라우팅(Link)이 아니라 완전히 다른 배포 서비스로 이동하는 외부 링크로 취급합니다. */
   external?: boolean;
-  /** true면 어드민 계정에만 표시되고 비어드민 계정에서는 숨겨집니다. */
-  adminOnly?: boolean;
 };
 
 /** 콘텐츠 제작소(별도 배포 서비스)의 실제 주소입니다. 빌드 시점에 VITE_CONTENT_STUDIO_URL로
@@ -120,7 +118,7 @@ export const universeMenuGroups: UniverseMenuGroup[] = [
       { key: 'advertiser-dashboard', label: '광고주 대시보드', path: '/advertisers/dashboard', icon: 'dashboard' },
       { key: 'advertiser-owner', label: '담당자', path: '/advertisers/contacts', icon: 'advertisers' },
       { key: 'advertiser-subscription', label: '계약 구독', path: '/advertisers/subscription', icon: 'settlement' },
-      { key: 'advertiser-permission', label: '기능 권한', path: '/advertisers/permissions', icon: 'approval', adminOnly: true },
+      { key: 'advertiser-permission', label: '기능 권한', path: '/advertisers/permissions', icon: 'approval' },
       { key: 'advertiser-approval', label: '승인 요청', path: '/advertisers/approvals', icon: 'approval' },
       { key: 'advertiser-share', label: '공유 자료', path: '/advertisers/shared-materials', icon: 'link' },
       { key: 'advertiser-activity', label: '활동 기록', path: '/advertisers/activity', icon: 'history' },
