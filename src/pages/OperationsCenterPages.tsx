@@ -420,14 +420,17 @@ export function KpiGoalsPage(){
 
  // 비어드민 전용: API에서 본인 접근 가능 광고주 이름 목록을 가져옵니다.
  const [myAdvertiserNames, setMyAdvertiserNames] = useState<string[]>([]);
+ const [myAdvertiserNamesLoaded, setMyAdvertiserNamesLoaded] = useState(false);
  useEffect(() => {
-   if (isAdmin) return; // 어드민은 전체 표시 (필터 불필요)
+   if (isAdmin) { setMyAdvertiserNamesLoaded(true); return; }
+   setMyAdvertiserNamesLoaded(false);
    apiFetch<{advertisers?: {name:string}[]; rows?: {name:string}[]}>('/advertisers')
      .then(r => {
        const list: {name:string}[] = r.advertisers ?? r.rows ?? [];
        setMyAdvertiserNames(list.map(a => a.name).filter(Boolean));
      })
-     .catch(() => setMyAdvertiserNames([]));
+     .catch(() => setMyAdvertiserNames([]))
+     .finally(() => setMyAdvertiserNamesLoaded(true));
  }, [isAdmin]);
 
  // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
@@ -479,16 +482,33 @@ export function KpiGoalsPage(){
  // 어드민: createdByRole === 'admin' (또는 레거시 undefined) 인 KPI만 표시
  const visibleBrandsRaw = useMemo(() => {
    if (!isAdmin) {
-     if (myAdvertiserNames.length === 0) return []; // 아직 로딩 중이거나 접근 불가
-     const owned = liveBrands.filter(b =>
-       myAdvertiserNames.some(n => matchesAdvertiserFilter(b.name, n))
-     );
-     return filterValue ? owned.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : owned;
+     // API 응답 전(로딩 중): 본인이 추가한 브랜드(createdByRole==='advertiser')만 먼저 보여줌
+     if (!myAdvertiserNamesLoaded) {
+       const myOwn = liveBrands.filter(b => b.createdByRole === 'advertiser');
+       return filterValue ? myOwn.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : myOwn;
+     }
+     // API 성공: 광고주 이름 목록으로 필터링
+     // - matchesAdvertiserFilter(apiName, b.name): buildLiveRowsFor와 동일한 방향(apiName이 첫번째)
+     // - matchesAdvertiserFilter(b.name, apiName): 반대 방향도 함께 시도 (이름 형식 차이 대응)
+     // - b.name === n: 완전 일치 (드롭다운에서 선택한 경우)
+     if (myAdvertiserNames.length > 0) {
+       const owned = liveBrands.filter(b =>
+         myAdvertiserNames.some(n =>
+           b.name === n ||
+           matchesAdvertiserFilter(n, b.name) ||
+           matchesAdvertiserFilter(b.name, n)
+         )
+       );
+       return filterValue ? owned.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : owned;
+     }
+     // API 실패(로드됐지만 빈 목록): 본인이 추가한 브랜드만 표시
+     const myOwn = liveBrands.filter(b => b.createdByRole === 'advertiser');
+     return filterValue ? myOwn.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : myOwn;
    }
    // 어드민: advertiser(비어드민)가 추가한 KPI는 숨기고 어드민이 추가한 것만 보여줍니다.
    const adminBrands = liveBrands.filter(b => b.createdByRole !== 'advertiser');
    return filterByAdvertiser(adminBrands, filterValue, b => b.name);
- }, [liveBrands, isAdmin, filterValue, myAdvertiserNames]);
+ }, [liveBrands, isAdmin, filterValue, myAdvertiserNames, myAdvertiserNamesLoaded]);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
@@ -532,7 +552,7 @@ export function KpiGoalsPage(){
  const updateBrands = (next: KpiBrandConfig[]) => { setBrands(next); saveKpiBrands(next); };
 
  return <>
-   <PageHeader title="KPI 목표 달성" description="브랜드별 목표(매출성장 ROAS / 잠재고객 CPA)를 설정하고 일별 달성률을 추적합니다." action={<div style={{display:'flex',alignItems:'center',gap:12}}><div className="kpi-page-note">달성률 = 실적 ÷ 목표 · 100% 이상이면 목표 달성</div><button className="btn primary" onClick={()=>setAddingGoal(true)}><Plus size={15}/> 새 목표 추가</button></div>} />
+   <PageHeader title="KPI 목표 달성" description="브랜드별 목표(매출성장 ROAS / 잠재고객 CPA)를 설정하고 일별 달성률을 추적합니다." action={<div style={{display:'flex',alignItems:'center',gap:12}}><div className="kpi-page-note">달성률 = 실적 ÷ 목표 · 100% 이상이면 목표 달성</div><button className="btn primary" onClick={()=>setAddingGoal(true)} disabled={!isAdmin && !myAdvertiserNamesLoaded} title={!isAdmin && !myAdvertiserNamesLoaded ? '광고주 정보를 불러오는 중...' : undefined}><Plus size={15}/> 새 목표 추가</button></div>} />
    <div className="kpi-range-toolbar">
       <div className="kpi-range-group">
         {KPI_RANGE_OPTIONS.map(option => (
