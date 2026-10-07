@@ -42,6 +42,8 @@ type KpiBrandConfig = {
   periodPrimaryLabel: string;
   dailyAverageLabel: string;
   rows: KpiDailyRow[];
+  /** 어드민이 추가한 KPI인지 여부: 'admin' = 어드민 추가, 'advertiser' = 광고주(비어드민) 추가, undefined = 레거시 */
+  createdByRole?: 'admin' | 'advertiser';
 };
 
 const KPI_RANGE_OPTIONS: { key: KpiRangeKey; label: string; limit: number; offset?: number }[] = [
@@ -193,7 +195,7 @@ function GoalEditModal({
 
 const KPI_GOAL_COLORS = ['#f59e0b','#10b981','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f43f5e','#6366f1'];
 
-function NewGoalModal({ onClose, onCreate, existingCount, advertiserOptions }: { onClose: () => void; onCreate: (brand: KpiBrandConfig) => void; existingCount: number; advertiserOptions?: string[] }) {
+function NewGoalModal({ onClose, onCreate, existingCount, advertiserOptions, createdByRole }: { onClose: () => void; onCreate: (brand: KpiBrandConfig) => void; existingCount: number; advertiserOptions?: string[]; createdByRole?: 'admin' | 'advertiser' }) {
   const [name, setName] = useState(advertiserOptions?.length === 1 ? advertiserOptions[0] : '');
   const [goalType, setGoalType] = useState<KpiGoalType>('CPA');
   const [goalTarget, setGoalTarget] = useState('');
@@ -218,6 +220,7 @@ function NewGoalModal({ onClose, onCreate, existingCount, advertiserOptions }: {
       periodPrimaryLabel: goalType === 'ROAS' ? '기간 매출' : goalType === 'CPC' ? '기간 클릭 수' : '기간 전환/예약',
       dailyAverageLabel: goalType === 'ROAS' ? '일 평균 매출' : goalType === 'CPC' ? '일 평균 클릭 수' : '일 평균 건수',
       rows: [],
+      createdByRole,
     };
     onCreate(brand);
     onClose();
@@ -473,6 +476,7 @@ export function KpiGoalsPage(){
  }),[brands,liveRows]);
 
  // 비어드민: API로 가져온 본인 광고주 목록 기준으로 KPI 브랜드 필터링 → 타 광고주 완전 차단
+ // 어드민: createdByRole === 'admin' (또는 레거시 undefined) 인 KPI만 표시
  const visibleBrandsRaw = useMemo(() => {
    if (!isAdmin) {
      if (myAdvertiserNames.length === 0) return []; // 아직 로딩 중이거나 접근 불가
@@ -481,7 +485,9 @@ export function KpiGoalsPage(){
      );
      return filterValue ? owned.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : owned;
    }
-   return filterByAdvertiser(liveBrands, filterValue, b => b.name);
+   // 어드민: advertiser(비어드민)가 추가한 KPI는 숨기고 어드민이 추가한 것만 보여줍니다.
+   const adminBrands = liveBrands.filter(b => b.createdByRole !== 'advertiser');
+   return filterByAdvertiser(adminBrands, filterValue, b => b.name);
  }, [liveBrands, isAdmin, filterValue, myAdvertiserNames]);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
@@ -571,7 +577,7 @@ export function KpiGoalsPage(){
    {editingBrand && <GoalEditModal brand={editingBrand} onClose={()=>setEditingId(null)}
      onSave={(patch)=>{const next=brands.map(brand=>brand.id===editingBrand.id?{...brand,...patch}:brand);updateBrands(next); setSavedToast(`${editingBrand.name} 목표가 저장되었습니다.`); setTimeout(()=>setSavedToast(''),2500);}}
      onDelete={()=>{const next=brands.filter(brand=>brand.id!==editingBrand.id);updateBrands(next);setEditingId(null);setSavedToast(`${editingBrand.name} 목표를 삭제했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
-   {addingGoal && <NewGoalModal existingCount={brands.length} advertiserOptions={isAdmin ? undefined : myAdvertiserNames} onClose={()=>setAddingGoal(false)} onCreate={(brand)=>{updateBrands([...brands,brand]);setSavedToast(`${brand.name} 목표를 추가했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
+   {addingGoal && <NewGoalModal existingCount={brands.length} advertiserOptions={isAdmin ? undefined : myAdvertiserNames} createdByRole={isAdmin ? 'admin' : 'advertiser'} onClose={()=>setAddingGoal(false)} onCreate={(brand)=>{updateBrands([...brands,brand]);setSavedToast(`${brand.name} 목표를 추가했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
  </>
 }
 
