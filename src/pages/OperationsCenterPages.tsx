@@ -404,7 +404,7 @@ function KpiBrandSection({
 export function KpiGoalsPage(){
  const [range,setRange]=useState<KpiRangeKey>('7d');
  const [brands,setBrands]=useState<KpiBrandConfig[]>(() => loadKpiBrands());
- const { filterValue } = useAdvertiserFilter();
+ const { filterValue, knownAdvertisers } = useAdvertiserFilter();
  const { isAdmin } = useAuth();
 
  // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
@@ -452,10 +452,18 @@ export function KpiGoalsPage(){
    return {...b, rows, monthlyCurrentValue: computeMonthlyCurrent(b, rows)};
  }),[brands,liveRows]);
 
- // 비어드민: filterValue가 없어도 본인 광고주 KPI만 표시합니다.
- const visibleBrandsRaw = !isAdmin && !filterValue
-   ? [] // filterValue 미설정 비어드민 → 빈 화면 (OptionalTopFilterBar에서 자동 설정됨)
-   : filterByAdvertiser(liveBrands, filterValue, b => b.name);
+ // 비어드민: knownAdvertisers에 속한 광고주 KPI만 표시 (다른 광고주 KPI 차단)
+ const visibleBrandsRaw = useMemo(() => {
+   if (!isAdmin) {
+     // 본인 접근 가능 광고주 브랜드만 필터링
+     const owned = liveBrands.filter(b =>
+       knownAdvertisers.some(ka => matchesAdvertiserFilter(b.name, ka))
+     );
+     // 추가로 특정 광고주 선택 시 해당 광고주만
+     return filterValue ? owned.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : owned;
+   }
+   return filterByAdvertiser(liveBrands, filterValue, b => b.name);
+ }, [liveBrands, isAdmin, filterValue, knownAdvertisers]);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
