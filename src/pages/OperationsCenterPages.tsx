@@ -114,16 +114,21 @@ function computeKpiSummary(config: KpiBrandConfig, range: KpiRangeKey) {
   };
 }
 
-const KPI_BRANDS_STORAGE_KEY = 'adcc-kpi-brands-v1';
-function loadKpiBrands(): KpiBrandConfig[] {
+const KPI_BRANDS_STORAGE_KEY = 'adcc-kpi-brands-v1';         // 비어드민 전용
+const KPI_BRANDS_ADMIN_STORAGE_KEY = 'adcc-kpi-brands-admin-v1'; // 어드민 전용
+function loadKpiBrands(adminMode = false): KpiBrandConfig[] {
   try {
-    const raw = localStorage.getItem(KPI_BRANDS_STORAGE_KEY);
+    const key = adminMode ? KPI_BRANDS_ADMIN_STORAGE_KEY : KPI_BRANDS_STORAGE_KEY;
+    const raw = localStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : null;
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 }
-function saveKpiBrands(brands: KpiBrandConfig[]) {
-  try { localStorage.setItem(KPI_BRANDS_STORAGE_KEY, JSON.stringify(brands)); } catch { /* ignore */ }
+function saveKpiBrands(brands: KpiBrandConfig[], adminMode = false) {
+  try {
+    const key = adminMode ? KPI_BRANDS_ADMIN_STORAGE_KEY : KPI_BRANDS_STORAGE_KEY;
+    localStorage.setItem(key, JSON.stringify(brands));
+  } catch { /* ignore */ }
 }
 
 function GoalEditModal({
@@ -414,9 +419,16 @@ function KpiBrandSection({
 
 export function KpiGoalsPage(){
  const [range,setRange]=useState<KpiRangeKey>('7d');
- const [brands,setBrands]=useState<KpiBrandConfig[]>(() => loadKpiBrands());
  const { filterValue } = useAdvertiserFilter();
  const { isAdmin } = useAuth();
+ // 어드민/비어드민 별도 저장소에서 브랜드 로드: 초기값은 빈 배열, useEffect에서 역할 확정 후 로드
+ const [brands,setBrands]=useState<KpiBrandConfig[]>([]);
+ const brandsInitializedRef = useRef(false);
+ useEffect(() => {
+   if (brandsInitializedRef.current) return;
+   brandsInitializedRef.current = true;
+   setBrands(loadKpiBrands(isAdmin));
+ }, [isAdmin]);
 
  // 비어드민 전용: API에서 본인 접근 가능 광고주 이름 목록을 가져옵니다.
  const [myAdvertiserNames, setMyAdvertiserNames] = useState<string[]>([]);
@@ -505,9 +517,8 @@ export function KpiGoalsPage(){
      const myOwn = liveBrands.filter(b => b.createdByRole === 'advertiser');
      return filterValue ? myOwn.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : myOwn;
    }
-   // 어드민: advertiser(비어드민)가 추가한 KPI는 숨기고 어드민이 추가한 것만 보여줍니다.
-   const adminBrands = liveBrands.filter(b => b.createdByRole !== 'advertiser');
-   return filterByAdvertiser(adminBrands, filterValue, b => b.name);
+   // 어드민: 어드민 전용 저장소(adcc-kpi-brands-admin-v1)에서 로드하므로 별도 필터 불필요
+   return filterByAdvertiser(liveBrands, filterValue, b => b.name);
  }, [liveBrands, isAdmin, filterValue, myAdvertiserNames, myAdvertiserNamesLoaded]);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
@@ -549,7 +560,7 @@ export function KpiGoalsPage(){
  const [addingGoal,setAddingGoal]=useState(false);
  const [savedToast,setSavedToast]=useState('');
  const editingBrand = brands.find((brand)=>brand.id===editingId) ?? null;
- const updateBrands = (next: KpiBrandConfig[]) => { setBrands(next); saveKpiBrands(next); };
+ const updateBrands = (next: KpiBrandConfig[]) => { setBrands(next); saveKpiBrands(next, isAdmin); };
 
  return <>
    <PageHeader title="KPI 목표 달성" description="브랜드별 목표(매출성장 ROAS / 잠재고객 CPA)를 설정하고 일별 달성률을 추적합니다." action={<div style={{display:'flex',alignItems:'center',gap:12}}><div className="kpi-page-note">달성률 = 실적 ÷ 목표 · 100% 이상이면 목표 달성</div><button className="btn primary" onClick={()=>setAddingGoal(true)} disabled={!isAdmin && !myAdvertiserNamesLoaded} title={!isAdmin && !myAdvertiserNamesLoaded ? '광고주 정보를 불러오는 중...' : undefined}><Plus size={15}/> 새 목표 추가</button></div>} />
