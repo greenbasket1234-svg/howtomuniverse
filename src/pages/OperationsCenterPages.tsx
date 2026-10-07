@@ -193,8 +193,8 @@ function GoalEditModal({
 
 const KPI_GOAL_COLORS = ['#f59e0b','#10b981','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f43f5e','#6366f1'];
 
-function NewGoalModal({ onClose, onCreate, existingCount }: { onClose: () => void; onCreate: (brand: KpiBrandConfig) => void; existingCount: number }) {
-  const [name, setName] = useState('');
+function NewGoalModal({ onClose, onCreate, existingCount, advertiserOptions }: { onClose: () => void; onCreate: (brand: KpiBrandConfig) => void; existingCount: number; advertiserOptions?: string[] }) {
+  const [name, setName] = useState(advertiserOptions?.length === 1 ? advertiserOptions[0] : '');
   const [goalType, setGoalType] = useState<KpiGoalType>('CPA');
   const [goalTarget, setGoalTarget] = useState('');
   const [monthlyTargetValue, setMonthlyTargetValue] = useState('');
@@ -234,7 +234,15 @@ function NewGoalModal({ onClose, onCreate, existingCount }: { onClose: () => voi
           <button className="icon-btn" onClick={onClose} aria-label="닫기"><X size={18} /></button>
         </div>
         <div className="form-grid">
-          <label className="field-label">광고주명<input value={name} onChange={(e) => setName(e.target.value)} placeholder="광고주명 입력" autoFocus/></label>
+          <label className="field-label">광고주명
+            {advertiserOptions && advertiserOptions.length > 0
+              ? <select value={name} onChange={(e) => setName(e.target.value)} autoFocus>
+                  <option value="">광고주 선택</option>
+                  {advertiserOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              : <input value={name} onChange={(e) => setName(e.target.value)} placeholder="광고주명 입력" autoFocus/>
+            }
+          </label>
           <label className="field-label">목표 유형
             <select value={goalType} onChange={(e) => setGoalType(e.target.value as KpiGoalType)}>
               <option value="CPA">잠재고객 확보 (CPA)</option>
@@ -563,7 +571,7 @@ export function KpiGoalsPage(){
    {editingBrand && <GoalEditModal brand={editingBrand} onClose={()=>setEditingId(null)}
      onSave={(patch)=>{const next=brands.map(brand=>brand.id===editingBrand.id?{...brand,...patch}:brand);updateBrands(next); setSavedToast(`${editingBrand.name} 목표가 저장되었습니다.`); setTimeout(()=>setSavedToast(''),2500);}}
      onDelete={()=>{const next=brands.filter(brand=>brand.id!==editingBrand.id);updateBrands(next);setEditingId(null);setSavedToast(`${editingBrand.name} 목표를 삭제했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
-   {addingGoal && <NewGoalModal existingCount={brands.length} onClose={()=>setAddingGoal(false)} onCreate={(brand)=>{updateBrands([...brands,brand]);setSavedToast(`${brand.name} 목표를 추가했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
+   {addingGoal && <NewGoalModal existingCount={brands.length} advertiserOptions={isAdmin ? undefined : myAdvertiserNames} onClose={()=>setAddingGoal(false)} onCreate={(brand)=>{updateBrands([...brands,brand]);setSavedToast(`${brand.name} 목표를 추가했습니다.`);setTimeout(()=>setSavedToast(''),2500);}} />}
  </>
 }
 
