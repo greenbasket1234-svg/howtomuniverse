@@ -407,6 +407,18 @@ export function KpiGoalsPage(){
  const { filterValue } = useAdvertiserFilter();
  const { isAdmin } = useAuth();
 
+ // 비어드민 전용: API에서 본인 접근 가능 광고주 이름 목록을 가져옵니다.
+ const [myAdvertiserNames, setMyAdvertiserNames] = useState<string[]>([]);
+ useEffect(() => {
+   if (isAdmin) return; // 어드민은 전체 표시 (필터 불필요)
+   apiFetch<{advertisers?: {name:string}[]; rows?: {name:string}[]}>('/advertisers')
+     .then(r => {
+       const list: {name:string}[] = r.advertisers ?? r.rows ?? [];
+       setMyAdvertiserNames(list.map(a => a.name).filter(Boolean));
+     })
+     .catch(() => setMyAdvertiserNames([]));
+ }, [isAdmin]);
+
  // 실제 매체 API 데이터(최근 90일)를 불러와서, 광고주명이 일치하는 KPI 브랜드에 매칭합니다.
  // 목표값(target)은 계속 사용자가 설정하지만, 실적(현재 값)은 이 실제 데이터로 자동 계산됩니다.
  const [liveRows,setLiveRows]=useState<{advertiserName:string;date:string;spend:number;dbCount:number;purchases?:number;unconfirmed?:number;revenue:number;clicks:number}[]>([]);
@@ -452,11 +464,17 @@ export function KpiGoalsPage(){
    return {...b, rows, monthlyCurrentValue: computeMonthlyCurrent(b, rows)};
  }),[brands,liveRows]);
 
- // 비어드민: filterValue 미선택 시 빈 배열 반환 → 본인 광고주 외 KPI 차단
+ // 비어드민: API로 가져온 본인 광고주 목록 기준으로 KPI 브랜드 필터링 → 타 광고주 완전 차단
  const visibleBrandsRaw = useMemo(() => {
-   if (!isAdmin && !filterValue) return [];
+   if (!isAdmin) {
+     if (myAdvertiserNames.length === 0) return []; // 아직 로딩 중이거나 접근 불가
+     const owned = liveBrands.filter(b =>
+       myAdvertiserNames.some(n => matchesAdvertiserFilter(b.name, n))
+     );
+     return filterValue ? owned.filter(b => matchesAdvertiserFilter(b.name, filterValue)) : owned;
+   }
    return filterByAdvertiser(liveBrands, filterValue, b => b.name);
- }, [liveBrands, isAdmin, filterValue]);
+ }, [liveBrands, isAdmin, filterValue, myAdvertiserNames]);
  type SortKey='name'|'achievement'|'target';
  const [sortKey,setSortKey]=useState<SortKey>('name');
  const [sortDir,setSortDir]=useState<'asc'|'desc'>('asc');
