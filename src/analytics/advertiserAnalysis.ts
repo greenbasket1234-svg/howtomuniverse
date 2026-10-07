@@ -48,10 +48,13 @@ export type AdvertiserComparisonRow = {
 export type AdvertiserAnomaly={advertiser:string;title:string;description:string;tone:'danger'|'warning'|'info'|'success';score:number};
 
 const FALLBACK_KPI_CONFIGS:AdvertiserKpiConfig[]=[];
+const KPI_BRANDS_KEY='adcc-kpi-brands-v1';
+const KPI_BRANDS_ADMIN_KEY='adcc-kpi-brands-admin-v1';
 
-export function loadAdvertiserKpiConfigs():AdvertiserKpiConfig[]{
+export function loadAdvertiserKpiConfigs(adminMode=false):AdvertiserKpiConfig[]{
   try{
-    const parsed=JSON.parse(localStorage.getItem('adcc-kpi-brands-v1')||'[]');
+    const key=adminMode?KPI_BRANDS_ADMIN_KEY:KPI_BRANDS_KEY;
+    const parsed=JSON.parse(localStorage.getItem(key)||'[]');
     if(Array.isArray(parsed)&&parsed.length){
       return parsed.filter(item=>item&&item.name&&item.goalType&&Number(item.goalTarget)>0).map(item=>({
         id:item.id?String(item.id):undefined,
@@ -144,8 +147,8 @@ function topMediaFor(data:PerformanceDataset,name:string,start:string,end:string
     .sort((a,b)=>metricValue(b.summary,metric)-metricValue(a.summary,metric))[0]?.media;
 }
 
-export function buildAdvertiserComparison(data:PerformanceDataset,currentStart:string,currentEnd:string,prevStart:string,prevEnd:string){
-  const goals=loadAdvertiserKpiConfigs();
+export function buildAdvertiserComparison(data:PerformanceDataset,currentStart:string,currentEnd:string,prevStart:string,prevEnd:string,adminMode=false){
+  const goals=loadAdvertiserKpiConfigs(adminMode);
   const meta=loadAdvertiserMeta();
   const currentPortfolio=derived(sumRows(data.totals.filter(row=>inRange(row.date,currentStart,currentEnd))));
   const [monthStart,monthEnd,elapsedDays,totalDays]=monthRange(data.latestDate);
