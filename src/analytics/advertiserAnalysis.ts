@@ -56,7 +56,7 @@ export function loadAdvertiserKpiConfigs(adminMode=false):AdvertiserKpiConfig[]{
     const key=adminMode?KPI_BRANDS_ADMIN_KEY:KPI_BRANDS_KEY;
     const parsed=JSON.parse(localStorage.getItem(key)||'[]');
     if(Array.isArray(parsed)&&parsed.length){
-      return parsed.filter(item=>item&&item.name&&item.goalType&&Number(item.goalTarget)>0).map(item=>({
+      return parsed.filter(item=>item&&item.name&&item.goalType&&Number(item.goalTarget)>0&&(adminMode||item.createdByRole==='advertiser')).map(item=>({
         id:item.id?String(item.id):undefined,
         name:String(item.name),
         goalType:item.goalType as AdvertiserGoalType,

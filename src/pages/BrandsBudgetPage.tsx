@@ -12,7 +12,9 @@ type KpiBrandLite={name:string;goalType:'CPA'|'ROAS'|'CPC';goalTarget:number};
 function loadKpiBrandsLite(adminMode=false):KpiBrandLite[]{
   try{
     const key=adminMode?'adcc-kpi-brands-admin-v1':'adcc-kpi-brands-v1';
-    const raw=localStorage.getItem(key);const parsed=raw?JSON.parse(raw):null;return Array.isArray(parsed)?parsed:[]
+    const raw=localStorage.getItem(key);const parsed=raw?JSON.parse(raw):null;
+    if(!Array.isArray(parsed))return [];
+    return adminMode?parsed:parsed.filter((b:{createdByRole?:string})=>b.createdByRole==='advertiser');
   }catch{return []}
 }
 const goalLabelOf=(k:KpiBrandLite)=>k.goalType==='ROAS'?`ROAS ${k.goalTarget}% (광고 수익률)`:k.goalType==='CPC'?`CPC ₩${k.goalTarget.toLocaleString()} (클릭당 비용)`:`전환당 ₩${k.goalTarget.toLocaleString()} (CPA)`;

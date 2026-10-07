@@ -121,7 +121,9 @@ function loadKpiBrands(adminMode = false): KpiBrandConfig[] {
     const key = adminMode ? KPI_BRANDS_ADMIN_STORAGE_KEY : KPI_BRANDS_STORAGE_KEY;
     const raw = localStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // 비어드민: createdByRole==='advertiser'인 항목만 허용 (어드민이 이전 코드로 같은 키에 저장한 레거시 데이터 차단)
+    return adminMode ? parsed : parsed.filter((b: KpiBrandConfig) => b.createdByRole === 'advertiser');
   } catch { return []; }
 }
 function saveKpiBrands(brands: KpiBrandConfig[], adminMode = false) {
