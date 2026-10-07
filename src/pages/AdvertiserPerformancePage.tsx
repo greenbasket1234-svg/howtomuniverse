@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, CircleDollarSign, Eye, Gauge, MousePointerClick, Sparkles, Target, TrendingDown, TrendingUp, Users, WalletCards } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { Campaign } from '../types/operations';
@@ -33,6 +34,7 @@ export function AdvertiserPerformancePage(){
   const {rows:metricRows}=useMetricRows<DailyMetricRow>('/metrics/daily');
   const data=useMemo(()=>performanceDatasetFromMetricRows(metricRows),[metricRows]);
   const {range}=useMetricsQuery();
+  const {isAdmin}=useAuth();
   const [params,setParams]=useSearchParams();
   const [comparison,setComparison]=useState(params.get('compare')||'직전 동일기간');
   const [advertiser,setAdvertiser]=useState(params.get('advertiser')||'');
@@ -45,7 +47,7 @@ export function AdvertiserPerformancePage(){
   const [tableStatus,setTableStatus]=useState('');
 
   const [start,end]=[range.from,range.to];const [prevStart,prevEnd]=comparisonRange(start,end,comparison);
-  const allRows=useMemo(()=>buildAdvertiserComparison(data,start,end,prevStart,prevEnd),[data,start,end,prevStart,prevEnd]);
+  const allRows=useMemo(()=>buildAdvertiserComparison(data,start,end,prevStart,prevEnd,isAdmin),[data,start,end,prevStart,prevEnd,isAdmin]);
   const filteredRows=useMemo(()=>allRows.filter(row=>{
     if(status!=='전체'&&row.status!==status)return false;
     if(kpiFilter==='CPA'&&row.goal?.goalType!=='CPA')return false;

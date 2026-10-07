@@ -5,17 +5,22 @@ import { useAdvertisers } from '../hooks/useAdvertisers';
 import { useAdvertiserFilter } from '../context/AdvertiserFilterContext';
 import { matchesAdvertiserFilter } from '../utils/advertiserMatch';
 import { apiFetch } from '../hooks/useApi';
+import { useAuth } from '../context/AuthContext';
 
 const won=(n:number)=>`₩${Math.round(n).toLocaleString()}`;
 type KpiBrandLite={name:string;goalType:'CPA'|'ROAS'|'CPC';goalTarget:number};
-function loadKpiBrandsLite():KpiBrandLite[]{
-  try{const raw=localStorage.getItem('adcc-kpi-brands-v1');const parsed=raw?JSON.parse(raw):null;return Array.isArray(parsed)?parsed:[]}catch{return []}
+function loadKpiBrandsLite(adminMode=false):KpiBrandLite[]{
+  try{
+    const key=adminMode?'adcc-kpi-brands-admin-v1':'adcc-kpi-brands-v1';
+    const raw=localStorage.getItem(key);const parsed=raw?JSON.parse(raw):null;return Array.isArray(parsed)?parsed:[]
+  }catch{return []}
 }
 const goalLabelOf=(k:KpiBrandLite)=>k.goalType==='ROAS'?`ROAS ${k.goalTarget}% (광고 수익률)`:k.goalType==='CPC'?`CPC ₩${k.goalTarget.toLocaleString()} (클릭당 비용)`:`전환당 ₩${k.goalTarget.toLocaleString()} (CPA)`;
 const businessTypeOf=(k?:KpiBrandLite)=>!k?'목표 미설정':k.goalType==='ROAS'?'쇼핑몰 구매전환형':k.goalType==='CPC'?'브랜딩 트래픽형':'오프라인 예약 방문형';
 
 export function BrandsBudgetPage(){
  const [advertisers,setAdvertisers]=useAdvertisers(); const { filterValue } = useAdvertiserFilter(); const [query,setQuery]=useState(''); const [editing,setEditing]=useState<string|null>(null); const [budget,setBudget]=useState(''); const [toast,setToast]=useState('');
+ const {isAdmin}=useAuth();
  // 실제 매체 API에서 가져온 이번 달 광고비를 씁니다 (예전엔 임의 공식으로 지어낸 값이었습니다).
  const [metricRows,setMetricRows]=useState<{advertiserName:string;date:string;spend:number}[]>([]);
  useEffect(()=>{
@@ -24,7 +29,7 @@ export function BrandsBudgetPage(){
    apiFetch<{rows:{advertiserName:string;date:string;spend:number}[]}>(`/metrics/daily?from=${since}&to=${until}`)
      .then(r=>setMetricRows(r.rows||[])).catch(()=>setMetricRows([]));
  },[]);
- const kpiBrands=useMemo(()=>loadKpiBrandsLite(),[]);
+ const kpiBrands=useMemo(()=>loadKpiBrandsLite(isAdmin),[isAdmin]);
  const daysElapsed=new Date().getDate();
  const daysInMonth=new Date(new Date().getFullYear(),new Date().getMonth()+1,0).getDate();
  const rows=useMemo(()=>advertisers.filter(a=>matchesAdvertiserFilter(a.name,filterValue)&&a.name.includes(query.trim())).map((a)=>{
