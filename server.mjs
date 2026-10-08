@@ -143,16 +143,26 @@ async function ssrfSafeFetch(rawUrl, { maxRedirects = 3, timeoutMs = 8000, maxBo
       currentUrl = new URL(loc, currentUrl).toString();
       continue;
     }
-    // 응답 본문 크기 제한
+    // 응답 본문 크기 제한 + P1: body reading에도 timeout을 적용합니다.
+    // 응답 헤더 수신 후 timer가 이미 clearTimeout되므로, body reading용 새 AbortController를 사용합니다.
+    // slow response(2MB 미만 데이터를 아주 천천히 보내는 경우) 연결 점유 문제를 차단합니다.
+    const bodyController = new AbortController();
+    const bodyTimer = setTimeout(() => bodyController.abort(), timeoutMs);
     const chunks = []; let total = 0;
     const reader = resp.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.length;
-      if (total > maxBodyBytes) { reader.cancel(); throw Object.assign(new Error('응답 크기가 2MB를 초과합니다.'), { status: 502 }); }
-      chunks.push(value);
-    }
+    try {
+      while (true) {
+        if (bodyController.signal.aborted) {
+          reader.cancel();
+          throw Object.assign(new Error('응답 본문 읽기 시간이 초과됐습니다.'), { status: 502 });
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maxBodyBytes) { reader.cancel(); throw Object.assign(new Error('응답 크기가 2MB를 초과합니다.'), { status: 502 }); }
+        chunks.push(value);
+      }
+    } finally { clearTimeout(bodyTimer); }
     const text = new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c))));
     return { text, status: resp.status, finalUrl: currentUrl };
   }
@@ -2391,11 +2401,15 @@ async function resolveRequestUser(req) {
   }
   if (!pgPool || typeof payload.sub !== 'string') return null;
   const result = await pgPool.query(
-    'SELECT u.id, u.email, u.name, u.status, u.is_advertiser_account, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
+    'SELECT u.id, u.email, u.name, u.status, u.is_advertiser_account, m.id AS membership_id, m.role_ids, m.advertiser_ids FROM app_users u LEFT JOIN app_memberships m ON m.user_id = u.id WHERE u.id = $1',
     [payload.sub]
   );
   const row = result.rows[0];
   if (!row || row.status !== 'active') return null;
+  // 멤버십 레코드가 없는 활성 사용자는 접근 불허합니다.
+  // LEFT JOIN 결과 membership_id가 null이면 광고주 범위 없이 전체 광고주 접근으로 오인되는
+  // BOLA 취약점(advertiserIds=null → !user.advertiserIds=true → 전체 허용)을 방지합니다.
+  if (!row.membership_id) return null;
   const roleIds = row.role_ids || [];
   let permissionKeys = [];
   if (roleIds.length) {
@@ -3461,9 +3475,26 @@ async function handleApi(req, res, pathname) {
     }
     if (req.method === 'GET' && pathname === '/api/integrations/meta/accounts') {
       if (!metaConfigured()) return sendJson(res, 400, { error: 'META_ACCESS_TOKEN이 설정되지 않았습니다.' });
+      // 매체 계정 목록은 설정 권한(settings.manage) 또는 owner만 볼 수 있습니다.
+      // 로그인만 되면 전체 Meta 광고계정 목록이 노출되는 BOLA P0 취약점을 차단합니다.
+      if (denyUnlessPermitted(res, req.requester, 'settings.manage')) return true;
       try {
         const accounts = await metaListAdAccounts();
-        return sendJson(res, 200, { accounts });
+        // 현재 사용자가 접근 가능한 광고주의 media_accounts에 등록된 계정만 반환합니다.
+        const tenantId = await getCurrentTenantId();
+        const requester = req.requester;
+        let allowedAccountIds = null;
+        if (!requester.isOwner && Array.isArray(requester.advertiserIds)) {
+          const rows = await pgPool.query(
+            `SELECT account_id FROM media_accounts WHERE tenant_id=$1 AND channel='meta' AND advertiser_id::text = ANY($2::text[])`,
+            [tenantId, requester.advertiserIds]
+          );
+          allowedAccountIds = new Set(rows.rows.map(r => r.account_id));
+        }
+        const filtered = allowedAccountIds
+          ? accounts.filter(a => allowedAccountIds.has(a.account_id) || allowedAccountIds.has(a.id))
+          : accounts;
+        return sendJson(res, 200, { accounts: filtered });
       } catch (error) {
         return sendJson(res, 502, { error: error instanceof Error ? error.message : 'Meta API 호출에 실패했습니다.' });
       }
@@ -3475,6 +3506,21 @@ async function handleApi(req, res, pathname) {
       const since = query.get('since');
       const until = query.get('until');
       if (!accountId || !since || !until) return sendJson(res, 400, { error: 'accountId, since, until 파라미터가 모두 필요합니다.' });
+      // 요청한 accountId가 현재 사용자 범위의 광고주에 등록된 계정인지 DB에서 검증합니다.
+      // 임의 accountId로 타 광고주 데이터를 조회하는 BOLA P0 취약점을 차단합니다.
+      const tenantId = await getCurrentTenantId();
+      const requester = req.requester;
+      if (!requester.isOwner) {
+        const normalizedId = accountId.startsWith('act_') ? accountId.replace(/^act_/, '') : accountId;
+        const scopeCheck = await pgPool.query(
+          `SELECT id FROM media_accounts WHERE tenant_id=$1 AND channel='meta' AND (account_id=$2 OR account_id=$3)
+           ${Array.isArray(requester.advertiserIds) ? 'AND advertiser_id::text = ANY($4::text[])' : ''}`,
+          Array.isArray(requester.advertiserIds)
+            ? [tenantId, accountId, normalizedId, requester.advertiserIds]
+            : [tenantId, accountId, normalizedId]
+        );
+        if (!scopeCheck.rows[0]) return sendJson(res, 403, { error: '해당 광고 계정에 대한 접근 권한이 없습니다.' });
+      }
       try {
         const rows = await metaFetchInsights(accountId, since, until);
         return sendJson(res, 200, { rows });
@@ -5332,6 +5378,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const referenceType = cleanText(body.referenceType || item.referenceType || '', 30) || 'ORGANIC_CONTENT';
         const platform = cleanText(body.platform || item.platform || '', 30);
         if (!platform) return sendJson(res, 400, { error: 'platform이 필요합니다.' });
+        // BOLA P0: 요청 body의 advertiserId가 현재 사용자 범위 안인지 검증합니다.
+        const createUser = req.requester;
+        if (body.advertiserId && !canAccessAdvertiser(createUser, body.advertiserId)) {
+          return sendJson(res, 403, { error: '해당 광고주에 대한 레퍼런스를 생성할 권한이 없습니다.' });
+        }
         const canonicalUrl = item.canonicalUrl ? item.canonicalUrl.split('?')[0] : null;
         const capturedAt = item.capturedAt || item.publishedAt || new Date().toISOString();
         try {
@@ -5371,6 +5422,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const body = await readJson(req);
         const url = cleanText(body.url || '', 2000);
         if (!url) return sendJson(res, 400, { error: 'url이 필요합니다.' });
+        // BOLA P0: 요청 body의 advertiserId가 현재 사용자 범위 안인지 검증합니다.
+        const urlCreateUser = req.requester;
+        if (body.advertiserId && !canAccessAdvertiser(urlCreateUser, body.advertiserId)) {
+          return sendJson(res, 403, { error: '해당 광고주에 대한 레퍼런스를 생성할 권한이 없습니다.' });
+        }
         // Task 4: SSRF 방어 — URL 검증 먼저 수행합니다.
         try { await validateSsrfUrl(url); } catch (ssrfErr) {
           return sendJson(res, ssrfErr.status || 400, { error: ssrfErr.message });
@@ -5492,7 +5548,14 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
         if (body.status !== undefined) set('status', body.status);
         if (body.isFavorite !== undefined) set('is_favorite', !!body.isFavorite);
-        if (body.advertiserId !== undefined) set('advertiser_id', body.advertiserId || null);
+        if (body.advertiserId !== undefined) {
+          // BOLA P0: 변경 대상 advertiser_id도 현재 사용자 범위 안인지 검증합니다.
+          // 자기가 접근 가능한 레퍼런스를 다른 광고주 ID로 옮기는 공격을 차단합니다.
+          if (!canAccessAdvertiser(patchUser, body.advertiserId || null)) {
+            return sendJson(res, 403, { error: '해당 광고주로 레퍼런스를 이동할 권한이 없습니다.' });
+          }
+          set('advertiser_id', body.advertiserId || null);
+        }
         if (body.competitorId !== undefined) set('competitor_id', body.competitorId || null);
         if (body.note !== undefined) set('note', body.note);
         if (body.hookTypes !== undefined) set('hook_types', body.hookTypes || []);
@@ -5523,10 +5586,21 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       // "이 레퍼런스로 제작" 사용 이력 기록
       const usageMatch = pathname.match(/^\/api\/references\/([^/]+)\/usage$/);
       if (req.method === 'POST' && usageMatch) {
+        // BOLA P0: tenant_id + advertiser scope를 검증합니다.
+        // reference ID만 알면 다른 tenant의 레퍼런스 상태도 변경 가능한 취약점을 차단합니다.
+        const usageCheck = await pgPool.query(
+          `SELECT advertiser_id::text AS advertiser_id FROM references_store WHERE id=$1 AND tenant_id=$2`,
+          [usageMatch[1], tenantId]
+        );
+        if (!usageCheck.rows[0]) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        const usageUser = req.requester;
+        if (!canAccessAdvertiser(usageUser, usageCheck.rows[0].advertiser_id)) {
+          return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        }
         const body = await readJson(req);
         await pgPool.query(`INSERT INTO reference_usage (reference_id, used_for, reference_scope, created_by) VALUES ($1,$2,$3,$4)`,
           [usageMatch[1], body.usedFor || '', body.referenceScope || null, body.createdBy || 'admin']);
-        await pgPool.query(`UPDATE references_store SET status='used_in_production', updated_at=now() WHERE id=$1 AND status NOT IN ('used_in_production')`, [usageMatch[1]]);
+        await pgPool.query(`UPDATE references_store SET status='used_in_production', updated_at=now() WHERE id=$1 AND tenant_id=$2 AND status NOT IN ('used_in_production')`, [usageMatch[1], tenantId]);
         return sendJson(res, 200, { ok: true });
       }
 
@@ -5538,50 +5612,101 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
       // 컬렉션 CRUD
       if (req.method === 'GET' && pathname === '/api/reference-collections') {
-        const r = await pgPool.query(
-          `SELECT c.*, count(ci.reference_id) as item_count FROM reference_collections c
+        const collUser = req.requester;
+        // BOLA: 광고주 범위에 속하는 컬렉션만 반환합니다.
+        let collQuery, collParams;
+        if (!collUser.isOwner && Array.isArray(collUser.advertiserIds)) {
+          collQuery = `SELECT c.*, count(ci.reference_id) as item_count FROM reference_collections c
            LEFT JOIN reference_collection_items ci ON ci.collection_id=c.id
-           WHERE c.tenant_id=$1 GROUP BY c.id ORDER BY c.updated_at DESC`, [tenantId]);
+           WHERE c.tenant_id=$1 AND (c.advertiser_id IS NULL OR c.advertiser_id::text = ANY($2::text[]))
+           GROUP BY c.id ORDER BY c.updated_at DESC`;
+          collParams = [tenantId, collUser.advertiserIds];
+        } else {
+          collQuery = `SELECT c.*, count(ci.reference_id) as item_count FROM reference_collections c
+           LEFT JOIN reference_collection_items ci ON ci.collection_id=c.id
+           WHERE c.tenant_id=$1 GROUP BY c.id ORDER BY c.updated_at DESC`;
+          collParams = [tenantId];
+        }
+        const r = await pgPool.query(collQuery, collParams);
         return sendJson(res, 200, { collections: r.rows });
       }
       if (req.method === 'POST' && pathname === '/api/reference-collections') {
         const body = await readJson(req);
         if (!body.name?.trim()) return sendJson(res, 400, { error: '컬렉션 이름이 필요합니다.' });
+        // BOLA: 생성 시 advertiserId가 현재 사용자 범위인지 검증합니다.
+        const collCreateUser = req.requester;
+        if (body.advertiserId && !canAccessAdvertiser(collCreateUser, body.advertiserId)) {
+          return sendJson(res, 403, { error: '해당 광고주에 대한 컬렉션을 생성할 권한이 없습니다.' });
+        }
         const r = await pgPool.query(`INSERT INTO reference_collections (tenant_id, advertiser_id, name, description, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
           [tenantId, body.advertiserId || null, body.name.trim(), body.description || null, body.createdBy || 'admin']);
         return sendJson(res, 201, { id: r.rows[0].id });
       }
       const collectionMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)$/);
       if (req.method === 'PATCH' && collectionMatch) {
+        // BOLA: 수정 전 advertiser scope를 검증합니다.
+        const collPatchCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionMatch[1], tenantId]);
+        if (!collPatchCheck.rows[0]) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, collPatchCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
         const body = await readJson(req);
         await pgPool.query(`UPDATE reference_collections SET name=COALESCE($3,name), description=COALESCE($4,description), updated_at=now() WHERE id=$1 AND tenant_id=$2`,
           [collectionMatch[1], tenantId, body.name || null, body.description ?? null]);
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === 'DELETE' && collectionMatch) {
+        // BOLA: 삭제 전 advertiser scope를 검증합니다.
+        const collDelCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionMatch[1], tenantId]);
+        if (!collDelCheck.rows[0]) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, collDelCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
         await pgPool.query(`DELETE FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionMatch[1], tenantId]);
         return sendJson(res, 200, { ok: true });
       }
       const collectionItemsMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items$/);
       if (req.method === 'POST' && collectionItemsMatch) {
         const body = await readJson(req);
+        // BOLA: 컬렉션과 레퍼런스 모두 현재 사용자 범위인지 검증합니다.
+        const ciCollCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionItemsMatch[1], tenantId]);
+        if (!ciCollCheck.rows[0]) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, ciCollCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
+        const ciRefCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM references_store WHERE id=$1 AND tenant_id=$2`, [body.referenceId, tenantId]);
+        if (!ciRefCheck.rows[0]) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, ciRefCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
         await pgPool.query(`INSERT INTO reference_collection_items (collection_id, reference_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [collectionItemsMatch[1], body.referenceId]);
         return sendJson(res, 200, { ok: true });
       }
       const collectionItemMatch = pathname.match(/^\/api\/reference-collections\/([^/]+)\/items\/([^/]+)$/);
       if (req.method === 'DELETE' && collectionItemMatch) {
+        // BOLA: 컬렉션 advertiser scope를 검증합니다.
+        const ciDelCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collections WHERE id=$1 AND tenant_id=$2`, [collectionItemMatch[1], tenantId]);
+        if (!ciDelCheck.rows[0]) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, ciDelCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '컬렉션을 찾을 수 없습니다.' });
         await pgPool.query(`DELETE FROM reference_collection_items WHERE collection_id=$1 AND reference_id=$2`, [collectionItemMatch[1], collectionItemMatch[2]]);
         return sendJson(res, 200, { ok: true });
       }
 
       // 수집 규칙 CRUD
       if (req.method === 'GET' && pathname === '/api/reference-collection-rules') {
-        const r = await pgPool.query(`SELECT rr.*, a.name as advertiser_name FROM reference_collection_rules rr LEFT JOIN advertisers a ON a.id=rr.advertiser_id WHERE rr.tenant_id=$1 ORDER BY rr.created_at DESC`, [tenantId]);
+        const rrUser = req.requester;
+        // BOLA: 광고주 범위에 속하는 규칙만 반환합니다.
+        let rrQuery, rrParams;
+        if (!rrUser.isOwner && Array.isArray(rrUser.advertiserIds)) {
+          rrQuery = `SELECT rr.*, a.name as advertiser_name FROM reference_collection_rules rr LEFT JOIN advertisers a ON a.id=rr.advertiser_id WHERE rr.tenant_id=$1 AND (rr.advertiser_id IS NULL OR rr.advertiser_id::text = ANY($2::text[])) ORDER BY rr.created_at DESC`;
+          rrParams = [tenantId, rrUser.advertiserIds];
+        } else {
+          rrQuery = `SELECT rr.*, a.name as advertiser_name FROM reference_collection_rules rr LEFT JOIN advertisers a ON a.id=rr.advertiser_id WHERE rr.tenant_id=$1 ORDER BY rr.created_at DESC`;
+          rrParams = [tenantId];
+        }
+        const r = await pgPool.query(rrQuery, rrParams);
         return sendJson(res, 200, { rules: r.rows });
       }
       if (req.method === 'POST' && pathname === '/api/reference-collection-rules') {
         const body = await readJson(req);
         if (!body.name?.trim()) return sendJson(res, 400, { error: '수집 이름이 필요합니다.' });
+        // BOLA: 생성 시 advertiserId가 현재 사용자 범위인지 검증합니다.
+        const rrCreateUser = req.requester;
+        if (body.advertiserId && !canAccessAdvertiser(rrCreateUser, body.advertiserId)) {
+          return sendJson(res, 403, { error: '해당 광고주에 대한 수집 규칙을 생성할 권한이 없습니다.' });
+        }
         const r = await pgPool.query(
           `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
@@ -5591,6 +5716,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
       const ruleMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)$/);
       if (req.method === 'PATCH' && ruleMatch) {
+        // BOLA: 수정 전 advertiser scope를 검증합니다.
+        const rrPatchCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleMatch[1], tenantId]);
+        if (!rrPatchCheck.rows[0]) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, rrPatchCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
         const body = await readJson(req);
         const sets = []; const params = [ruleMatch[1], tenantId];
         const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
@@ -5603,12 +5732,20 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === 'DELETE' && ruleMatch) {
+        // BOLA: 삭제 전 advertiser scope를 검증합니다.
+        const rrDelCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleMatch[1], tenantId]);
+        if (!rrDelCheck.rows[0]) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, rrDelCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
         await pgPool.query(`DELETE FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleMatch[1], tenantId]);
         return sendJson(res, 200, { ok: true });
       }
       // 수집 규칙 복제
       const ruleDuplicateMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/duplicate$/);
       if (req.method === 'POST' && ruleDuplicateMatch) {
+        // BOLA: 복제 전 advertiser scope를 검증합니다.
+        const rrDupCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleDuplicateMatch[1], tenantId]);
+        if (!rrDupCheck.rows[0]) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, rrDupCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
         const r = await pgPool.query(
           `INSERT INTO reference_collection_rules (tenant_id, advertiser_id, name, content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by)
            SELECT tenant_id, advertiser_id, name || ' (복제)', content_kind, platforms, keywords, exclude_keywords, language, country, date_range_days, min_metrics, mode, created_by
@@ -5620,6 +5757,10 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const ruleRunMatch = pathname.match(/^\/api\/reference-collection-rules\/([^/]+)\/run$/);
       if (req.method === 'POST' && ruleRunMatch) {
         const rule = await pgPool.query(`SELECT * FROM reference_collection_rules WHERE id=$1 AND tenant_id=$2`, [ruleRunMatch[1], tenantId]);
+        // BOLA: rule 실행 시 advertiser scope를 검증합니다(외부 connector 호출이 있어 위험도 높음).
+        if (rule.rows.length && !canAccessAdvertiser(req.requester, rule.rows[0].advertiser_id?.toString() || null)) {
+          return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
+        }
         if (!rule.rows.length) return sendJson(res, 404, { error: '수집 규칙을 찾을 수 없습니다.' });
         const rr = rule.rows[0];
         const results = {};
