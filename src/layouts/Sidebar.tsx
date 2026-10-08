@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChevronLeft, ChevronRight, LogOut, Menu, Settings, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -15,15 +15,24 @@ function PlanetIcon({ planet }: { planet: UniverseMenuGroup['planet'] }) {
 function SidebarFooter({ collapsed }: { collapsed: boolean }) {
   const { user, logout, isAdmin } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ bottom: number; left: number }>({ bottom: 60, left: 16 });
   useEffect(() => {
     if (!menuOpen) return;
     const close = () => setMenuOpen(false);
     window.addEventListener('click', close);
     return () => window.removeEventListener('click', close);
   }, [menuOpen]);
+  useEffect(() => {
+    if (menuOpen && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setMenuPos({ bottom: window.innerHeight - r.top + 8, left: r.left });
+    }
+  }, [menuOpen]);
   return (
     <div className={`sidebar-footer ${collapsed ? 'collapsed' : ''}`} style={{ position: 'relative' }}>
       <button
+        ref={btnRef}
         type="button"
         className="sidebar-avatar"
         onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
@@ -39,7 +48,11 @@ function SidebarFooter({ collapsed }: { collapsed: boolean }) {
         </div>
       )}
       {menuOpen && (
-        <div className="sidebar-footer-menu" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="sidebar-footer-menu"
+          onClick={(e) => e.stopPropagation()}
+          style={{ position: 'fixed', bottom: menuPos.bottom, left: menuPos.left, zIndex: 9999 }}
+        >
           <div className="sidebar-footer-menu-name">{user?.name || user?.email || '사용자'} · {isAdmin ? '관리자' : '광고주'}</div>
           <Link to="/settings" className="sidebar-footer-menu-item" onClick={() => setMenuOpen(false)}>
             <Settings size={15} /> 설정
