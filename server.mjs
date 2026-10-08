@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import dns from 'node:dns';
 import { fileURLToPath } from 'node:url';
 import { buildReferenceConnectors } from './lib/referenceConnectors.mjs';
 import { classifyNaverConversionType } from './lib/naverConversionTypes.mjs';
+import { _isPrivateIp, SSRF_BLOCKED_HOSTS, validateSsrfUrl, canAccessAdvertiser } from './lib/authHelpers.mjs';
 
 // 요청 처리 중 예상하지 못한 예외가 있어도 서버 프로세스 전체가 죽지 않도록 최상위
 // 안전장치를 둡니다. 개별 요청 핸들러에서 이미 잡히지 않은 예외만 여기서 잡습니다.
@@ -121,6 +123,40 @@ function cleanText(value, max = 5000) {
 }
 function isAuthorizedRequest(req) {
   return Boolean(verifyToken(bearerToken(req)));
+}
+
+// ── Task 4: SSRF 방어 ─────────────────────────────────────────────────────────
+// _isPrivateIp, SSRF_BLOCKED_HOSTS, validateSsrfUrl → lib/authHelpers.mjs 에서 import됩니다.
+async function ssrfSafeFetch(rawUrl, { maxRedirects = 3, timeoutMs = 8000, maxBodyBytes = 2 * 1024 * 1024 } = {}) {
+  let currentUrl = rawUrl;
+  for (let i = 0; i <= maxRedirects; i++) {
+    await validateSsrfUrl(currentUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let resp;
+    try {
+      resp = await fetch(currentUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: controller.signal, redirect: 'manual' });
+    } finally { clearTimeout(timer); }
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('location');
+      if (!loc) throw Object.assign(new Error('리다이렉트 위치가 없습니다.'), { status: 502 });
+      currentUrl = new URL(loc, currentUrl).toString();
+      continue;
+    }
+    // 응답 본문 크기 제한
+    const chunks = []; let total = 0;
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBodyBytes) { reader.cancel(); throw Object.assign(new Error('응답 크기가 2MB를 초과합니다.'), { status: 502 }); }
+      chunks.push(value);
+    }
+    const text = new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c))));
+    return { text, status: resp.status, finalUrl: currentUrl };
+  }
+  throw Object.assign(new Error('리다이렉트 횟수(3회)를 초과했습니다.'), { status: 502 });
 }
 
 const SECURITY_HEADERS = {
@@ -2379,10 +2415,7 @@ async function resolveRequestUser(req) {
 function hasPermission(user, key) {
   return Boolean(user && (user.isOwner || (user.permissionKeys && user.permissionKeys.includes(key))));
 }
-function canAccessAdvertiser(user, advertiserId) {
-  if (!advertiserId) return true;
-  return Boolean(user && (user.isOwner || !user.advertiserIds || user.advertiserIds.includes(advertiserId)));
-}
+// canAccessAdvertiser → lib/authHelpers.mjs 에서 import됩니다.
 function denyUnlessPermitted(res, user, key) {
   if (hasPermission(user, key)) return false;
   sendJson(res, 403, { error: '이 작업을 수행할 권한이 없습니다.' });
@@ -3018,7 +3051,10 @@ async function handleApi(req, res, pathname) {
 
     // 공개 운영 API는 로그인 토큰을 필수로 사용합니다. localhost의 데모 API도
     // 데이터용 엔드포인트에서는 더 이상 샘플 응답을 만들지 않습니다.
-    if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
+    // Task 1: JWT 서명 확인만 하던 isAuthorizedRequest 대신, DB에서 사용자 상태·멤버십을
+    // 함께 확인하는 resolveRequestUser를 사용합니다. 결과는 req.requester에 캐시합니다.
+    req.requester = await resolveRequestUser(req);
+    if (!req.requester) return sendJson(res, 401, { error: '로그인이 필요합니다.' });
 
     // 데이터를 다루는 API(광고주·매체·키워드·소재 등)는 전부 Postgres(pgPool)를 직접 사용합니다.
     // DATABASE_URL이 설정되지 않은 환경(예: 로컬에서 npm run dev만 실행한 경우)에서는 pgPool이
@@ -3036,7 +3072,7 @@ async function handleApi(req, res, pathname) {
     // admin.system.manage 권한)만 실행할 수 있도록 제한합니다 - 예전엔 인증 확인 자체가
     // 없어서 로그인 없이도 누구나 호출할 수 있었습니다.
     if (req.method === 'GET' && pathname === '/api/admin/migration-status') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       if (denyUnlessPermitted(res, requester, 'admin.system.manage')) return true;
       return sendJson(res, 200, {
@@ -3045,7 +3081,7 @@ async function handleApi(req, res, pathname) {
       });
     }
     if (req.method === 'POST' && pathname === '/api/admin/migrate-to-postgres') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       if (denyUnlessPermitted(res, requester, 'admin.system.manage')) return true;
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
@@ -3261,7 +3297,7 @@ async function handleApi(req, res, pathname) {
       // 권한 분리: 광고주 범위가 제한된 팀원에게는 그 목록만 보여줍니다(owner/전체 접근 사용자는 그대로 전체).
       // 이전에는 인증 자체가 실패해도(비로그인 등) 그냥 전체 목록을 돌려주는 취약점이 있었습니다 -
       // 반드시 로그인된 사용자여야 합니다.
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const scoped = !requester.isOwner && requester.advertiserIds
         ? rows.filter(r => requester.advertiserIds.includes(String(r.id)))
@@ -3269,6 +3305,8 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, scoped.map(redactAdvertiser));
     }
     if (req.method === 'POST' && pathname === '/api/advertisers') {
+      // Task 2: 광고주 생성은 advertisers.manage 권한 필요
+      if (denyUnlessPermitted(res, req.requester, 'advertisers.manage')) return true;
       const body = await readJson(req);
       const name = cleanText(body.name, 120);
       if (!name) return sendJson(res, 400, { error: '광고주명을 입력하세요.' });
@@ -3298,9 +3336,11 @@ async function handleApi(req, res, pathname) {
       const tenantId = await getCurrentTenantId();
       const [existing] = await pgFetchAdvertisers(tenantId, id);
       if (!existing) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       if (!canAccessAdvertiser(requester, id)) return sendJson(res, 403, { error: '이 광고주를 수정할 권한이 없습니다.' });
+      // Task 2: 광고주 수정도 advertisers.manage 권한 필요
+      if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
 
       const fields = ['name','monthly_budget','brand_color','industry','website','phone','address','business_reg_no','autopost_pro_industry'];
       const updates = {};
@@ -3356,7 +3396,7 @@ async function handleApi(req, res, pathname) {
     if (advertiserMatch && req.method === 'DELETE') {
       const id = decodeURIComponent(advertiserMatch[1]);
       const tenantId = await getCurrentTenantId();
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       if (!canAccessAdvertiser(requester, id)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
       if (denyUnlessPermitted(res, requester, 'advertisers.manage')) return true;
@@ -3388,6 +3428,7 @@ async function handleApi(req, res, pathname) {
       const db = await pgReadDb(tenantId);
       const advertiser = db.advertisers.find(a => a.name === advertiserName);
       if (!advertiser) return sendJson(res, 404, { error: '광고주를 찾을 수 없습니다.' });
+      if (!canAccessAdvertiser(req.requester, advertiser.id)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
       const daysInMonth = new Date(year, monthNum, 0).getDate();
       const pad = n => String(n).padStart(2, '0');
       const since = `${year}-${pad(monthNum)}-01`;
@@ -3637,7 +3678,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       return sendJson(res, 200, r.rows[0]?.ai_guidelines || null);
     }
     if (req.method === 'PUT' && pathname === '/api/ai-guidelines') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       if (denyUnlessPermitted(res, requester, 'settings.manage')) return true;
@@ -3687,6 +3728,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const isYesterdayOnly = Number(body.days) === 0;
       const days = isYesterdayOnly ? 1 : Math.min(Math.max(Number(body.days || 90), 1), maxDays);
       if (!advertiserId || !channel) return sendJson(res, 400, { error: 'advertiserId, channel이 필요합니다.' });
+      if (!canAccessAdvertiser(req.requester, advertiserId)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
 
       const tenantId = await getCurrentTenantId();
       const [advertiser] = await pgFetchAdvertisers(tenantId, advertiserId);
@@ -4089,7 +4131,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       // 중요: 인증 자체가 안 되면(비로그인, 무효 토큰) 이 함수가 예전엔 "제한 없음"으로
       // 취급해서 전체 데이터를 그대로 돌려주는 심각한 취약점이 있었습니다 - 여기서 바로
       // 401을 응답하고 null을 반환합니다(호출부는 null이면 즉시 return해야 합니다).
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) { sendJson(res, 401, { error: '인증이 필요합니다.' }); return null; }
       const accessibleAdvertiserIds = !requester.isOwner && requester.advertiserIds ? requester.advertiserIds.map(String) : null;
       return { query, from, to, advertiserId, channels, accessibleAdvertiserIds };
@@ -4175,7 +4217,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 광고그룹·광고세트 목록 조회 (캠페인 하위) ───────────────────────────
     if (req.method === 'GET' && pathname === '/api/campaigns/adgroups') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const q = new URL(req.url, 'http://x').searchParams;
@@ -4229,7 +4271,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     if (req.method === 'GET' && pathname === '/api/metrics/campaigns') {
       // 광고주 계정(내부 직원 아님)은 INSIGHT 등급(2) 이상이어야 캠페인별 분석을 볼 수 있습니다.
-      const requesterForTier = await resolveRequestUser(req);
+      const requesterForTier = req.requester;
       if (requesterForTier?.isAdvertiserAccount && (requesterForTier.tier ?? 0) < 2) {
         return sendJson(res, 403, { error: `이 기능은 INSIGHT 이상 구독에서 이용할 수 있습니다. (현재: ${PORTAL_TIER_LABEL[requesterForTier.tier ?? 0]})`, requiredTier: 2, currentTier: requesterForTier.tier ?? 0 });
       }
@@ -4281,7 +4323,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 팀원 계정 관리 (설정 > 사용자 관리) ──────────────────────────────
     if (pathname.startsWith('/api/users')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       await ensureDefaultRoles(tenantId);
@@ -4405,7 +4447,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 비밀번호 재설정 요청함 (관리자 전용, 이메일 미연동이라 여기서 직접 처리) ──
     if (pathname.startsWith('/api/password-reset-requests')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       if (req.method === 'GET' && pathname === '/api/password-reset-requests') {
@@ -4434,7 +4476,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 광고주 회사 담당자(연락처) - 서버 저장, 팀 전체 공유 ──────────────
     if (pathname.startsWith('/api/advertiser-contacts')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
 
@@ -4477,7 +4519,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     if (pathname.startsWith('/api/advertiser-accounts')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
 
@@ -4588,7 +4630,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 권한 묶음(역할) 관리 (설정 > 권한 묶음 / 기능별 이용 권한) ────────────
     if (pathname.startsWith('/api/roles')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       await ensureDefaultRoles(tenantId);
@@ -4644,7 +4686,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 전체 구독 목록 (관리자 대시보드/광고주 현황용) ─────────────────────
     if (req.method === 'GET' && pathname === '/api/subscriptions') {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const clauses = ['tenant_id = $1']; const params = [tenantId];
@@ -4658,7 +4700,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // ── 구독 상품 관리 (관리자) ────────────────────────────────────────
     if (pathname.startsWith('/api/subscription-plans')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const detailMatch = pathname.match(/^\/api\/subscription-plans\/([^/]+)$/);
@@ -4706,7 +4748,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     if (subMatch) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
       const advertiserId = decodeURIComponent(subMatch[1]);
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       if (!canAccessAdvertiser(requester, advertiserId)) return sendJson(res, 403, { error: '이 광고주에 접근할 권한이 없습니다.' });
       const tenantId = await getCurrentTenantId();
@@ -4751,7 +4793,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     // 담당합니다(이 블록은 규칙 등록·조회·수동 실행·이력 조회만 담당). ────────────────
     if (pathname.startsWith('/api/automation/')) {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
 
@@ -4850,7 +4892,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     if (pathname === '/api/usage-events' || pathname === '/api/usage-events/check') {
       if (!pgPool) return sendJson(res, 400, { error: 'DATABASE_URL이 설정되지 않았습니다.' });
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
 
@@ -4904,7 +4946,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const detailMatch = pathname.match(/^\/api\/competitors\/([^/]+)$/);
 
       if (req.method === 'GET' && pathname === '/api/competitors') {
-        const requester = await resolveRequestUser(req);
+        const requester = req.requester;
         if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
         const q = new URL(req.url, 'http://x').searchParams;
         const clauses = ['c.tenant_id = $1']; const params = [tenantId];
@@ -4924,6 +4966,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       if (req.method === 'POST' && pathname === '/api/competitors') {
         const body = await readJson(req);
         if (!body.name || !String(body.name).trim()) return sendJson(res, 400, { error: '경쟁사명이 필요합니다.' });
+        if (body.advertiserId && !canAccessAdvertiser(req.requester, body.advertiserId)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
         const insert = await pgPool.query(
           `INSERT INTO competitors (tenant_id, advertiser_id, name, industry, website_url, channels, priority, status, created_by)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
@@ -4935,6 +4978,9 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
 
       if (req.method === 'PATCH' && detailMatch) {
+        const existing = await pgPool.query(`SELECT advertiser_id FROM competitors WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        if (!existing.rows.length) return sendJson(res, 404, { error: '경쟁사를 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, existing.rows[0].advertiser_id)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
         const body = await readJson(req);
         const sets = []; const params = [detailMatch[1], tenantId];
         const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
@@ -4952,6 +4998,9 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
 
       if (req.method === 'DELETE' && detailMatch) {
+        const existing = await pgPool.query(`SELECT advertiser_id FROM competitors WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        if (!existing.rows.length) return sendJson(res, 404, { error: '경쟁사를 찾을 수 없습니다.' });
+        if (!canAccessAdvertiser(req.requester, existing.rows[0].advertiser_id)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
         // 경쟁사 추적을 중단해도, 이미 수집·태그·다른 곳에 활용됐을 수 있는 관찰 소재 자체는
         // 지우지 않고 '어느 경쟁사인지'만 연결 해제합니다(SET NULL) - 콘텐츠 유실 방지.
         await pgPool.query(`UPDATE references_store SET competitor_id = NULL WHERE competitor_id = $1`, [detailMatch[1]]);
@@ -5050,7 +5099,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
     if (pathname.startsWith('/api/weather-rules')) {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       if (req.method === 'GET' && pathname === '/api/weather-rules') {
@@ -5082,7 +5131,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       }
     }
     if (pathname.startsWith('/api/season-events')) {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       if (req.method === 'GET' && pathname === '/api/season-events') {
@@ -5322,10 +5371,13 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
         const body = await readJson(req);
         const url = cleanText(body.url || '', 2000);
         if (!url) return sendJson(res, 400, { error: 'url이 필요합니다.' });
+        // Task 4: SSRF 방어 — URL 검증 먼저 수행합니다.
+        try { await validateSsrfUrl(url); } catch (ssrfErr) {
+          return sendJson(res, ssrfErr.status || 400, { error: ssrfErr.message });
+        }
         let title = body.title || null, thumbnailUrl = body.thumbnailUrl || null, siteName = null, description = body.description || null;
         try {
-          const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
-          const html = await resp.text();
+          const { text: html } = await ssrfSafeFetch(url);
           const og = (prop) => html.match(new RegExp(`<meta[^>]+property=["']og:${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))?.[1]
             || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:${prop}["']`, 'i'))?.[1] || null;
           title = title || og('title') || html.match(/<title>([^<]+)<\/title>/i)?.[1] || null;
@@ -5351,7 +5403,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
       // 목록 조회 (필터 다수 지원)
       if (req.method === 'GET' && pathname === '/api/references') {
-        const requester = await resolveRequestUser(req);
+        const requester = req.requester;
         if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
         const q = new URL(req.url, 'http://x').searchParams;
         const clauses = ['r.tenant_id = $1']; const params = [tenantId];
@@ -5416,17 +5468,25 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
       const detailMatch = pathname.match(/^\/api\/references\/([^/]+)$/);
       if (req.method === 'GET' && detailMatch) {
         const r = await pgPool.query(
-          `SELECT r.*, a.name as advertiser_name, COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
+          `SELECT r.*, a.name as advertiser_name, r.advertiser_id::text AS advertiser_id_text, COALESCE(json_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '[]') as tags
            FROM references_store r LEFT JOIN advertisers a ON a.id=r.advertiser_id
            LEFT JOIN reference_tag_links tl ON tl.reference_id=r.id LEFT JOIN reference_tags t ON t.id=tl.tag_id
            WHERE r.id=$1 AND r.tenant_id=$2 GROUP BY r.id, a.name`, [detailMatch[1], tenantId]);
         if (!r.rows.length) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        // Task 3: BOLA 방어 — 광고주 범위 검증
+        const getUser = req.requester;
+        if (!canAccessAdvertiser(getUser, r.rows[0].advertiser_id_text)) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
         const collections = await pgPool.query(`SELECT c.id, c.name FROM reference_collections c JOIN reference_collection_items ci ON ci.collection_id=c.id WHERE ci.reference_id=$1`, [detailMatch[1]]);
         return sendJson(res, 200, { ...r.rows[0], collections: collections.rows });
       }
 
       // 수정 (상태/즐겨찾기/광고주/메모/태그)
       if (req.method === 'PATCH' && detailMatch) {
+        // Task 3: BOLA 방어 — DB에서 레코드를 불러와 tenant_id와 광고주 범위를 검증합니다.
+        const patchCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM references_store WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        if (!patchCheck.rows[0]) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        const patchUser = req.requester;
+        if (!canAccessAdvertiser(patchUser, patchCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
         const body = await readJson(req);
         const sets = []; const params = [detailMatch[1], tenantId];
         const set = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
@@ -5451,6 +5511,11 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
       // 삭제
       if (req.method === 'DELETE' && detailMatch) {
+        // Task 3: BOLA 방어 — 삭제 전 tenant_id와 광고주 범위를 검증합니다.
+        const delCheck = await pgPool.query(`SELECT advertiser_id::text AS advertiser_id FROM references_store WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
+        if (!delCheck.rows[0]) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
+        const delUser = req.requester;
+        if (!canAccessAdvertiser(delUser, delCheck.rows[0].advertiser_id)) return sendJson(res, 404, { error: '레퍼런스를 찾을 수 없습니다.' });
         await pgPool.query(`DELETE FROM references_store WHERE id=$1 AND tenant_id=$2`, [detailMatch[1], tenantId]);
         return sendJson(res, 200, { ok: true });
       }
@@ -5637,7 +5702,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 카페24 데이터 동기화 ─────────────────────────────────────────────────
     if (req.method === 'POST' && pathname === '/api/integrations/sync-cafe24') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const body = await readJson(req);
@@ -5692,7 +5757,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 네이버 스마트스토어 데이터 동기화 ───────────────────────────────────
     if (req.method === 'POST' && pathname === '/api/integrations/sync-naver-store') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const body = await readJson(req);
@@ -5730,6 +5795,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     if (req.method === 'POST' && pathname === '/api/integrations/naver-conversion-report-probe') {
       const body = await readJson(req);
       const advertiserId = cleanText(body.advertiserId || '', 120);
+      if (!canAccessAdvertiser(req.requester, advertiserId || null)) return sendJson(res, 404, { error: '찾을 수 없습니다.' });
       const tenantId = await getCurrentTenantId();
       const account = await pgGetMediaAccountForSync(tenantId, advertiserId, 'naver');
       if (!account || account.status !== 'connected' || !account.api_key) return sendJson(res, 400, { error: '네이버 계정이 연결되어 있지 않습니다.' });
@@ -5774,7 +5840,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ---- 캠페인 관리 / 전환 퍼널 (ApiAdControlRepository가 호출) --------------------------
     if (req.method === 'GET' && pathname === '/api/campaigns') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       const advRes = requester.isOwner || !requester.advertiserIds
@@ -5836,7 +5902,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
     if (req.method === 'PUT' && pathname === '/api/campaigns') {
       // 캠페인 ON/OFF처럼 실제 계정에 변경을 가하는 쓰기 작업이라, 소재 재등록 센터와
       // 동일하게 campaign.edit 권한과 광고주 접근 범위를 반드시 검사합니다.
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const body = await readJson(req);
       const targetId = cleanText(body.id || '', 120);
@@ -5858,7 +5924,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ── 캠페인·광고그룹·세트 예산 즉시 수정 (Meta · 네이버) ─────────────────────
     if (req.method === 'PATCH' && pathname === '/api/campaigns/budget') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const body = await readJson(req);
       const targetId = cleanText(body.id || '', 120);
@@ -5928,7 +5994,7 @@ function scheduleSyncResultRetry(tenantId, advertiserId, channel, result) {
 
     // ---- 데이터 수집 현황 -----------------------------------------------------------
     if (req.method === 'GET' && pathname === '/api/integrations/status') {
-      const requester = await resolveRequestUser(req);
+      const requester = req.requester;
       if (!requester) return sendJson(res, 401, { error: '인증이 필요합니다.' });
       const tenantId = await getCurrentTenantId();
       // 예전에는 pgReadDb(성과 4개 테이블 + 검증로그 + 활동로그 전체)를 통째로 읽었는데,
